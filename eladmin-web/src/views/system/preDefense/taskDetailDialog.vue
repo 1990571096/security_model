@@ -74,6 +74,14 @@
         </el-descriptions-item>
       </el-descriptions>
 
+      <el-alert
+        v-if="failureReason"
+        :title="failureReason"
+        type="error"
+        show-icon
+        style="margin-top: 15px;"
+      />
+
       <!-- 进度条 -->
       <div v-if="taskData.status === 'running'" style="margin-top: 15px;">
         <el-progress
@@ -138,7 +146,7 @@
           <el-col :span="8">
             <el-card class="stat-card">
               <div class="stat-item">
-                <i class="el-icon-check stat-icon" style="color: #67C23A;"></i>
+                <i class="el-icon-check stat-icon" style="color: #67C23A;" />
                 <div class="stat-content">
                   <div class="stat-number">{{ sampleStats.cleaned_count || 0 }}</div>
                   <div class="stat-label">清洗后样本</div>
@@ -149,7 +157,7 @@
           <el-col :span="8">
             <el-card class="stat-card">
               <div class="stat-item">
-                <i class="el-icon-close stat-icon" style="color: #F56C6C;"></i>
+                <i class="el-icon-close stat-icon" style="color: #F56C6C;" />
                 <div class="stat-content">
                   <div class="stat-number">{{ sampleStats.removed_count || 0 }}</div>
                   <div class="stat-label">移除样本</div>
@@ -160,7 +168,7 @@
           <el-col :span="8">
             <el-card class="stat-card">
               <div class="stat-item">
-                <i class="el-icon-data-analysis stat-icon" style="color: #409EFF;"></i>
+                <i class="el-icon-data-analysis stat-icon" style="color: #409EFF;" />
                 <div class="stat-content">
                   <div class="stat-number">{{ getCleaningRate() }}%</div>
                   <div class="stat-label">清洗效率</div>
@@ -178,7 +186,7 @@
                 <div slot="header">
                   <span>清洗结果可视化</span>
                 </div>
-                <div id="cleaningChart" style="width: 100%; height: 300px;"></div>
+                <div id="cleaningChart" style="width: 100%; height: 300px;" />
               </el-card>
             </el-col>
             <el-col :span="12">
@@ -209,7 +217,7 @@
                   </div>
                 </div>
                 <div v-else style="text-align: center; padding: 50px; color: #999;">
-                  <i class="el-icon-info"></i>
+                  <i class="el-icon-info" />
                   <p>暂无详细统计信息</p>
                 </div>
               </el-card>
@@ -304,6 +312,11 @@ export default {
     // 是否有扩展统计信息
     hasExtendedStats() {
       return this.sampleStats.cleaned_count || this.sampleStats.removed_count
+    },
+
+    failureReason() {
+      if (!this.cleaningResultData || this.taskData.status !== 'failed') return ''
+      return this.cleaningResultData.failure_reason || this.cleaningResultData.error_message || ''
     }
   },
   watch: {

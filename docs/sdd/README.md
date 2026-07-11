@@ -9,6 +9,7 @@
 - [03-target-architecture.md](03-target-architecture.md)：目标架构、领域模型、算法执行边界、任务生命周期。
 - [04-refactor-backlog.md](04-refactor-backlog.md)：按优先级拆分的重构任务和验收标准。
 - [05-decisions.md](05-decisions.md)：重要设计决策记录。
+- [06-mvp-runbook.md](06-mvp-runbook.md)：MVP 数据库、后端、前端和任务闭环联调步骤。
 
 ## 迭代原则
 

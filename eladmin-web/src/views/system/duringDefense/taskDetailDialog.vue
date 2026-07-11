@@ -68,6 +68,14 @@
         </el-descriptions-item>
       </el-descriptions>
 
+      <el-alert
+        v-if="failureReason"
+        :title="failureReason"
+        type="error"
+        show-icon
+        style="margin-top: 15px;"
+      />
+
       <!-- 进度条 -->
       <div v-if="taskData.status === 'running'" style="margin-top: 15px;">
         <el-progress
@@ -126,13 +134,13 @@
       </div>
 
       <!-- 训练结果统计 -->
-      <div v-if="taskData.status === 'success' && taskData.outputModelId" style="margin-top: 20px;">
+      <div v-if="taskData.status === 'success' && trainingLogData" style="margin-top: 20px;">
         <el-divider content-position="left">训练结果统计</el-divider>
         <el-row :gutter="20">
           <el-col :span="8">
             <el-card class="stat-card">
               <div class="stat-item">
-                <i class="el-icon-cpu stat-icon" style="color: #67C23A;"></i>
+                <i class="el-icon-cpu stat-icon" style="color: #67C23A;" />
                 <div class="stat-content">
                   <div class="stat-number">{{ getTrainingEpochs() }}</div>
                   <div class="stat-label">训练轮数</div>
@@ -143,7 +151,7 @@
           <el-col :span="8">
             <el-card class="stat-card">
               <div class="stat-item">
-                <i class="el-icon-data-analysis stat-icon" style="color: #409EFF;"></i>
+                <i class="el-icon-data-analysis stat-icon" style="color: #409EFF;" />
                 <div class="stat-content">
                   <div class="stat-number">{{ getFinalAccuracy() }}%</div>
                   <div class="stat-label">最终精度</div>
@@ -154,7 +162,7 @@
           <el-col :span="8">
             <el-card class="stat-card">
               <div class="stat-item">
-                <i class="el-icon-time stat-icon" style="color: #E6A23C;"></i>
+                <i class="el-icon-time stat-icon" style="color: #E6A23C;" />
                 <div class="stat-content">
                   <div class="stat-number">{{ getTrainingDuration() }}</div>
                   <div class="stat-label">训练时长</div>
@@ -172,7 +180,7 @@
                 <div slot="header">
                   <span>训练损失曲线</span>
                 </div>
-                <div id="lossChart" style="width: 100%; height: 300px;"></div>
+                <div id="lossChart" style="width: 100%; height: 300px;" />
               </el-card>
             </el-col>
             <el-col :span="12">
@@ -180,7 +188,7 @@
                 <div slot="header">
                   <span>训练精度曲线</span>
                 </div>
-                <div id="accuracyChart" style="width: 100%; height: 300px;"></div>
+                <div id="accuracyChart" style="width: 100%; height: 300px;" />
               </el-card>
             </el-col>
           </el-row>
@@ -201,7 +209,7 @@
         </el-card>
       </div>
       <div v-else style="text-align: center; padding: 20px; color: #999;">
-        <i class="el-icon-info"></i>
+        <i class="el-icon-info" />
         <p>暂无训练日志</p>
       </div>
     </el-dialog>
@@ -257,6 +265,22 @@ export default {
       showTrainingLog: false
     }
   },
+  computed: {
+    trainingLogData() {
+      if (!this.taskData || !this.taskData.trainingLog) return null
+      try {
+        return typeof this.taskData.trainingLog === 'string'
+          ? JSON.parse(this.taskData.trainingLog)
+          : this.taskData.trainingLog
+      } catch (e) {
+        return null
+      }
+    },
+    failureReason() {
+      if (!this.trainingLogData || this.taskData.status !== 'failed') return ''
+      return this.trainingLogData.failure_reason || this.trainingLogData.error_message || ''
+    }
+  },
   watch: {
     visible(val) {
       if (val && this.taskData) {
@@ -290,7 +314,7 @@ export default {
         this.startProgressMonitoring()
       }
 
-      if (this.taskData.status === 'success' && this.taskData.outputModelId) {
+      if (this.taskData.status === 'success' && this.trainingLogData) {
         this.$nextTick(() => {
           this.initCharts()
         })
@@ -446,24 +470,14 @@ export default {
     },
     // 获取训练轮数
     getTrainingEpochs() {
-      if (!this.taskData.trainingLog) return 0
-      try {
-        const log = JSON.parse(this.taskData.trainingLog)
-        return log.epochs || log.current_epoch || 0
-      } catch (e) {
-        return 0
-      }
+      if (!this.trainingLogData) return 0
+      return this.trainingLogData.epochs || this.trainingLogData.current_epoch || 0
     },
     // 获取最终精度
     getFinalAccuracy() {
-      if (!this.taskData.trainingLog) return 0
-      try {
-        const log = JSON.parse(this.taskData.trainingLog)
-        const accuracy = log.final_accuracy || log.current_accuracy || 0
-        return (accuracy * 100).toFixed(2)
-      } catch (e) {
-        return 0
-      }
+      if (!this.trainingLogData) return 0
+      const accuracy = this.trainingLogData.final_accuracy || this.trainingLogData.current_accuracy || 0
+      return (accuracy * 100).toFixed(2)
     },
     // 获取训练时长
     getTrainingDuration() {
@@ -568,6 +582,11 @@ export default {
     },
     // 生成模拟损失数据
     generateLossData() {
+      const curve = this.getTrainingCurve('lossCurve')
+      if (curve.length > 0) {
+        return this.buildCurveData(curve)
+      }
+
       const epochs = []
       const values = []
       const epochCount = this.getTrainingEpochs() || 20
@@ -582,6 +601,11 @@ export default {
     },
     // 生成模拟精度数据
     generateAccuracyData() {
+      const curve = this.getTrainingCurve('accuracyCurve')
+      if (curve.length > 0) {
+        return this.buildCurveData(curve)
+      }
+
       const epochs = []
       const values = []
       const epochCount = this.getTrainingEpochs() || 20
@@ -593,6 +617,18 @@ export default {
       }
 
       return { epochs, values }
+    },
+    // 从训练日志读取后端返回的曲线数据
+    getTrainingCurve(fieldName) {
+      if (!this.trainingLogData) return []
+      return Array.isArray(this.trainingLogData[fieldName]) ? this.trainingLogData[fieldName] : []
+    },
+    // 将曲线数组转换为 ECharts 数据
+    buildCurveData(curve) {
+      return {
+        epochs: curve.map((item, index) => (index + 1).toString()),
+        values: curve.map(item => Number(item).toFixed(4))
+      }
     },
     // 格式化JSON显示
     formatJSON(jsonString) {

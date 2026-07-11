@@ -8,10 +8,21 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import me.zhengjie.exception.BadRequestException;
 import me.zhengjie.exception.EntityExistException;
+import me.zhengjie.modules.system.domain.Algorithm;
+import me.zhengjie.modules.system.domain.Dataset;
 import me.zhengjie.modules.system.domain.DuringDefense;
+import me.zhengjie.modules.system.domain.Hyper;
+import me.zhengjie.modules.system.domain.Model;
 import me.zhengjie.modules.system.domain.dto.DuringDefenseQueryCriteria;
 import me.zhengjie.modules.system.mapper.DuringDefenseMapper;
+import me.zhengjie.modules.system.service.AlgorithmService;
+import me.zhengjie.modules.system.service.DatasetService;
 import me.zhengjie.modules.system.service.DuringDefenseService;
+import me.zhengjie.modules.system.service.HyperService;
+import me.zhengjie.modules.system.service.ModelService;
+import me.zhengjie.modules.system.service.executor.DefenseTaskExecutor;
+import me.zhengjie.modules.system.service.executor.dto.DefenseResourceRef;
+import me.zhengjie.modules.system.service.executor.dto.DefenseTaskRequest;
 import me.zhengjie.utils.FileUtil;
 import me.zhengjie.utils.PageResult;
 import me.zhengjie.utils.PageUtil;
@@ -35,12 +46,11 @@ import java.util.*;
 public class DuringDefenseServiceImpl extends ServiceImpl<DuringDefenseMapper, DuringDefense> implements DuringDefenseService {
 
     private final DuringDefenseMapper duringDefenseMapper;
-    private final MockDefenseTaskExecutor mockDefenseTaskExecutor;
-    // TODO: 需要注入DatasetService、AlgorithmService、ModelService和HyperService，用于验证关联数据
-    // private final DatasetService datasetService;
-    // private final AlgorithmService algorithmService;
-    // private final ModelService modelService;
-    // private final HyperService hyperService;
+    private final DefenseTaskExecutor defenseTaskExecutor;
+    private final DatasetService datasetService;
+    private final AlgorithmService algorithmService;
+    private final ModelService modelService;
+    private final HyperService hyperService;
 
     @Override
     public DuringDefense findById(Long taskId) {
@@ -187,7 +197,7 @@ public class DuringDefenseServiceImpl extends ServiceImpl<DuringDefenseMapper, D
         task.setStartTime(LocalDateTime.now());
         duringDefenseMapper.updateById(task);
         
-        mockDefenseTaskExecutor.runDuringDefense(taskId);
+        defenseTaskExecutor.runDuringDefense(buildExecutionRequest(task));
 
         log.info("启动训练中防御任务: {} (ID: {})", task.getTaskName(), taskId);
     }
@@ -271,31 +281,27 @@ public class DuringDefenseServiceImpl extends ServiceImpl<DuringDefenseMapper, D
             throw new BadRequestException("算法ID不能为空");
         }
 
-        // TODO: 验证数据集是否存在且可用
-        // Dataset dataset = datasetService.findById(resources.getDatasetId());
-        // if (dataset == null || !dataset.getEnabled() || !"success".equals(dataset.getParseStatus())) {
-        //     throw new BadRequestException("指定的数据集不存在或不可用");
-        // }
+        Dataset dataset = datasetService.findById(resources.getDatasetId());
+        if (dataset == null || !Boolean.TRUE.equals(dataset.getEnabled()) || !"success".equals(dataset.getParseStatus())) {
+            throw new BadRequestException("指定的数据集不存在或未启用/未解析成功");
+        }
 
-        // TODO: 验证模型是否存在且可用
-        // Model inputModel = modelService.findById(resources.getInputModelId());
-        // if (inputModel == null || !"available".equals(inputModel.getStatus())) {
-        //     throw new BadRequestException("指定的输入模型不存在或不可用");
-        // }
-        
-        // TODO: 验证算法是否存在且为训练中防御算法
-        // Algorithm algorithm = algorithmService.findById(resources.getAlgorithmId());
-        // if (algorithm == null || !"during".equals(algorithm.getDefenseStage())) {
-        //     throw new BadRequestException("指定的算法不存在或不是训练中防御算法");
-        // }
+        Model inputModel = modelService.findById(resources.getInputModelId());
+        if (inputModel == null || !"available".equals(inputModel.getStatus()) || !"success".equals(inputModel.getParseStatus())) {
+            throw new BadRequestException("指定的输入模型不存在或不可用");
+        }
 
-        // TODO: 验证超参数模板（如果指定）
-        // if (resources.getHyperId() != null) {
-        //     Hyper hyper = hyperService.findById(resources.getHyperId());
-        //     if (hyper == null || !hyper.getEnabled() || !hyper.getAlgorithmId().equals(resources.getAlgorithmId())) {
-        //         throw new BadRequestException("指定的超参数模板不存在或与算法不匹配");
-        //     }
-        // }
+        Algorithm algorithm = algorithmService.findById(resources.getAlgorithmId());
+        if (algorithm == null || !Boolean.TRUE.equals(algorithm.getEnabled()) || !"during".equals(algorithm.getDefenseStage())) {
+            throw new BadRequestException("指定的算法不存在、未启用或不是训练中防御算法");
+        }
+
+        if (resources.getHyperId() != null) {
+            Hyper hyper = hyperService.findById(resources.getHyperId());
+            if (hyper == null || !Boolean.TRUE.equals(hyper.getEnabled()) || !resources.getAlgorithmId().equals(hyper.getAlgorithmId())) {
+                throw new BadRequestException("指定的超参数模板不存在、未启用或与算法不匹配");
+            }
+        }
     }
 
     @Override
@@ -365,23 +371,7 @@ public class DuringDefenseServiceImpl extends ServiceImpl<DuringDefenseMapper, D
                 return false;
             }
             
-            // TODO: 检查数据集是否可用
-            // Dataset dataset = datasetService.findById(task.getDatasetId());
-            // if (dataset == null || !dataset.getEnabled() || !"success".equals(dataset.getParseStatus())) {
-            //     return false;
-            // }
-            
-            // TODO: 检查输入模型是否可用
-            // Model inputModel = modelService.findById(task.getInputModelId());
-            // if (inputModel == null || !"available".equals(inputModel.getStatus())) {
-            //     return false;
-            // }
-            
-            // TODO: 检查算法是否可用
-            // Algorithm algorithm = algorithmService.findById(task.getAlgorithmId());
-            // if (algorithm == null || !algorithm.getEnabled()) {
-            //     return false;
-            // }
+            validateTask(task);
             
             return true;
         } catch (Exception e) {
@@ -408,5 +398,68 @@ public class DuringDefenseServiceImpl extends ServiceImpl<DuringDefenseMapper, D
             log.warn("检查任务{}是否可删除时发生异常: {}", taskId, e.getMessage());
             return false;
         }
+    }
+
+    private DefenseTaskRequest buildExecutionRequest(DuringDefense task) {
+        Dataset dataset = datasetService.findById(task.getDatasetId());
+        Algorithm algorithm = algorithmService.findById(task.getAlgorithmId());
+        Hyper hyper = task.getHyperId() == null ? null : hyperService.findById(task.getHyperId());
+        Model inputModel = modelService.findById(task.getInputModelId());
+        return DefenseTaskRequest.builder()
+                .taskId(task.getTaskId())
+                .taskName(task.getTaskName())
+                .stage("during_defense")
+                .description(task.getDescription())
+                .createdBy(task.getCreateBy())
+                .dataset(toDatasetRef(dataset))
+                .algorithm(toAlgorithmRef(algorithm))
+                .hyperParameter(toHyperRef(hyper))
+                .inputModel(toModelRef(inputModel))
+                .build();
+    }
+
+    private DefenseResourceRef toDatasetRef(Dataset dataset) {
+        return DefenseResourceRef.builder()
+                .id(dataset.getDatasetId())
+                .name(dataset.getDatasetName())
+                .type(dataset.getDatasetType())
+                .path(dataset.getFilePath())
+                .build();
+    }
+
+    private DefenseResourceRef toAlgorithmRef(Algorithm algorithm) {
+        return DefenseResourceRef.builder()
+                .id(algorithm.getAlgorithmId())
+                .name(algorithm.getAlgorithmName())
+                .type(algorithm.getAlgorithmType())
+                .category(algorithm.getAlgorithmCategory())
+                .path(algorithm.getImplementationPath())
+                .configJson(algorithm.getDefaultConfig())
+                .schemaJson(algorithm.getConfigSchema())
+                .build();
+    }
+
+    private DefenseResourceRef toHyperRef(Hyper hyper) {
+        if (hyper == null) {
+            return null;
+        }
+        return DefenseResourceRef.builder()
+                .id(hyper.getTemplateId())
+                .name(hyper.getTemplateName())
+                .type("hyper_parameter")
+                .configJson(hyper.getParameterConfig())
+                .schemaJson(hyper.getParameterSchema())
+                .build();
+    }
+
+    private DefenseResourceRef toModelRef(Model model) {
+        return DefenseResourceRef.builder()
+                .id(model.getModelId())
+                .name(model.getModelName())
+                .type(model.getModelType())
+                .category(model.getModelCategory())
+                .path(model.getModelFilePath())
+                .configJson(model.getModelConfig())
+                .build();
     }
 }

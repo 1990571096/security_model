@@ -17,6 +17,8 @@
 
 ## R1：菜单与初始化数据裁剪
 
+状态：部分完成。
+
 目标：
 
 - 保留论文系统主流程菜单。
@@ -30,9 +32,15 @@
 - 数据集样例全部为图像数据。
 - 算法样例的 `defense_stage` 与主流程一致。
 
+当前进展：
+
+- 新增 `sql/security_model_mvp_seed.sql`，用于在主初始化脚本后补充 MVP 基线算法和超参数。
+- 采用隐藏菜单方式收敛旧 ELADMIN 功能面，暂不物理删除历史菜单和角色关联。
+- 明显测试算法/模型行已在补丁脚本中置为不可用/废弃。
+
 ## R1.5：MVP 可演示任务闭环
 
-状态：进行中。
+状态：后端和前端基础闭环已完成，待数据库联调。
 
 目标：
 
@@ -48,6 +56,13 @@
 - `GET /api/pre-defense/cleaning-result/{taskId}` 可查看模拟清洗结果。
 - `POST /api/during-defense/start/{taskId}` 可触发模拟安全训练。
 - `GET /api/during-defense/training-log/{taskId}` 可查看模拟训练日志。
+
+当前进展：
+
+- 已新增 `DefenseTaskExecutor` 接口，训练任务服务依赖执行器接口而非具体 mock 类。
+- `MockDefenseTaskExecutor` 可推进训练前/训练中任务并写入前端兼容的结果 JSON。
+- 训练前/训练中任务启动前已校验数据集、算法、模型和超参数模板可用性。
+- 前端任务详情已支持展示后端训练曲线和结构化失败原因。
 
 ## R2：后端依赖裁剪
 
@@ -80,6 +95,8 @@
 
 ## R3：任务生命周期统一
 
+状态：部分完成。
+
 目标：
 
 - 新增统一任务生命周期服务。
@@ -93,7 +110,15 @@
 - 已运行任务不能重复启动。
 - 任务失败能记录失败原因。
 
+当前进展：
+
+- `PreDefenseServiceImpl` 和 `DuringDefenseServiceImpl` 已补齐启动前资源校验。
+- 任务失败原因已先通过现有 `cleaning_result` / `training_log` JSON 承载，暂不新增表字段。
+- 统一生命周期服务尚未抽取，后续可在接入真实算法时进一步收敛状态更新和失败记录。
+
 ## R4：算法执行器接口
+
+状态：部分完成。
 
 目标：
 
@@ -105,6 +130,13 @@
 
 - 可以注册一个 mock 算法并完成任务状态从 `pending` 到 `success`。
 - 执行日志、结果 JSON、输出 artifact 路径可查询。
+
+当前进展：
+
+- 已建立 `DefenseTaskExecutor` 作为当前 MVP 执行边界。
+- 已约定基础结果 JSON 字段：`executor`、`stage`、`status`、`message`、`started_at`、`finished_at`、`artifacts`。
+- 失败结果需额外包含 `error_code` 和 `failure_reason`。
+- 正式 Python 算法入口、artifact 路径协议、参数 schema 校验仍待后续算法项目到位后实现。
 
 ## R4.5：前端技术栈升级
 

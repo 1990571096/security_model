@@ -86,3 +86,38 @@
 
 - 当前任务结果中的指标为 mock 数据，只用于验证平台闭环。
 - 后续接入 LDD、MetaPurifier 和训练中防御算法时，需要替换 `MockDefenseTaskExecutor` 或抽象出正式 `AlgorithmExecutor`。
+
+## ADR-006：初始化数据采用补丁脚本收敛
+
+日期：2026-07-11
+
+决策：当前阶段不大规模重写 `sql/eladmin.sql`，新增 `sql/security_model_mvp_seed.sql` 作为 MVP 初始化补丁。
+
+原因：
+
+- 原始 SQL 同时包含菜单、角色、权限、演示数据和已有安全模块数据，直接删除容易破坏外键与角色菜单关系。
+- 补丁脚本可以在现有开发库和新库初始化后重复执行关键收敛动作，便于快速联调。
+- 后续完成菜单、角色、权限梳理后，再生成干净的正式初始化脚本，返工成本更低。
+
+影响：
+
+- 第一阶段通过隐藏菜单和禁用测试数据收敛功能面，不代表相关后端模块已经物理删除。
+- 部署新环境时需要先执行主 SQL，再执行 MVP seed patch。
+
+## ADR-007：任务执行结果先采用 JSON 协议承载
+
+日期：2026-07-11
+
+决策：训练前任务的 `cleaning_result` 和训练中任务的 `training_log` 先作为统一执行结果 JSON 承载字段，不在 MVP 阶段新增 `failure_reason`、`artifact_path` 等数据库列。
+
+原因：
+
+- 现有表已经有 JSON 字段，可立即支撑结果详情、失败原因、执行时间和 artifact 元信息。
+- 后续真实算法的输出指标和文件形态还不完全确定，过早固化列会增加迁移成本。
+- 前端详情页只需要依赖稳定 JSON key，不需要知道具体算法实现。
+
+影响：
+
+- 执行器实现需要至少写入 `executor`、`stage`、`status`、`message`、`started_at`、`finished_at`、`artifacts`。
+- 失败结果需要额外写入 `error_code` 和 `failure_reason`。
+- 后续当真实算法稳定后，可再评估是否把高频查询字段独立成数据库列。

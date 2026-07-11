@@ -3,7 +3,7 @@
     append-to-body
     :close-on-click-modal="false"
     :before-close="crud.cancelCU"
-    :visible="this.crud.status.cu > 0"
+    :visible="crud.status.cu > 0"
     :title="crud.status.title"
     width="700px"
   >
@@ -77,28 +77,28 @@
         <el-divider content-position="left">参数配置</el-divider>
 
         <!--"快速模板选择"部分-->
-        <el-form-item label="推荐配置" v-if="recommendedTemplate">
+        <el-form-item v-if="recommendedTemplate" label="推荐配置">
           <div class="recommended-config-display">
             <span class="config-name">{{ recommendedTemplate.templateName }}</span>
             <el-button
               type="primary"
               size="small"
-              @click="applyRecommendedConfig"
               style="margin-left: 10px;"
+              @click="applyRecommendedConfig"
             >
               应用推荐配置
             </el-button>
             <el-button
               type="text"
               size="small"
-              @click="showTemplateDetail = true"
               style="margin-left: 5px;"
+              @click="showTemplateDetail = true"
             >
               查看详情
             </el-button>
           </div>
-          <div class="config-description" v-if="recommendedTemplate.description">
-            <i class="el-icon-info"></i>
+          <div v-if="recommendedTemplate.description" class="config-description">
+            <i class="el-icon-info" />
             {{ recommendedTemplate.description }}
           </div>
         </el-form-item>
@@ -146,7 +146,7 @@
         取消
       </el-button>
       <el-button
-        :loading="this.crud.status.cu === 2"
+        :loading="crud.status.cu === 2"
         type="primary"
         @click="crud.submitCU"
       >
