@@ -1,0 +1,161 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd" >
+<mapper namespace="me.zhengjie.modules.system.mapper.HyperMapper">
+
+    <!-- 结果映射 -->
+    <resultMap id="BaseResultMap" type="me.zhengjie.modules.system.domain.Hyper">
+        <id column="template_id" property="templateId"/>
+        <result column="template_name" property="templateName"/>
+        <result column="description" property="description"/>
+        <result column="enabled" property="enabled"/>
+        <result column="algorithm_id" property="algorithmId"/>
+        <result column="parameter_config" property="parameterConfig"/>
+        <result column="parameter_schema" property="parameterSchema"/>
+        <result column="is_default" property="isDefault"/>
+        <result column="applicable_datasets" property="applicableDatasets"/>
+        <result column="create_by" property="createBy"/>
+        <result column="update_by" property="updateBy"/>
+        <result column="create_time" property="createTime"/>
+        <result column="update_time" property="updateTime"/>
+    </resultMap>
+
+    <!-- 基础字段列表 -->
+    <sql id="Base_Column_List">
+        template_id, template_name, description, enabled, algorithm_id, parameter_config,
+        parameter_schema, is_default, applicable_datasets, create_by, update_by, create_time, update_time
+    </sql>
+
+    <!-- 查询条件 -->
+    <sql id="Where_Sql">
+        <where>
+            <if test="criteria.templateId != null">
+                and template_id = #{criteria.templateId}
+            </if>
+            <if test="criteria.blurry != null and criteria.blurry != ''">
+                and (
+                template_name like concat('%', #{criteria.blurry}, '%')
+                or description like concat('%', #{criteria.blurry}, '%')
+                )
+            </if>
+            <if test="criteria.algorithmId != null">
+                and algorithm_id = #{criteria.algorithmId}
+            </if>
+            <if test="criteria.enabled != null">
+                and enabled = #{criteria.enabled}
+            </if>
+            <if test="criteria.isDefault != null">
+                and is_default = #{criteria.isDefault}
+            </if>
+            <if test="criteria.datasetType != null and criteria.datasetType != ''">
+                and (applicable_datasets like concat('%"', #{criteria.datasetType}, '"%') or applicable_datasets is null)
+            </if>
+            <if test="criteria.createTime != null and criteria.createTime.size() != 0">
+                and create_time between #{criteria.createTime[0]} and #{criteria.createTime[1]}
+            </if>
+        </where>
+    </sql>
+
+    <!-- 查询所有模板 -->
+    <select id="findAll" resultMap="BaseResultMap">
+        select
+        <include refid="Base_Column_List"/>
+        from sys_hyper
+        <include refid="Where_Sql"/>
+        order by template_id desc
+    </select>
+
+    <!-- 统计总数 -->
+    <select id="countAll" resultType="java.lang.Long">
+        select count(*)
+        from sys_hyper
+        <include refid="Where_Sql"/>
+    </select>
+
+    <!-- 根据算法ID查询 -->
+    <select id="findByAlgorithmId" resultMap="BaseResultMap">
+        select
+        <include refid="Base_Column_List"/>
+        from sys_hyper
+        where algorithm_id = #{algorithmId}
+        order by is_default desc, template_id desc
+    </select>
+
+    <!-- 根据算法ID查询启用的模板 -->
+    <select id="findEnabledByAlgorithmId" resultMap="BaseResultMap">
+        select
+        <include refid="Base_Column_List"/>
+        from sys_hyper
+        where algorithm_id = #{algorithmId}
+        and enabled = 1
+        order by is_default desc, template_id desc
+    </select>
+
+    <!-- 根据算法ID获取默认模板 -->
+    <select id="findDefaultByAlgorithmId" resultMap="BaseResultMap">
+        select
+        <include refid="Base_Column_List"/>
+        from sys_hyper
+        where algorithm_id = #{algorithmId}
+        and is_default = 1
+        and enabled = 1
+        limit 1
+    </select>
+
+    <!-- 根据启用状态查询 -->
+    <select id="findByEnabled" resultMap="BaseResultMap">
+        select
+        <include refid="Base_Column_List"/>
+        from sys_hyper
+        where enabled = #{enabled}
+        order by template_id desc
+    </select>
+
+    <!-- 根据创建人查询 -->
+    <select id="findByCreateBy" resultMap="BaseResultMap">
+        select
+        <include refid="Base_Column_List"/>
+        from sys_hyper
+        where create_by = #{createBy}
+        order by template_id desc
+    </select>
+
+    <!-- 根据适用数据集类型查询可用模板 -->
+    <select id="findApplicableTemplates" resultMap="BaseResultMap">
+        select
+        <include refid="Base_Column_List"/>
+        from sys_hyper
+        where algorithm_id = #{algorithmId}
+        and enabled = 1
+        and (applicable_datasets like concat('%"', #{datasetType}, '"%') or applicable_datasets is null)
+        order by is_default desc, template_id desc
+    </select>
+
+    <!-- 更新默认状态 -->
+    <update id="updateDefaultStatus">
+        update sys_hyper
+        set is_default = 0,
+            update_time = now()
+        where algorithm_id = #{algorithmId}
+          and template_id != #{excludeTemplateId}
+    </update>
+
+    <!-- 获取模板统计 -->
+    <select id="getTemplateStatistics" resultType="java.util.Map">
+        select
+            algorithm_id as algorithmId,
+            count(*) as templateCount,
+            sum(case when enabled = 1 then 1 else 0 end) as enabledCount,
+            sum(case when is_default = 1 then 1 else 0 end) as defaultCount
+        from sys_hyper
+        group by algorithm_id
+        order by algorithm_id
+    </select>
+
+    <!-- 根据算法ID统计模板数量 -->
+    <select id="countByAlgorithmId" resultType="java.lang.Integer">
+        select count(*)
+        from sys_hyper
+        where algorithm_id = #{algorithmId}
+    </select>
+
+</mapper>

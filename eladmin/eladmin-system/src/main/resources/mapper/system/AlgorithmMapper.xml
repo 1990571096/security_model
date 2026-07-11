@@ -1,0 +1,171 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd" >
+<mapper namespace="me.zhengjie.modules.system.mapper.AlgorithmMapper">
+
+    <!-- 结果映射 -->
+    <resultMap id="BaseResultMap" type="me.zhengjie.modules.system.domain.Algorithm">
+        <id column="algorithm_id" property="algorithmId"/>
+        <result column="algorithm_name" property="algorithmName"/>
+        <result column="description" property="description"/>
+        <result column="enabled" property="enabled"/>
+        <result column="algorithm_type" property="algorithmType"/>
+        <result column="defense_stage" property="defenseStage"/>
+        <result column="algorithm_category" property="algorithmCategory"/>
+        <result column="implementation_path" property="implementationPath"/>
+        <result column="default_config" property="defaultConfig"/>
+        <result column="config_schema" property="configSchema"/>
+        <result column="create_by" property="createBy"/>
+        <result column="update_by" property="updateBy"/>
+        <result column="create_time" property="createTime"/>
+        <result column="update_time" property="updateTime"/>
+    </resultMap>
+
+    <!-- 基础字段列表 -->
+    <sql id="Base_Column_List">
+        algorithm_id, algorithm_name, description, enabled, algorithm_type, defense_stage,
+        algorithm_category, implementation_path, default_config, config_schema,
+        create_by, update_by, create_time, update_time
+    </sql>
+
+    <!-- 查询条件 -->
+    <sql id="Where_Sql">
+        <where>
+            <if test="criteria.algorithmId != null">
+                and algorithm_id = #{criteria.algorithmId}
+            </if>
+            <if test="criteria.blurry != null and criteria.blurry != ''">
+                and (
+                algorithm_name like concat('%', #{criteria.blurry}, '%')
+                or description like concat('%', #{criteria.blurry}, '%')
+                )
+            </if>
+            <if test="criteria.algorithmType != null and criteria.algorithmType != ''">
+                and algorithm_type = #{criteria.algorithmType}
+            </if>
+            <if test="criteria.defenseStage != null and criteria.defenseStage != ''">
+                and defense_stage = #{criteria.defenseStage}
+            </if>
+            <if test="criteria.algorithmCategory != null and criteria.algorithmCategory != ''">
+                and algorithm_category = #{criteria.algorithmCategory}
+            </if>
+            <if test="criteria.enabled != null">
+                and enabled = #{criteria.enabled}
+            </if>
+            <if test="criteria.createTime != null and criteria.createTime.size() != 0">
+                and create_time between #{criteria.createTime[0]} and #{criteria.createTime[1]}
+            </if>
+        </where>
+    </sql>
+
+    <!-- 查询所有算法 -->
+    <select id="findAll" resultMap="BaseResultMap">
+        select
+        <include refid="Base_Column_List"/>
+        from sys_algorithm
+        <include refid="Where_Sql"/>
+        order by algorithm_id desc
+    </select>
+
+    <!-- 统计总数 -->
+    <select id="countAll" resultType="java.lang.Long">
+        select count(*)
+        from sys_algorithm
+        <include refid="Where_Sql"/>
+    </select>
+
+    <!-- 根据算法类型查询 -->
+    <select id="findByAlgorithmType" resultMap="BaseResultMap">
+        select
+        <include refid="Base_Column_List"/>
+        from sys_algorithm
+        where algorithm_type = #{algorithmType}
+        order by algorithm_id desc
+    </select>
+
+    <!-- 根据防御阶段查询 -->
+    <select id="findByDefenseStage" resultMap="BaseResultMap">
+        select
+        <include refid="Base_Column_List"/>
+        from sys_algorithm
+        where defense_stage = #{defenseStage}
+        and enabled = 1
+        order by algorithm_id desc
+    </select>
+
+    <!-- 根据算法分类查询 -->
+    <select id="findByAlgorithmCategory" resultMap="BaseResultMap">
+        select
+        <include refid="Base_Column_List"/>
+        from sys_algorithm
+        where algorithm_category = #{algorithmCategory}
+        order by algorithm_id desc
+    </select>
+
+    <!-- 根据启用状态查询 -->
+    <select id="findByEnabled" resultMap="BaseResultMap">
+        select
+        <include refid="Base_Column_List"/>
+        from sys_algorithm
+        where enabled = #{enabled}
+        order by algorithm_id desc
+    </select>
+
+    <!-- 根据创建人查询 -->
+    <select id="findByCreateBy" resultMap="BaseResultMap">
+        select
+        <include refid="Base_Column_List"/>
+        from sys_algorithm
+        where create_by = #{createBy}
+        order by algorithm_id desc
+    </select>
+
+    <!-- 获取可用算法 -->
+    <select id="findAvailableAlgorithms" resultMap="BaseResultMap">
+        select
+        <include refid="Base_Column_List"/>
+        from sys_algorithm
+        where enabled = 1
+        <if test="defenseStage != null and defenseStage != ''">
+            and defense_stage = #{defenseStage}
+        </if>
+        <if test="algorithmType != null and algorithmType != ''">
+            and algorithm_type = #{algorithmType}
+        </if>
+        order by algorithm_id desc
+    </select>
+
+    <!-- 更新默认配置 -->
+    <update id="updateDefaultConfig">
+        update sys_algorithm
+        set default_config = #{defaultConfig},
+            update_time = now()
+        where algorithm_id = #{algorithmId}
+    </update>
+
+    <!-- 更新配置模式 -->
+    <update id="updateConfigSchema">
+        update sys_algorithm
+        set config_schema = #{configSchema},
+            update_time = now()
+        where algorithm_id = #{algorithmId}
+    </update>
+
+    <!-- 获取防御阶段统计 -->
+    <select id="getDefenseStageStatistics" resultType="java.util.Map">
+        select defense_stage as stage, count(*) as count
+        from sys_algorithm
+        where enabled = 1
+        group by defense_stage
+        order by defense_stage
+    </select>
+
+    <!-- 获取算法类型统计 -->
+    <select id="getAlgorithmTypeStatistics" resultType="java.util.Map">
+        select algorithm_type as type, count(*) as count
+        from sys_algorithm
+        where enabled = 1
+        group by algorithm_type
+        order by algorithm_type
+    </select>
+
+</mapper>

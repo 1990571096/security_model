@@ -1,0 +1,229 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd" >
+<mapper namespace="me.zhengjie.modules.system.mapper.DatasetMapper">
+
+    <!-- 结果映射 -->
+    <resultMap id="BaseResultMap" type="me.zhengjie.modules.system.domain.Dataset">
+        <id column="dataset_id" property="datasetId"/>
+        <result column="dataset_name" property="datasetName"/>
+        <result column="description" property="description"/>
+        <result column="enabled" property="enabled"/>
+        <result column="dataset_type" property="datasetType"/>
+        <result column="file_path" property="filePath"/>
+        <result column="file_name" property="fileName"/>
+        <result column="file_size" property="fileSize"/>
+        <result column="sample_count" property="sampleCount"/>
+        <result column="feature_count" property="featureCount"/>
+        <result column="class_count" property="classCount"/>
+        <result column="parse_status" property="parseStatus"/>
+        <result column="parse_message" property="parseMessage"/>
+        <result column="parse_time" property="parseTime"/>
+        <result column="create_by" property="createBy"/>
+        <result column="update_by" property="updateBy"/>
+        <result column="create_time" property="createTime"/>
+        <result column="update_time" property="updateTime"/>
+    </resultMap>
+
+    <!-- 基础字段列表 -->
+    <sql id="Base_Column_List">
+        dataset_id, dataset_name, description, enabled, dataset_type, file_path,
+        file_name, file_size, sample_count, feature_count, class_count,
+        parse_status, parse_message, parse_time, create_by, update_by, create_time, update_time
+    </sql>
+
+    <!-- 查询条件 -->
+    <sql id="Where_Sql">
+        <where>
+            <if test="criteria.datasetId != null">
+                and dataset_id = #{criteria.datasetId}
+            </if>
+            <if test="criteria.blurry != null and criteria.blurry != ''">
+                and (
+                dataset_name like concat('%', #{criteria.blurry}, '%')
+                or description like concat('%', #{criteria.blurry}, '%')
+                )
+            </if>
+            <if test="criteria.datasetType != null and criteria.datasetType != ''">
+                and dataset_type = #{criteria.datasetType}
+            </if>
+            <if test="criteria.enabled != null">
+                and enabled = #{criteria.enabled}
+            </if>
+            <if test="criteria.parseStatus != null and criteria.parseStatus != ''">
+                and parse_status = #{criteria.parseStatus}
+            </if>
+            <if test="criteria.minFileSize != null">
+                and file_size >= #{criteria.minFileSize}
+            </if>
+            <if test="criteria.maxFileSize != null">
+                and file_size &lt;= #{criteria.maxFileSize}
+            </if>
+            <if test="criteria.minSampleCount != null">
+                and sample_count >= #{criteria.minSampleCount}
+            </if>
+            <if test="criteria.maxSampleCount != null">
+                and sample_count &lt;= #{criteria.maxSampleCount}
+            </if>
+            <if test="criteria.createTime != null and criteria.createTime.size() != 0">
+                and create_time between #{criteria.createTime[0]} and #{criteria.createTime[1]}
+            </if>
+            <if test="criteria.parseTime != null and criteria.parseTime.size() != 0">
+                and parse_time between #{criteria.parseTime[0]} and #{criteria.parseTime[1]}
+            </if>
+        </where>
+    </sql>
+
+    <!-- 根据文件路径查询 -->
+    <select id="findByFilePath" resultMap="BaseResultMap">
+        select
+        <include refid="Base_Column_List"/>
+        from sys_dataset
+        where file_path = #{filePath}
+    </select>
+
+    <!-- 批量更新解析状态 -->
+    <update id="batchUpdateParseStatus">
+        update sys_dataset
+        set parse_status = #{parseStatus},
+        update_time = now()
+        where dataset_id in
+        <foreach collection="datasetIds" item="id" open="(" separator="," close=")">
+            #{id}
+        </foreach>
+    </update>
+
+    <!-- 修改updateParseStatus方法，添加解析时间更新 -->
+    <update id="updateParseStatus">
+        update sys_dataset
+        set parse_status = #{parseStatus},
+        parse_message = #{parseMessage},
+        parse_time =
+        <choose>
+            <when test="parseStatus == 'success' or parseStatus == 'failed'">
+                now()
+            </when>
+            <otherwise>
+                parse_time
+            </otherwise>
+        </choose>,
+        update_time = now()
+        where dataset_id = #{datasetId}
+    </update>
+
+    <!-- 查询所有数据集 -->
+    <select id="findAll" resultMap="BaseResultMap">
+        select
+        <include refid="Base_Column_List"/>
+        from sys_dataset
+        <include refid="Where_Sql"/>
+        order by dataset_id desc
+    </select>
+
+    <!-- 统计总数 -->
+    <select id="countAll" resultType="java.lang.Long">
+        select count(*)
+        from sys_dataset
+        <include refid="Where_Sql"/>
+    </select>
+
+    <!-- 根据数据集类型查询 -->
+    <select id="findByDatasetType" resultMap="BaseResultMap">
+        select
+        <include refid="Base_Column_List"/>
+        from sys_dataset
+        where dataset_type = #{datasetType}
+        and enabled = 1
+        order by dataset_id desc
+    </select>
+
+    <!-- 根据启用状态查询 -->
+    <select id="findByEnabled" resultMap="BaseResultMap">
+        select
+        <include refid="Base_Column_List"/>
+        from sys_dataset
+        where enabled = #{enabled}
+        order by dataset_id desc
+    </select>
+
+    <!-- 根据解析状态查询 -->
+    <select id="findByParseStatus" resultMap="BaseResultMap">
+        select
+        <include refid="Base_Column_List"/>
+        from sys_dataset
+        where parse_status = #{parseStatus}
+        order by dataset_id desc
+    </select>
+
+    <!-- 根据创建人查询 -->
+    <select id="findByCreateBy" resultMap="BaseResultMap">
+        select
+        <include refid="Base_Column_List"/>
+        from sys_dataset
+        where create_by = #{createBy}
+        order by dataset_id desc
+    </select>
+
+    <!-- 获取可用数据集 -->
+    <select id="findAvailableDatasets" resultMap="BaseResultMap">
+        select
+        <include refid="Base_Column_List"/>
+        from sys_dataset
+        where enabled = 1
+        and parse_status = 'success'
+        <if test="datasetType != null and datasetType != ''">
+            and dataset_type = #{datasetType}
+        </if>
+        order by dataset_id desc
+    </select>
+
+    <!-- 根据文件大小范围查询 -->
+    <select id="findByFileSizeRange" resultMap="BaseResultMap">
+        select
+        <include refid="Base_Column_List"/>
+        from sys_dataset
+        where 1=1
+        <if test="minSize != null">
+            and file_size >= #{minSize}
+        </if>
+        <if test="maxSize != null">
+            and file_size &lt;= #{maxSize}
+        </if>
+        order by file_size asc
+    </select>
+
+    <!-- 根据样本数量范围查询 -->
+    <select id="findBySampleCountRange" resultMap="BaseResultMap">
+        select
+        <include refid="Base_Column_List"/>
+        from sys_dataset
+        where 1=1
+        <if test="minCount != null">
+            and sample_count >= #{minCount}
+        </if>
+        <if test="maxCount != null">
+            and sample_count &lt;= #{maxCount}
+        </if>
+        order by sample_count asc
+    </select>
+
+    <!-- 更新解析状态 -->
+    <update id="updateParseStatus">
+        update sys_dataset
+        set parse_status = #{parseStatus},
+            parse_message = #{parseMessage},
+            parse_time = now(),
+            update_time = now()
+        where dataset_id = #{datasetId}
+    </update>
+
+    <!-- 更新解析结果 -->
+    <update id="updateParseResult">
+        update sys_dataset
+        set sample_count = #{sampleCount},
+            feature_count = #{featureCount},
+            class_count = #{classCount},
+            update_time = now()
+        where dataset_id = #{datasetId}
+    </update>
+
+</mapper>

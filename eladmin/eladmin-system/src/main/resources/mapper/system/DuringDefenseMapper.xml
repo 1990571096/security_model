@@ -1,0 +1,188 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd" >
+<mapper namespace="me.zhengjie.modules.system.mapper.DuringDefenseMapper">
+
+    <!-- 结果映射 -->
+    <resultMap id="BaseResultMap" type="me.zhengjie.modules.system.domain.DuringDefense">
+        <id column="task_id" property="taskId"/>
+        <result column="task_name" property="taskName"/>
+        <result column="description" property="description"/>
+        <result column="status" property="status"/>
+        <result column="dataset_id" property="datasetId"/>
+        <result column="input_model_id" property="inputModelId"/>
+        <result column="algorithm_id" property="algorithmId"/>
+        <result column="hyper_id" property="hyperId"/>
+        <result column="custom_params" property="customParams"/>
+        <result column="start_time" property="startTime"/>
+        <result column="end_time" property="endTime"/>
+        <result column="progress" property="progress"/>
+        <result column="output_model_id" property="outputModelId"/>
+        <result column="training_log" property="trainingLog"/>
+        <result column="create_by" property="createBy"/>
+        <result column="update_by" property="updateBy"/>
+        <result column="create_time" property="createTime"/>
+        <result column="update_time" property="updateTime"/>
+    </resultMap>
+
+    <!-- 基础字段列表 -->
+    <sql id="Base_Column_List">
+        task_id, task_name, description, status, dataset_id, input_model_id, algorithm_id, hyper_id,
+        custom_params, start_time, end_time, progress, output_model_id,
+        training_log, create_by, update_by, create_time, update_time
+    </sql>
+
+    <!-- 查询条件 -->
+    <sql id="Where_Sql">
+        <where>
+            <if test="criteria.taskId != null">
+                and task_id = #{criteria.taskId}
+            </if>
+            <if test="criteria.blurry != null and criteria.blurry != ''">
+                and (
+                task_name like concat('%', #{criteria.blurry}, '%')
+                or description like concat('%', #{criteria.blurry}, '%')
+                )
+            </if>
+            <if test="criteria.status != null and criteria.status != ''">
+                and status = #{criteria.status}
+            </if>
+            <if test="criteria.datasetId != null">
+                and dataset_id = #{criteria.datasetId}
+            </if>
+            <if test="criteria.inputModelId != null">
+                and input_model_id = #{criteria.inputModelId}
+            </if>
+            <if test="criteria.algorithmId != null">
+                and algorithm_id = #{criteria.algorithmId}
+            </if>
+            <if test="criteria.createTime != null and criteria.createTime.size() != 0">
+                and create_time between #{criteria.createTime[0]} and #{criteria.createTime[1]}
+            </if>
+        </where>
+    </sql>
+
+    <!-- 查询所有任务 -->
+    <select id="findAll" resultMap="BaseResultMap">
+        select
+        <include refid="Base_Column_List"/>
+        from sys_during_defense
+        <include refid="Where_Sql"/>
+        order by task_id desc
+    </select>
+
+    <!-- 统计总数 -->
+    <select id="countAll" resultType="java.lang.Long">
+        select count(*)
+        from sys_during_defense
+        <include refid="Where_Sql"/>
+    </select>
+
+    <!-- 根据任务名称查询 -->
+    <select id="findByTaskName" resultMap="BaseResultMap">
+        select
+        <include refid="Base_Column_List"/>
+        from sys_during_defense
+        where task_name = #{taskName}
+    </select>
+
+    <!-- 根据状态查询 -->
+    <select id="findByStatus" resultMap="BaseResultMap">
+        select
+        <include refid="Base_Column_List"/>
+        from sys_during_defense
+        where status = #{status}
+        order by task_id desc
+    </select>
+
+    <!-- 根据数据集ID查询 -->
+    <select id="findByDatasetId" resultMap="BaseResultMap">
+        select
+        <include refid="Base_Column_List"/>
+        from sys_during_defense
+        where dataset_id = #{datasetId}
+        order by task_id desc
+    </select>
+
+    <!-- 根据输入模型ID查询 -->
+    <select id="findByInputModelId" resultMap="BaseResultMap">
+        select
+        <include refid="Base_Column_List"/>
+        from sys_during_defense
+        where input_model_id = #{inputModelId}
+        order by task_id desc
+    </select>
+
+    <!-- 根据算法ID查询 -->
+    <select id="findByAlgorithmId" resultMap="BaseResultMap">
+        select
+        <include refid="Base_Column_List"/>
+        from sys_during_defense
+        where algorithm_id = #{algorithmId}
+        order by task_id desc
+    </select>
+
+    <!-- 根据创建人查询 -->
+    <select id="findByCreateBy" resultMap="BaseResultMap">
+        select
+        <include refid="Base_Column_List"/>
+        from sys_during_defense
+        where create_by = #{createBy}
+        order by task_id desc
+    </select>
+
+    <!-- 根据输出模型ID查询 -->
+    <select id="findByOutputModelId" resultMap="BaseResultMap">
+        select
+        <include refid="Base_Column_List"/>
+        from sys_during_defense
+        where output_model_id = #{outputModelId}
+    </select>
+
+    <!-- 更新任务状态 -->
+    <update id="updateStatus">
+        update sys_during_defense
+        set status = #{status},
+            progress = #{progress},
+            update_time = now()
+        where task_id = #{taskId}
+    </update>
+
+    <!-- 更新训练结果 -->
+    <update id="updateTrainingResult">
+        update sys_during_defense
+        set output_model_id = #{outputModelId},
+            training_log = #{trainingLog},
+            update_time = now()
+        where task_id = #{taskId}
+    </update>
+
+    <!-- 更新训练日志 -->
+    <update id="updateTrainingLog">
+        update sys_during_defense
+        set training_log = #{trainingLog},
+            update_time = now()
+        where task_id = #{taskId}
+    </update>
+
+    <!-- 获取任务统计信息 -->
+    <select id="getTaskStatistics" resultType="java.util.Map">
+        select
+            status as taskStatus,
+            count(*) as count
+        from sys_during_defense
+        group by status
+        order by status
+    </select>
+
+    <!-- 根据算法类型统计任务数量 -->
+    <select id="getAlgorithmTypeStatistics" resultType="java.util.Map">
+        select
+            a.algorithm_type as algorithmType,
+            count(d.task_id) as count
+        from sys_during_defense d
+            left join sys_algorithm a on d.algorithm_id = a.algorithm_id
+        group by a.algorithm_type
+        order by count desc
+    </select>
+
+</mapper>

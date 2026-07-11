@@ -1,0 +1,200 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd" >
+<mapper namespace="me.zhengjie.modules.system.mapper.PreDefenseMapper">
+
+    <!-- 结果映射 -->
+    <resultMap id="BaseResultMap" type="me.zhengjie.modules.system.domain.PreDefense">
+        <id column="task_id" property="taskId"/>
+        <result column="task_name" property="taskName"/>
+        <result column="description" property="description"/>
+        <result column="status" property="status"/>
+        <result column="dataset_id" property="datasetId"/>
+        <result column="algorithm_id" property="algorithmId"/>
+        <result column="hyper_id" property="hyperId"/>
+        <result column="custom_params" property="customParams"/>
+        <result column="start_time" property="startTime"/>
+        <result column="end_time" property="endTime"/>
+        <result column="progress" property="progress"/>
+        <result column="output_dataset_id" property="outputDatasetId"/>
+        <result column="cleaning_result" property="cleaningResult"/>
+        <result column="create_by" property="createBy"/>
+        <result column="update_by" property="updateBy"/>
+        <result column="create_time" property="createTime"/>
+        <result column="update_time" property="updateTime"/>
+    </resultMap>
+
+    <!-- 基础字段列表 -->
+    <sql id="Base_Column_List">
+        task_id, task_name, description, status, dataset_id, algorithm_id, hyper_id,
+    custom_params, start_time, end_time, progress, output_dataset_id,
+    cleaning_result, create_by, update_by, create_time, update_time
+    </sql>
+
+    <!-- 查询条件 -->
+    <sql id="Where_Sql">
+        <where>
+            <if test="criteria.taskId != null">
+                and task_id = #{criteria.taskId}
+            </if>
+            <if test="criteria.blurry != null and criteria.blurry != ''">
+                and (
+                task_name like concat('%', #{criteria.blurry}, '%')
+                or description like concat('%', #{criteria.blurry}, '%')
+                )
+            </if>
+            <if test="criteria.status != null and criteria.status != ''">
+                and status = #{criteria.status}
+            </if>
+            <if test="criteria.datasetId != null">
+                and dataset_id = #{criteria.datasetId}
+            </if>
+            <if test="criteria.algorithmId != null">
+                and algorithm_id = #{criteria.algorithmId}
+            </if>
+            <if test="criteria.createTime != null and criteria.createTime.size() != 0">
+                and create_time between #{criteria.createTime[0]} and #{criteria.createTime[1]}
+            </if>
+        </where>
+    </sql>
+
+    <!-- 查询所有任务 -->
+    <select id="findAll" resultMap="BaseResultMap">
+        select
+        <include refid="Base_Column_List"/>
+        from sys_pre_defense
+        <include refid="Where_Sql"/>
+        order by task_id desc
+    </select>
+
+    <!-- 统计总数 -->
+    <select id="countAll" resultType="java.lang.Long">
+        select count(*)
+        from sys_pre_defense
+        <include refid="Where_Sql"/>
+    </select>
+
+    <!-- 根据任务名称查询 -->
+    <select id="findByTaskName" resultMap="BaseResultMap">
+        select
+        <include refid="Base_Column_List"/>
+        from sys_pre_defense
+        where task_name = #{taskName}
+    </select>
+
+    <!-- 根据状态查询 -->
+    <select id="findByStatus" resultMap="BaseResultMap">
+        select
+        <include refid="Base_Column_List"/>
+        from sys_pre_defense
+        where status = #{status}
+        order by task_id desc
+    </select>
+
+    <!-- 根据数据集ID查询 -->
+    <select id="findByDatasetId" resultMap="BaseResultMap">
+        select
+        <include refid="Base_Column_List"/>
+        from sys_pre_defense
+        where dataset_id = #{datasetId}
+        order by task_id desc
+    </select>
+
+    <!-- 根据算法ID查询 -->
+    <select id="findByAlgorithmId" resultMap="BaseResultMap">
+        select
+        <include refid="Base_Column_List"/>
+        from sys_pre_defense
+        where algorithm_id = #{algorithmId}
+        order by task_id desc
+    </select>
+
+    <!-- 根据创建人查询 -->
+    <select id="findByCreateBy" resultMap="BaseResultMap">
+        select
+        <include refid="Base_Column_List"/>
+        from sys_pre_defense
+        where create_by = #{createBy}
+        order by task_id desc
+    </select>
+
+    <!-- 更新任务状态 -->
+    <update id="updateStatus">
+        update sys_pre_defense
+        set status = #{status},
+            progress = #{progress},
+            update_time = now()
+        where task_id = #{taskId}
+    </update>
+
+    <!-- 更新任务结果 - 修改为与Controller接口保持一致 -->
+    <update id="updateResult">
+        update sys_pre_defense
+        set output_dataset_id = #{outputDatasetId},
+            cleaning_result = #{cleaningResult},
+            update_time = now()
+        where task_id = #{taskId}
+    </update>
+
+    <!-- 新增：根据数据集ID和算法ID查询（用于统计） -->
+    <select id="findByDatasetId" resultMap="BaseResultMap">
+        select
+        <include refid="Base_Column_List"/>
+        from sys_pre_defense
+        where dataset_id = #{datasetId}
+        order by task_id desc
+    </select>
+
+    <!-- 新增：获取清洗效果统计 -->
+    <select id="getCleaningEffectStatistics" resultType="java.util.HashMap">
+        SELECT
+            COUNT(*) as total_tasks,
+            COUNT(CASE WHEN status = 'success' THEN 1 END) as success_tasks,
+            COUNT(CASE WHEN status = 'failed' THEN 1 END) as failed_tasks,
+            COUNT(CASE WHEN status = 'running' THEN 1 END) as running_tasks,
+            COUNT(CASE WHEN status = 'pending' THEN 1 END) as pending_tasks,
+            AVG(CASE WHEN status = 'success' THEN progress END) as avg_progress,
+            AVG(CASE WHEN status = 'success' AND start_time IS NOT NULL AND end_time IS NOT NULL
+                         THEN TIMESTAMPDIFF(MINUTE, start_time, end_time) END) as avg_duration_minutes
+        FROM sys_pre_defense
+    </select>
+
+    <!-- 新增：获取算法使用统计 -->
+    <select id="getAlgorithmUsageStatistics" resultType="java.util.HashMap">
+        SELECT
+            algorithm_id,
+            COUNT(*) as usage_count,
+            COUNT(CASE WHEN status = 'success' THEN 1 END) as success_count,
+            COUNT(CASE WHEN status = 'failed' THEN 1 END) as failed_count,
+            ROUND(COUNT(CASE WHEN status = 'success' THEN 1 END) * 100.0 / COUNT(*), 2) as success_rate
+        FROM sys_pre_defense
+        WHERE algorithm_id IS NOT NULL
+        GROUP BY algorithm_id
+        ORDER BY usage_count DESC
+    </select>
+
+    <!-- 新增：获取数据集使用统计 -->
+    <select id="getDatasetUsageStatistics" resultType="java.util.HashMap">
+        SELECT
+            dataset_id,
+            COUNT(*) as usage_count,
+            COUNT(CASE WHEN status = 'success' THEN 1 END) as success_count,
+            ROUND(COUNT(CASE WHEN status = 'success' THEN 1 END) * 100.0 / COUNT(*), 2) as success_rate
+        FROM sys_pre_defense
+        WHERE dataset_id IS NOT NULL
+        GROUP BY dataset_id
+        ORDER BY usage_count DESC
+    </select>
+
+    <!-- 新增：获取时间趋势统计 -->
+    <select id="getTimeTrendStatistics" resultType="java.util.HashMap">
+        SELECT
+            DATE(create_time) as date,
+            COUNT(*) as task_count,
+            COUNT(CASE WHEN status = 'success' THEN 1 END) as success_count
+        FROM sys_pre_defense
+        WHERE create_time >= DATE_SUB(NOW(), INTERVAL 30 DAY)
+        GROUP BY DATE(create_time)
+        ORDER BY date DESC
+    </select>
+
+</mapper>

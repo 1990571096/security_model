@@ -1,0 +1,151 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd" >
+<mapper namespace="me.zhengjie.modules.system.mapper.ModelMapper">
+
+    <!-- 结果映射 -->
+    <resultMap id="BaseResultMap" type="me.zhengjie.modules.system.domain.Model">
+        <id column="model_id" property="modelId"/>
+        <result column="model_name" property="modelName"/>
+        <result column="description" property="description"/>
+        <result column="model_source" property="modelSource"/>
+        <result column="model_type" property="modelType"/>
+        <result column="model_category" property="modelCategory"/>
+        <result column="architecture" property="architecture"/>
+        <result column="input_shape" property="inputShape"/>
+        <result column="output_shape" property="outputShape"/>
+        <result column="parameters_count" property="parametersCount"/>
+        <result column="python_file_path" property="pythonFilePath"/>
+        <result column="python_file_name" property="pythonFileName"/>
+        <result column="python_file_size" property="pythonFileSize"/>
+        <result column="model_file_path" property="modelFilePath"/>
+        <result column="model_config" property="modelConfig"/>
+        <result column="parse_status" property="parseStatus"/>
+        <result column="parse_message" property="parseMessage"/>
+        <result column="parse_time" property="parseTime"/>
+        <result column="status" property="status"/>
+        <result column="create_by" property="createBy"/>
+        <result column="create_time" property="createTime"/>
+        <result column="update_time" property="updateTime"/>
+        <result column="is_deleted" property="isDeleted"/>
+    </resultMap>
+
+    <!-- 基础字段列表 -->
+    <sql id="Base_Column_List">
+        model_id, model_name, description, model_source, model_type, model_category,
+        architecture, input_shape, output_shape, parameters_count, python_file_path,
+        python_file_name, python_file_size, model_file_path, model_config,
+        parse_status, parse_message, parse_time, status, create_by,
+        create_time, update_time, is_deleted
+    </sql>
+
+    <!-- 查询条件 -->
+    <sql id="Where_Sql">
+        <where>
+            <if test="criteria.modelId != null">
+                and model_id = #{criteria.modelId}
+            </if>
+            <if test="criteria.blurry != null and criteria.blurry != ''">
+                and (
+                model_name like concat('%', #{criteria.blurry}, '%')
+                or description like concat('%', #{criteria.blurry}, '%')
+                )
+            </if>
+            <if test="criteria.modelSource != null and criteria.modelSource != ''">
+                and model_source = #{criteria.modelSource}
+            </if>
+            <if test="criteria.modelType != null and criteria.modelType != ''">
+                and model_type = #{criteria.modelType}
+            </if>
+            <if test="criteria.modelCategory != null and criteria.modelCategory != ''">
+                and model_category = #{criteria.modelCategory}
+            </if>
+            <if test="criteria.parseStatus != null and criteria.parseStatus != ''">
+                and parse_status = #{criteria.parseStatus}
+            </if>
+            <if test="criteria.status != null and criteria.status != ''">
+                and status = #{criteria.status}
+            </if>
+
+            <if test="criteria.createTime != null and criteria.createTime.size() != 0">
+                and create_time between #{criteria.createTime[0]} and #{criteria.createTime[1]}
+            </if>
+            and is_deleted = 0
+        </where>
+    </sql>
+
+    <!-- 查询所有模型（支持分页） -->
+    <select id="findAll" resultMap="BaseResultMap">
+        select
+        <include refid="Base_Column_List"/>
+        from sys_model
+        <include refid="Where_Sql"/>
+        order by model_id desc
+    </select>
+
+    <!-- 统计总数 -->
+    <select id="countAll" resultType="java.lang.Long">
+        select count(*)
+        from sys_model
+        <include refid="Where_Sql"/>
+    </select>
+
+    <!-- 根据模型名称查询 -->
+    <select id="findByModelName" resultMap="BaseResultMap">
+        select
+        <include refid="Base_Column_List"/>
+        from sys_model
+        where model_name = #{modelName}
+        and is_deleted = 0
+    </select>
+
+    <!-- 根据模型来源查询 -->
+    <select id="findByModelSource" resultMap="BaseResultMap">
+        select
+        <include refid="Base_Column_List"/>
+        from sys_model
+        where model_source = #{modelSource}
+        and is_deleted = 0
+        order by model_id desc
+    </select>
+
+    <!-- 根据模型类型查询 -->
+    <select id="findByModelType" resultMap="BaseResultMap">
+        select
+        <include refid="Base_Column_List"/>
+        from sys_model
+        where model_type = #{modelType}
+        and is_deleted = 0
+        order by model_id desc
+    </select>
+
+    <!-- 根据解析状态查询 -->
+    <select id="findByParseStatus" resultMap="BaseResultMap">
+        select
+        <include refid="Base_Column_List"/>
+        from sys_model
+        where parse_status = #{parseStatus}
+        and is_deleted = 0
+        order by model_id desc
+    </select>
+
+    <!-- 根据模型状态查询 -->
+    <select id="findByStatus" resultMap="BaseResultMap">
+        select
+        <include refid="Base_Column_List"/>
+        from sys_model
+        where status = #{status}
+        and is_deleted = 0
+        order by model_id desc
+    </select>
+
+    <!-- 根据创建人查询 -->
+    <select id="findByCreateBy" resultMap="BaseResultMap">
+        select
+        <include refid="Base_Column_List"/>
+        from sys_model
+        where create_by = #{createBy}
+        and is_deleted = 0
+        order by model_id desc
+    </select>
+
+</mapper>

@@ -1,0 +1,215 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd" >
+<mapper namespace="me.zhengjie.modules.system.mapper.PostDefenseMapper">
+
+    <!-- 结果映射 -->
+    <resultMap id="BaseResultMap" type="me.zhengjie.modules.system.domain.PostDefense">
+        <id column="task_id" property="taskId"/>
+        <result column="task_name" property="taskName"/>
+        <result column="description" property="description"/>
+        <result column="status" property="status"/>
+        <result column="input_model_id" property="inputModelId"/>
+        <result column="test_dataset_id" property="testDatasetId"/>
+        <result column="algorithm_id" property="algorithmId"/>
+        <result column="hyper_id" property="hyperId"/>
+        <result column="custom_params" property="customParams"/>
+        <result column="start_time" property="startTime"/>
+        <result column="end_time" property="endTime"/>
+        <result column="progress" property="progress"/>
+        <result column="defense_result" property="defenseResult"/>
+        <result column="output_model_id" property="outputModelId"/>
+        <result column="output_model_path" property="outputModelPath"/>
+        <result column="performance_metrics" property="performanceMetrics"/>
+        <result column="risk_assessment" property="riskAssessment"/>
+        <result column="detection_report" property="detectionReport"/>
+        <result column="create_by" property="createBy"/>
+        <result column="update_by" property="updateBy"/>
+        <result column="create_time" property="createTime"/>
+        <result column="update_time" property="updateTime"/>
+    </resultMap>
+
+    <!-- 基础字段列表 -->
+    <sql id="Base_Column_List">
+        task_id, task_name, description, status, input_model_id, test_dataset_id, algorithm_id, hyper_id,
+        custom_params, start_time, end_time, progress, defense_result, output_model_id,
+        output_model_path, performance_metrics, risk_assessment, detection_report,
+        create_by, update_by, create_time, update_time
+    </sql>
+
+    <!-- 查询条件 -->
+    <sql id="Where_Sql">
+        <where>
+            <if test="criteria.taskId != null">
+                and task_id = #{criteria.taskId}
+            </if>
+            <if test="criteria.blurry != null and criteria.blurry != ''">
+                and (
+                task_name like concat('%', #{criteria.blurry}, '%')
+                or description like concat('%', #{criteria.blurry}, '%')
+                )
+            </if>
+            <if test="criteria.status != null and criteria.status != ''">
+                and status = #{criteria.status}
+            </if>
+            <if test="criteria.inputModelId != null">
+                and input_model_id = #{criteria.inputModelId}
+            </if>
+            <if test="criteria.testDatasetId != null">
+                and test_dataset_id = #{criteria.testDatasetId}
+            </if>
+            <if test="criteria.algorithmId != null">
+                and algorithm_id = #{criteria.algorithmId}
+            </if>
+            <if test="criteria.defenseResult != null and criteria.defenseResult != ''">
+                and defense_result = #{criteria.defenseResult}
+            </if>
+            <if test="criteria.createTime != null and criteria.createTime.size() != 0">
+                and create_time between #{criteria.createTime[0]} and #{criteria.createTime[1]}
+            </if>
+        </where>
+    </sql>
+
+    <!-- 查询所有任务 -->
+    <select id="findAll" resultMap="BaseResultMap">
+        select
+        <include refid="Base_Column_List"/>
+        from sys_post_defense
+        <include refid="Where_Sql"/>
+        order by task_id desc
+    </select>
+
+    <!-- 统计总数 -->
+    <select id="countAll" resultType="java.lang.Long">
+        select count(*)
+        from sys_post_defense
+        <include refid="Where_Sql"/>
+    </select>
+
+    <!-- 根据任务名称查询 -->
+    <select id="findByTaskName" resultMap="BaseResultMap">
+        select
+        <include refid="Base_Column_List"/>
+        from sys_post_defense
+        where task_name = #{taskName}
+    </select>
+
+    <!-- 根据状态查询 -->
+    <select id="findByStatus" resultMap="BaseResultMap">
+        select
+        <include refid="Base_Column_List"/>
+        from sys_post_defense
+        where status = #{status}
+        order by task_id desc
+    </select>
+
+    <!-- 根据输入模型ID查询 -->
+    <select id="findByInputModelId" resultMap="BaseResultMap">
+        select
+        <include refid="Base_Column_List"/>
+        from sys_post_defense
+        where input_model_id = #{inputModelId}
+        order by task_id desc
+    </select>
+
+    <!-- 根据算法ID查询 -->
+    <select id="findByAlgorithmId" resultMap="BaseResultMap">
+        select
+        <include refid="Base_Column_List"/>
+        from sys_post_defense
+        where algorithm_id = #{algorithmId}
+        order by task_id desc
+    </select>
+
+    <!-- 根据创建人查询 -->
+    <select id="findByCreateBy" resultMap="BaseResultMap">
+        select
+        <include refid="Base_Column_List"/>
+        from sys_post_defense
+        where create_by = #{createBy}
+        order by task_id desc
+    </select>
+
+    <!-- 根据输出模型ID查询任务 -->
+    <select id="findByOutputModelId" resultMap="BaseResultMap">
+        select
+        <include refid="Base_Column_List"/>
+        from sys_post_defense
+        where output_model_id = #{outputModelId}
+    </select>
+
+    <!-- 更新任务状态 -->
+    <update id="updateStatus">
+        update sys_post_defense
+        set status = #{status},
+            progress = #{progress},
+            update_time = now()
+        where task_id = #{taskId}
+    </update>
+
+    <!-- 更新防御结果 -->
+    <update id="updateDefenseResult">
+        update sys_post_defense
+        set defense_result = #{defenseResult},
+            output_model_id = #{outputModelId},
+            output_model_path = #{outputModelPath},
+            update_time = now()
+        where task_id = #{taskId}
+    </update>
+
+    <!-- 更新性能指标 -->
+    <update id="updatePerformanceMetrics">
+        update sys_post_defense
+        set performance_metrics = #{performanceMetrics},
+            update_time = now()
+        where task_id = #{taskId}
+    </update>
+
+    <!-- 更新风险评估 -->
+    <update id="updateRiskAssessment">
+        update sys_post_defense
+        set risk_assessment = #{riskAssessment},
+            update_time = now()
+        where task_id = #{taskId}
+    </update>
+
+    <!-- 更新检测报告 -->
+    <update id="updateDetectionReport">
+        update sys_post_defense
+        set detection_report = #{detectionReport},
+            update_time = now()
+        where task_id = #{taskId}
+    </update>
+
+    <!-- 获取任务统计信息 -->
+    <select id="getTaskStatistics" resultType="java.util.Map">
+        select
+            status as taskStatus,
+            count(*) as count
+        from sys_post_defense
+        group by status
+        order by status
+    </select>
+
+    <!-- 根据算法类型统计任务数量 -->
+    <select id="getAlgorithmTypeStatistics" resultType="java.util.Map">
+        select
+            a.algorithm_type as algorithmType,
+            count(p.task_id) as count
+        from sys_post_defense p
+            left join sys_algorithm a on p.algorithm_id = a.algorithm_id
+        group by a.algorithm_type
+        order by count desc
+    </select>
+
+    <!-- 根据防御结果统计 -->
+    <select id="getDefenseResultStatistics" resultType="java.util.Map">
+        select
+            defense_result as result,
+            count(*) as count
+        from sys_post_defense
+        where defense_result is not null
+        group by defense_result
+        order by count desc
+    </select>
+
+</mapper>
