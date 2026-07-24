@@ -10,6 +10,9 @@
 - [04-refactor-backlog.md](04-refactor-backlog.md)：按优先级拆分的重构任务和验收标准。
 - [05-decisions.md](05-decisions.md)：重要设计决策记录。
 - [06-mvp-runbook.md](06-mvp-runbook.md)：MVP 数据库、后端、前端和任务闭环联调步骤。
+- [07-executor-contract.md](07-executor-contract.md)：算法执行器输入、输出和 Python 进程接入契约。
+- [08-local-runtime-notes.md](08-local-runtime-notes.md)：本地 MySQL、Redis、前后端运行环境记录。
+- [09-project-status.md](09-project-status.md)：项目整体目标、当前进度、已完成能力和后续待办。
 
 ## 迭代原则
 

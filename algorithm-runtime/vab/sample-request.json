@@ -1,0 +1,22 @@
+{
+  "taskId": 1,
+  "taskName": "VaB LDD preflight",
+  "stage": "pre_defense",
+  "description": "Validate the LDD runtime integration",
+  "createdBy": "admin",
+  "dataset": {
+    "id": 1,
+    "name": "VaB CIFAR-10 root",
+    "type": "image",
+    "path": "F:\\Study\\postgraduate\\1下\\VB backdoor defence\\VaB-main\\dataset"
+  },
+  "algorithm": {
+    "id": 1,
+    "name": "LDD (VaB)",
+    "type": "data_cleaning",
+    "category": "deep_learning",
+    "path": "vab://pre-defense/ldd",
+    "configJson": "{\"dataset\":\"cifar10\",\"trigger_type\":\"SIG\",\"trigger_label\":0,\"poisoned_mode\":\"all2one\",\"poisoned_portion\":0.1,\"batch_size\":128,\"num_epochs\":10,\"lr_poison\":0.001,\"r\":0.75,\"alpha1\":0.1,\"alpha2\":0.5,\"seed\":123}"
+  },
+  "hyperParameter": null
+}

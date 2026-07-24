@@ -1,0 +1,22 @@
+{
+  "taskId": 2,
+  "taskName": "VaB VS-DCM preflight",
+  "stage": "pre_defense",
+  "description": "Validate the VS-DCM runtime integration",
+  "createdBy": "admin",
+  "dataset": {
+    "id": 1,
+    "name": "VaB CIFAR-10 root",
+    "type": "image",
+    "path": "F:\\Study\\postgraduate\\1下\\VB backdoor defence\\VaB-main\\dataset"
+  },
+  "algorithm": {
+    "id": 2,
+    "name": "VS-DCM (VaB)",
+    "type": "data_cleaning",
+    "category": "deep_learning",
+    "path": "vab://pre-defense/vs-dcm",
+    "configJson": "{\"dataset\":\"cifar10\",\"trigger_type\":\"WaNet\",\"trigger_label\":0,\"poisoned_mode\":\"all2one\",\"poisoned_portion\":0.4,\"batch_size\":128,\"tuning_epochs\":10,\"lr\":0.1,\"momentum\":0.9,\"weight_decay\":0.0001,\"gamma\":0.5,\"seed\":0}"
+  },
+  "hyperParameter": null
+}

@@ -64,6 +64,42 @@
             <pre class="parameter-json">{{ formatJSON(templateConfig) }}</pre>
           </el-card>
         </el-descriptions-item>
+        <el-descriptions-item v-if="isVabResult" label="VaB 执行结果" :span="2">
+          <div class="vab-result">
+            <div class="vab-result-row">
+              <span class="vab-result-label">执行算法</span>
+              <span>{{ vabResult.algorithm || '-' }}</span>
+            </div>
+            <div v-if="vabArtifactRoot" class="vab-result-row">
+              <span class="vab-result-label">产物目录</span>
+              <code class="artifact-path">{{ vabArtifactRoot }}</code>
+            </div>
+            <div v-if="vabMetricRows.length" class="vab-result-row vab-metric-list">
+              <span class="vab-result-label">子集纯度</span>
+              <span
+                v-for="metric in vabMetricRows"
+                :key="metric.ratio"
+                class="vab-metric"
+              >
+                {{ metric.ratio }}%: {{ metric.purity }}% / {{ metric.selectedCount }} samples
+              </span>
+            </div>
+            <div v-if="vabArtifactPaths.length" class="vab-result-row vab-artifact-list">
+              <span class="vab-result-label">日志与索引文件</span>
+              <code
+                v-for="artifactPath in vabArtifactPaths"
+                :key="artifactPath"
+                class="artifact-path"
+              >
+                {{ artifactPath }}
+              </code>
+            </div>
+            <div v-if="vabResult.effective_config" class="vab-result-row">
+              <span class="vab-result-label">有效配置</span>
+              <pre class="parameter-json vab-config">{{ formatJSON(vabResult.effective_config) }}</pre>
+            </div>
+          </div>
+        </el-descriptions-item>
         <!-- 显示完整清洗结果 -->
         <el-descriptions-item v-if="cleaningResultData" label="清洗结果详情" :span="2">
           <el-card class="parameter-card">
@@ -317,6 +353,42 @@ export default {
     failureReason() {
       if (!this.cleaningResultData || this.taskData.status !== 'failed') return ''
       return this.cleaningResultData.failure_reason || this.cleaningResultData.error_message || ''
+    },
+
+    vabResult() {
+      if (!this.cleaningResultData || this.cleaningResultData.executor !== 'python-vab-adapter') {
+        return null
+      }
+      return this.cleaningResultData
+    },
+
+    isVabResult() {
+      return Boolean(this.vabResult)
+    },
+
+    vabArtifactRoot() {
+      return this.vabResult && this.vabResult.artifacts ? this.vabResult.artifacts.path : ''
+    },
+
+    vabMetricRows() {
+      if (!this.vabResult || !this.vabResult.metrics) return []
+      const purity = this.vabResult.metrics.clean_purity_percent_by_isolation_ratio || {}
+      const selectedCounts = this.vabResult.metrics.selected_sample_count_by_isolation_ratio || {}
+      return Object.keys(purity).sort((left, right) => Number(left) - Number(right)).map(ratio => ({
+        ratio,
+        purity: purity[ratio],
+        selectedCount: selectedCounts[ratio] === undefined || selectedCounts[ratio] === null
+          ? '-'
+          : selectedCounts[ratio]
+      }))
+    },
+
+    vabArtifactPaths() {
+      if (!this.vabResult || !this.vabResult.artifacts) return []
+      const artifacts = this.vabResult.artifacts
+      return []
+        .concat(artifacts.logs || [])
+        .concat(artifacts.selection_files || [])
     }
   },
   watch: {
@@ -728,6 +800,49 @@ export default {
   white-space: pre-wrap;
   word-wrap: break-word;
   margin: 0;
+}
+
+.vab-result {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 4px 0;
+}
+
+.vab-result-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  line-height: 20px;
+}
+
+.vab-result-label {
+  flex: 0 0 88px;
+  color: #606266;
+  font-weight: 500;
+}
+
+.vab-metric-list,
+.vab-artifact-list {
+  flex-wrap: wrap;
+}
+
+.vab-metric {
+  padding-right: 12px;
+  color: #303133;
+}
+
+.artifact-path {
+  display: block;
+  max-width: calc(100% - 100px);
+  overflow-wrap: anywhere;
+  color: #409eff;
+  font-size: 12px;
+}
+
+.vab-config {
+  flex: 1;
+  max-height: 160px;
 }
 
 .stats-info {

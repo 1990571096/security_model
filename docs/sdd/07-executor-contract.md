@@ -70,3 +70,11 @@ python algorithm_entry.py --stage pre_defense --request request.json --result re
 ```
 
 The script should read `request.json`, run the algorithm, and write `result.json` using the result envelope defined above. If `result.json` is missing but the process exits with code `0`, the backend records a minimal successful envelope with the executor workspace as an artifact.
+
+## VaB Adapter
+
+The first real training-pre-defense integration uses
+`algorithm-runtime/vab/algorithm_entry.py`. It accepts the standard command above and
+dispatches only allow-listed VaB implementation paths. See
+[VaB training-pre-defense integration](10-vab-integration.md) for supported algorithms,
+parameter mapping, artifacts, and runtime requirements.
