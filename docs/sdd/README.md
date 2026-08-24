@@ -13,6 +13,8 @@
 - [07-executor-contract.md](07-executor-contract.md)：算法执行器输入、输出和 Python 进程接入契约。
 - [08-local-runtime-notes.md](08-local-runtime-notes.md)：本地 MySQL、Redis、前后端运行环境记录。
 - [09-project-status.md](09-project-status.md)：项目整体目标、当前进度、已完成能力和后续待办。
+- [10-vab-integration.md](10-vab-integration.md)：LDD 训练前防御算法的 VaB 适配、参数和产物约定。
+- [11-platform-implementation.md](11-platform-implementation.md)：当前平台实现、业务流程、LDD 执行链路和扩展思路。
 
 ## 迭代原则
 

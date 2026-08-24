@@ -1,6 +1,6 @@
 # VaB Training-Pre-Defense Integration
 
-Date: 2026-07-24
+Date: 2026-08-24
 
 ## Goal
 
@@ -105,3 +105,8 @@ Python copy, and compiling the adapter. One local engineering run completed on
 2026-08-19 with CIFAR-10, SIG, batch size 128, and 5 epochs; it produced task-local
 logs, a model checkpoint, and selected-index files. This run verifies the integration
 path only and is not a paper experiment conclusion.
+
+## Related Documentation
+
+See [Current platform implementation](11-platform-implementation.md) for the current
+business flow, frontend result presentation, and future expansion boundary.

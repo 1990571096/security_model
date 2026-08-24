@@ -31,24 +31,30 @@
 └── sql/                       # 数据库初始化与 MVP seed 脚本
 ```
 
-## MVP 内置算法
+## 算法执行范围
 
-当前算法由 `MockDefenseTaskExecutor` 模拟执行，用于验证平台流程、接口协议和前端展示。
+为验证平台流程、接口协议和前端展示，系统仍保留 `MockDefenseTaskExecutor`
+提供的模拟基线结果。
 
-训练前防御：
+模拟训练前防御：
 
 - 基线-统计异常清洗
 - 基线-低置信样本过滤
 - 基线-IQR四分位清洗
 - 基线-IsolationForest异常清洗
 
-训练中防御：
+模拟训练中防御：
 
 - 基线-鲁棒训练
 - 基线-标签平滑训练
 - 基线-对抗训练占位
 
-真实算法接入应实现后端统一的 `DefenseTaskExecutor` 边界，避免业务 CRUD 代码直接依赖具体算法实现。
+当前真实接入的算法为 LDD（训练前防御）。平台通过
+`PythonDefenseTaskExecutor` 和 `algorithm-runtime/vab/algorithm_entry.py` 调用外部
+VaB 项目中的 `LDD.py`，并将配置、结构化结果和任务产物渲染到训练前任务详情页。
+
+后续真实算法应继续实现后端统一的 `DefenseTaskExecutor` 边界，避免业务 CRUD
+代码直接依赖具体算法实现。
 
 ## 本地环境
 
@@ -132,6 +138,7 @@ npm run build:prod
 - `docs/sdd/08-local-runtime-notes.md`：本地运行环境记录。
 - `docs/sdd/09-project-status.md`：项目整体目标、当前进度、已完成能力和后续待办。
 - `docs/sdd/10-vab-integration.md`：VaB 训练前防御算法适配、参数和产物约定。
+- `docs/sdd/11-platform-implementation.md`：当前平台实现、业务流程和实现思路。
 
 ## 当前限制
 
