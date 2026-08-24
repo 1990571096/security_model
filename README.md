@@ -135,7 +135,7 @@ npm run build:prod
 
 ## 当前限制
 
-- 内置 baseline 仍由 mock 执行器模拟；VaB 的 LDD 与 7 个可独立运行的比较基线已接入 Python 适配器，但当前阶段不以真实训练结果作为验收依据。
+- 内置 baseline 仍由 mock 执行器模拟；当前真实接入范围收敛为 LDD，后续算法将复用同一任务和结果协议接入。
 - 训练后防御暂未作为 MVP 主链路开放。
 - 前端和后端仍保留部分 ELADMIN 历史模块与技术债，后续按 SDD 逐步裁剪和迁移。
 
@@ -148,13 +148,12 @@ npm run build:prod
 
 ## VaB 真实算法接入
 
-LDD（论文提出方法）以及 VS-DCM、VS-ABL、VS-Meta-Sift、VS-MI-DCM、
-VS-Spectral Signature、VS-Spectre、VS-Telltale 七个可独立运行的对比基线，均已通过
-`algorithm-runtime/vab/algorithm_entry.py` 接入 Python 执行器契约。VaB 原始代码、
-数据集、检查点和实验输出仍保留在外部算法目录，不会复制进本仓库。
+LDD（论文提出方法）已通过 `algorithm-runtime/vab/algorithm_entry.py` 接入 Python
+执行器契约。VaB 原始代码、数据集、检查点和实验输出仍保留在外部算法目录，不会复制进本仓库。
 
-当前完成的是平台注册、配置映射、任务隔离、结果协议和前端结果展示。真实训练轮次、
-数据集和论文实验配置由后续迭代确定，平台不会将当前静态接入状态标记为实验结论。
+当前完成的是平台注册、配置映射、任务隔离、结果协议和前端结果展示。已完成一轮
+CIFAR-10 / SIG / batch size 128 / 5 epoch 的本地真实运行，结果产物保存在外部
+VaB 目录；该运行用于验证工程闭环，不作为论文正式实验结论。
 
 启动使用真实 VaB 算法的后端前，需要设置：
 

@@ -10,10 +10,10 @@ repository.
 
 ## Scope
 
-This iteration registers the proposed LDD method and every VaB comparison baseline
-that has a standalone argparse entry point. The platform integration is deliberately
-separate from experimental acceptance: no training result is considered valid until
-the user finalizes the dataset, epochs, and research configuration for that experiment.
+This iteration registers only the proposed LDD method. The platform integration is
+deliberately separate from experimental acceptance: no training result is considered
+valid until the user finalizes the dataset, epochs, and research configuration for that
+experiment.
 
 ## Design
 
@@ -35,17 +35,9 @@ Supported implementation paths:
 | Implementation path | VaB source | Stage |
 | --- | --- | --- |
 | `vab://pre-defense/ldd` | `LDD.py` | training-pre-defense |
-| `vab://pre-defense/vs-dcm` | `VS_DCM.py` | training-pre-defense |
-| `vab://pre-defense/vs-abl` | `VS_ABL.py` | training-pre-defense |
-| `vab://pre-defense/vs-meta-sift` | `VS_Meta_Sift.py` | training-pre-defense |
-| `vab://pre-defense/vs-mi-dcm` | `VS_MI_DCM.py` | training-pre-defense |
-| `vab://pre-defense/vs-spectral-signature` | `VS_Spectral Signature.py` | training-pre-defense |
-| `vab://pre-defense/vs-spectre` | `VS_Spectre.py` | training-pre-defense |
-| `vab://pre-defense/vs-telltale` | `VS_Telltale.py` | training-pre-defense |
 
-`VS_CT.py` is excluded because it has no standalone CLI/main entry. `VS_ABL_temp.py`
-is excluded because it is a temporary research variant rather than a platform-facing
-baseline.
+Future comparison methods will be added only after their input parameters, output
+artifacts, and result metrics are mapped to the platform contract.
 
 ## Compatibility Strategy
 
@@ -71,12 +63,6 @@ JSON explicitly supplies `data_path`.
 LDD accepts `dataset`, `trigger_type`, `trigger_label`, `poisoned_mode`,
 `poisoned_portion`, `batch_size`, `num_epochs`, `lr_poison`, `r`, `alpha1`, `alpha2`,
 and `seed`.
-
-All registered baselines accept the common task settings `dataset`, `trigger_type`,
-`trigger_label`, `poisoned_mode`, `poisoned_portion`, `batch_size`, and `seed`, with
-their original training and detector parameters retained in their platform parameter
-schema. For example, VS-ABL exposes ascent and threshold settings, VS-Meta-Sift exposes
-sifter and meta-learning settings, and VS-DCM keeps `gamma`.
 
 ## Result Artifacts
 
@@ -112,9 +98,10 @@ sample counts, and task-local log/index artifact paths whenever a VaB result is 
 4. Logs and selected-index files are available through the task artifact path.
 5. A non-zero VaB process exit produces a structured failed result.
 
-## Verification Boundary
+## Engineering Verification
 
-The integration is statically validated by parsing the allow-listed source files,
-generating a task-scoped Python copy, and compiling the adapter. Formal experimental
-verification is intentionally deferred: it requires the user-selected dataset,
-training rounds, and algorithm configuration.
+The adapter was statically validated by parsing the LDD source, generating a task-scoped
+Python copy, and compiling the adapter. One local engineering run completed on
+2026-08-19 with CIFAR-10, SIG, batch size 128, and 5 epochs; it produced task-local
+logs, a model checkpoint, and selected-index files. This run verifies the integration
+path only and is not a paper experiment conclusion.

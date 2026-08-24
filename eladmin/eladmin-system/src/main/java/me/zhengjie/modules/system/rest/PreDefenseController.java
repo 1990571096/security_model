@@ -4,6 +4,8 @@
 package me.zhengjie.modules.system.rest;
 
 import cn.hutool.core.util.ObjectUtil;
+import com.alibaba.fastjson2.JSON;
+import com.alibaba.fastjson2.JSONObject;
 import cn.hutool.json.JSONUtil;
 import cn.hutool.json.ObjectMapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
@@ -18,13 +20,19 @@ import me.zhengjie.modules.system.domain.dto.PreDefenseQueryCriteria;
 import me.zhengjie.modules.system.service.PreDefenseService;
 import me.zhengjie.utils.PageResult;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.core.io.FileSystemResource;
+import org.springframework.core.io.Resource;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
 import javax.servlet.http.HttpServletResponse;
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.Set;
 
 /**
@@ -206,6 +214,41 @@ public class PreDefenseController {
         result.put("cleaningResult", task.getCleaningResult());
 
         return new ResponseEntity<>(result, HttpStatus.OK);
+    }
+
+    @ApiOperation("预览真实清洗任务结果图")
+    @GetMapping("/artifact-preview/{taskId}")
+    @PreAuthorize("@el.check('pre_defense:list')")
+    public ResponseEntity<Resource> previewTaskArtifact(
+            @PathVariable Long taskId,
+            @RequestParam String artifactPath) throws IOException {
+        PreDefense task = preDefenseService.findById(taskId);
+        if (ObjectUtil.isEmpty(task.getCleaningResult())) {
+            throw new BadRequestException("该任务没有可预览的执行结果");
+        }
+
+        JSONObject result = JSON.parseObject(task.getCleaningResult());
+        JSONObject artifacts = result.getJSONObject("artifacts");
+        if (artifacts == null || ObjectUtil.isEmpty(artifacts.getString("path"))) {
+            throw new BadRequestException("该任务没有可访问的产物目录");
+        }
+
+        Path artifactRoot = Paths.get(artifacts.getString("path")).toAbsolutePath().normalize();
+        Path target = Paths.get(artifactPath).toAbsolutePath().normalize();
+        if (!target.startsWith(artifactRoot) || !Files.isRegularFile(target)
+                || !target.getFileName().toString().toLowerCase().endsWith(".png")) {
+            throw new BadRequestException("请求的产物文件不可访问");
+        }
+
+        MediaType mediaType;
+        try {
+            mediaType = MediaType.parseMediaType(Files.probeContentType(target));
+        } catch (Exception ignored) {
+            mediaType = MediaType.IMAGE_PNG;
+        }
+        return ResponseEntity.ok()
+                .contentType(mediaType)
+                .body(new FileSystemResource(target));
     }
 
     @ApiOperation("获取完整清洗报告")

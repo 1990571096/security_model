@@ -37,177 +37,10 @@ SUPPORTED_ALGORITHMS = {
         "selection_variable": "perm",
         "selection_kind": "retained_clean_subset",
     },
-    "vab://pre-defense/vs-dcm": {
-        "source": "VS_DCM.py",
-        "config_keys": (
-            "dataset",
-            "trigger_type",
-            "trigger_label",
-            "poisoned_mode",
-            "poisoned_portion",
-            "batch_size",
-            "tuning_epochs",
-            "lr",
-            "momentum",
-            "weight_decay",
-            "gamma",
-            "seed",
-        ),
-        "forced_args": ("batch_size", "tuning_epochs"),
-        "selection_variable": "perm",
-        "selection_kind": "retained_clean_subset",
-    },
-    "vab://pre-defense/vs-abl": {
-        "source": "VS_ABL.py",
-        "config_keys": (
-            "dataset",
-            "trigger_type",
-            "trigger_label",
-            "poisoned_mode",
-            "poisoned_portion",
-            "batch_size",
-            "tuning_epochs",
-            "num_epochs",
-            "lr",
-            "lr_finetuning_init",
-            "momentum",
-            "weight_decay",
-            "gradient_ascent_type",
-            "gamma",
-            "flooding",
-            "threshold_clean",
-            "threshold_bad",
-            "r",
-            "seed",
-        ),
-        "forced_args": ("batch_size", "tuning_epochs"),
-        "selection_variable": "perm",
-        "selection_kind": "retained_clean_subset",
-    },
-    "vab://pre-defense/vs-meta-sift": {
-        "source": "VS_Meta_Sift.py",
-        "config_keys": (
-            "dataset",
-            "trigger_type",
-            "trigger_label",
-            "poisoned_mode",
-            "poisoned_portion",
-            "batch_size",
-            "lr",
-            "momentum",
-            "weight_decay",
-            "isolation_ratio",
-            "seed",
-            "num_sifter",
-            "res_epochs",
-            "warmup_epochs",
-            "num_workers",
-            "v_lr",
-            "meta_lr",
-            "top_k",
-            "go_lr",
-            "num_act",
-            "nesterov",
-        ),
-        "forced_args": ("batch_size",),
-        "selection_variable": "new_idx",
-        "selection_kind": "retained_clean_subset",
-    },
-    "vab://pre-defense/vs-mi-dcm": {
-        "source": "VS_MI_DCM.py",
-        "config_keys": (
-            "dataset",
-            "trigger_type",
-            "trigger_label",
-            "poisoned_mode",
-            "poisoned_portion",
-            "batch_size",
-            "tuning_epochs",
-            "lr",
-            "momentum",
-            "weight_decay",
-            "isolation_ratio",
-            "r",
-            "seed",
-        ),
-        "forced_args": ("batch_size", "tuning_epochs"),
-        "selection_variable": "perm",
-        "selection_kind": "retained_clean_subset",
-    },
-    "vab://pre-defense/vs-spectral-signature": {
-        "source": "VS_Spectral Signature.py",
-        "config_keys": (
-            "dataset",
-            "trigger_type",
-            "trigger_label",
-            "poisoned_mode",
-            "poisoned_portion",
-            "batch_size",
-            "tuning_epochs",
-            "lr",
-            "momentum",
-            "weight_decay",
-            "isolation_ratio",
-            "r",
-            "seed",
-        ),
-        "forced_args": ("batch_size", "tuning_epochs"),
-        "selection_variable": "perm",
-        "selection_kind": "retained_clean_subset",
-    },
-    "vab://pre-defense/vs-spectre": {
-        "source": "VS_Spectre.py",
-        "config_keys": (
-            "dataset",
-            "trigger_type",
-            "trigger_label",
-            "poisoned_mode",
-            "poisoned_portion",
-            "batch_size",
-            "tuning_epochs",
-            "lr",
-            "momentum",
-            "weight_decay",
-            "isolation_ratio",
-            "r",
-            "seed",
-        ),
-        "forced_args": ("batch_size", "tuning_epochs"),
-        "selection_variable": "perm",
-        "selection_kind": "retained_clean_subset",
-    },
-    "vab://pre-defense/vs-telltale": {
-        "source": "VS_Telltale.py",
-        "config_keys": (
-            "dataset",
-            "trigger_type",
-            "trigger_label",
-            "poisoned_mode",
-            "poisoned_portion",
-            "batch_size",
-            "tuning_epochs",
-            "lr",
-            "momentum",
-            "weight_decay",
-            "isolation_ratio",
-            "r",
-            "seed",
-        ),
-        "forced_args": ("batch_size", "tuning_epochs"),
-        "selection_variable": "perm",
-        "selection_kind": "retained_clean_subset",
-    },
 }
 
 ALGORITHM_ALIASES = {
     "vab://ldd": "vab://pre-defense/ldd",
-    "vab://vs-dcm": "vab://pre-defense/vs-dcm",
-    "vab://vs-abl": "vab://pre-defense/vs-abl",
-    "vab://vs-meta-sift": "vab://pre-defense/vs-meta-sift",
-    "vab://vs-mi-dcm": "vab://pre-defense/vs-mi-dcm",
-    "vab://vs-spectral-signature": "vab://pre-defense/vs-spectral-signature",
-    "vab://vs-spectre": "vab://pre-defense/vs-spectre",
-    "vab://vs-telltale": "vab://pre-defense/vs-telltale",
 }
 
 
@@ -515,6 +348,23 @@ def parse_metrics(output_root):
     return purity, selected_counts, logs
 
 
+def task_output_root(result_path, request, algorithm_key):
+    """Use a stable external artifact root when one is configured for VaB runs."""
+    configured_root = os.environ.get("SECURITY_MODEL_VAB_RESULT_ROOT")
+    if not configured_root:
+        return result_path.parent / "artifacts"
+
+    task_name = request.get("taskName") or "task-{}".format(request.get("taskId", "manual"))
+    safe_task_name = re.sub(r"[^A-Za-z0-9._-]+", "-", task_name).strip("-")
+    safe_algorithm = re.sub(r"[^A-Za-z0-9._-]+", "-", algorithm_key.rsplit("/", 1)[-1])
+    run_name = "{}-{}-{}".format(
+        datetime.now().strftime("%Y%m%d-%H%M%S"),
+        safe_algorithm or "vab",
+        safe_task_name or "task",
+    )
+    return Path(configured_root).expanduser().resolve() / run_name
+
+
 def preflight(vab_root, source_path, config):
     if not vab_root.is_dir():
         raise IntegrationError("VAB_ROOT does not exist: {}".format(vab_root))
@@ -552,7 +402,6 @@ def run(args):
     started_at = utc_now()
     request_path = Path(args.request).resolve()
     result_path = Path(args.result).resolve()
-    output_root = result_path.parent / "artifacts"
 
     try:
         if args.stage != "pre_defense":
@@ -562,6 +411,7 @@ def run(args):
         if algorithm_key not in SUPPORTED_ALGORITHMS:
             raise IntegrationError("unsupported VaB implementation path: {}".format(algorithm_key))
         spec = SUPPORTED_ALGORITHMS[algorithm_key]
+        output_root = task_output_root(result_path, request, algorithm_key)
         vab_root_value = os.environ.get("VAB_ROOT")
         if not vab_root_value:
             raise IntegrationError("VAB_ROOT must point to the external VaB-main directory")
@@ -590,11 +440,15 @@ def run(args):
             lock_path = vab_root / ".security-model-vab.lock"
             acquire_lock(lock_path)
             try:
-                completed = subprocess.run(
-                    build_command(generated_script, config),
-                    cwd=str(vab_root),
-                    check=False,
-                )
+                execution_log = output_root / "execution.log"
+                with execution_log.open("w", encoding="utf-8") as log_file:
+                    completed = subprocess.run(
+                        build_command(generated_script, config),
+                        cwd=str(vab_root),
+                        check=False,
+                        stdout=log_file,
+                        stderr=subprocess.STDOUT,
+                    )
             finally:
                 if lock_path.exists():
                     lock_path.unlink()
@@ -602,6 +456,8 @@ def run(args):
                 raise IntegrationError("VaB process exited with code {}".format(completed.returncode))
 
             purity, selected_counts, logs = parse_metrics(output_root)
+            images = sorted(output_root.rglob("*.png"))
+            model_files = sorted(output_root.rglob("*.pth"))
             result = build_result(
                 "success",
                 "VaB {} completed".format(Path(spec["source"]).stem),
@@ -622,7 +478,9 @@ def run(args):
                     "path": str(output_root),
                     "generated_script": str(generated_script),
                     "selection_kind": spec["selection_kind"],
-                    "logs": [str(path) for path in logs],
+                    "logs": [str(execution_log)] + [str(path) for path in logs],
+                    "images": [str(path) for path in images],
+                    "model_files": [str(path) for path in model_files],
                     "selection_files": [
                         str(path) for path in output_root.rglob("selected_indices_*.npy")
                     ],

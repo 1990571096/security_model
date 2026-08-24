@@ -64,11 +64,42 @@
             <pre class="parameter-json">{{ formatJSON(templateConfig) }}</pre>
           </el-card>
         </el-descriptions-item>
-        <el-descriptions-item v-if="isVabResult" label="VaB 执行结果" :span="2">
+        <el-descriptions-item v-if="isVabResult" label="真实清洗结果" :span="2">
           <div class="vab-result">
+            <div class="vab-summary-grid">
+              <div class="vab-summary-item">
+                <span>算法</span>
+                <strong>{{ lddAlgorithmName }}</strong>
+              </div>
+              <div class="vab-summary-item">
+                <span>运行耗时</span>
+                <strong>{{ vabRunDuration }}</strong>
+              </div>
+              <div class="vab-summary-item">
+                <span>最高子集纯度</span>
+                <strong>{{ vabBestPurity }}%</strong>
+              </div>
+              <div class="vab-summary-item">
+                <span>可选子集规模</span>
+                <strong>{{ vabSelectionRange }}</strong>
+              </div>
+            </div>
             <div class="vab-result-row">
               <span class="vab-result-label">执行算法</span>
               <span>{{ vabResult.algorithm || '-' }}</span>
+            </div>
+            <div v-if="vabConfigOverview.length" class="vab-result-row">
+              <span class="vab-result-label">实验设置</span>
+              <div class="vab-config-tags">
+                <el-tag
+                  v-for="item in vabConfigOverview"
+                  :key="item.label"
+                  size="mini"
+                  effect="plain"
+                >
+                  {{ item.label }}: {{ item.value }}
+                </el-tag>
+              </div>
             </div>
             <div v-if="vabArtifactRoot" class="vab-result-row">
               <span class="vab-result-label">产物目录</span>
@@ -76,13 +107,35 @@
             </div>
             <div v-if="vabMetricRows.length" class="vab-result-row vab-metric-list">
               <span class="vab-result-label">子集纯度</span>
-              <span
-                v-for="metric in vabMetricRows"
-                :key="metric.ratio"
-                class="vab-metric"
-              >
-                {{ metric.ratio }}%: {{ metric.purity }}% / {{ metric.selectedCount }} samples
-              </span>
+              <div class="vab-metric-bars">
+                <div
+                  v-for="metric in vabMetricRows"
+                  :key="metric.ratio"
+                  class="vab-metric"
+                >
+                  <span class="vab-metric-title">{{ metric.ratio }}% 子集</span>
+                  <el-progress
+                    :percentage="Math.min(100, Math.max(0, Number(metric.purity) || 0))"
+                    :stroke-width="8"
+                    :show-text="false"
+                    color="#409EFF"
+                  />
+                  <span class="vab-metric-value">{{ metric.purity }}% · {{ metric.selectedCount }} samples</span>
+                </div>
+              </div>
+            </div>
+            <div v-if="vabImageUrls.length" class="vab-result-row vab-preview-list">
+              <span class="vab-result-label">算法图像结果</span>
+              <div class="vab-image-grid">
+                <el-image
+                  v-for="image in vabImageUrls"
+                  :key="image.path"
+                  :src="image.url"
+                  :preview-src-list="vabPreviewUrls"
+                  fit="contain"
+                  class="vab-image"
+                />
+              </div>
             </div>
             <div v-if="vabArtifactPaths.length" class="vab-result-row vab-artifact-list">
               <span class="vab-result-label">日志与索引文件</span>
@@ -270,7 +323,7 @@
 </template>
 
 <script>
-import { startTask, getTaskProgress, downloadCleanedDataset, getCleaningReport } from '@/api/system/preDefense'
+import { startTask, getTaskProgress, downloadCleanedDataset, getCleaningReport, previewTaskArtifact } from '@/api/system/preDefense'
 import { getParameterSchema } from '@/api/system/hyper'
 import { get as getDataset } from '@/api/system/datasetDetail'
 import { getHyper } from '@/api/system/hyper'
@@ -304,7 +357,8 @@ export default {
       currentProgress: 0,
       progressTimer: null,
       chart: null,
-      templateConfig: null
+      templateConfig: null,
+      vabImageUrls: []
     }
   },
   computed: {
@@ -383,12 +437,63 @@ export default {
       }))
     },
 
+    lddAlgorithmName() {
+      return this.vabResult && this.vabResult.algorithm === 'vab://pre-defense/ldd'
+        ? 'LDD'
+        : '真实算法'
+    },
+
+    vabBestPurity() {
+      if (!this.vabMetricRows.length) return '-'
+      return Math.max.apply(null, this.vabMetricRows.map(item => Number(item.purity) || 0)).toFixed(2)
+    },
+
+    vabSelectionRange() {
+      const values = this.vabMetricRows
+        .map(item => Number(item.selectedCount))
+        .filter(item => !Number.isNaN(item))
+      if (!values.length) return '-'
+      return Math.min.apply(null, values) + ' - ' + Math.max.apply(null, values)
+    },
+
+    vabRunDuration() {
+      if (!this.vabResult || !this.vabResult.started_at || !this.vabResult.finished_at) return '-'
+      const startedAt = new Date(this.vabResult.started_at)
+      const finishedAt = new Date(this.vabResult.finished_at)
+      const seconds = Math.round((finishedAt.getTime() - startedAt.getTime()) / 1000)
+      if (Number.isNaN(seconds) || seconds < 0) return '-'
+      const minutes = Math.floor(seconds / 60)
+      return minutes + ' 分 ' + (seconds % 60) + ' 秒'
+    },
+
+    vabConfigOverview() {
+      if (!this.vabResult || !this.vabResult.effective_config) return []
+      const config = this.vabResult.effective_config
+      const entries = [
+        { label: '数据集', key: 'dataset' },
+        { label: '攻击', key: 'trigger_type' },
+        { label: '投毒比例', key: 'poisoned_portion', suffix: '%' },
+        { label: '批次', key: 'batch_size' },
+        { label: '轮数', key: 'num_epochs' }
+      ]
+      return entries.filter(item => config[item.key] !== undefined).map(item => {
+        let value = config[item.key]
+        if (item.key === 'poisoned_portion') value = Number(value) * 100
+        return { label: item.label, value: value + (item.suffix || '') }
+      })
+    },
+
     vabArtifactPaths() {
       if (!this.vabResult || !this.vabResult.artifacts) return []
       const artifacts = this.vabResult.artifacts
       return []
         .concat(artifacts.logs || [])
         .concat(artifacts.selection_files || [])
+        .concat(artifacts.model_files || [])
+    },
+
+    vabPreviewUrls() {
+      return this.vabImageUrls.map(image => image.url)
     }
   },
   watch: {
@@ -410,6 +515,7 @@ export default {
   },
   beforeDestroy() {
     this.stopProgressMonitoring()
+    this.revokeVabImageUrls()
     if (this.chart) {
       this.chart.dispose()
     }
@@ -426,6 +532,7 @@ export default {
           this.initChart()
         })
       }
+      this.loadVabImages()
 
       // 加载模板配置
       if (this.taskData.hyperId) {
@@ -441,6 +548,24 @@ export default {
       if (this.taskData.hyperId && !this.templateCache[this.taskData.hyperId]) {
         this.loadTemplateNameAsync(this.taskData.hyperId)
       }
+    },
+
+    loadVabImages() {
+      this.revokeVabImageUrls()
+      if (!this.isVabResult || !this.taskData || !this.taskData.taskId) return
+      const images = (this.vabResult.artifacts && this.vabResult.artifacts.images) || []
+      images.forEach(path => {
+        previewTaskArtifact(this.taskData.taskId, path).then(response => {
+          this.vabImageUrls.push({ path, url: URL.createObjectURL(response) })
+        }).catch(() => {
+          // Optional artifact preview: metrics remain available when a file is missing.
+        })
+      })
+    },
+
+    revokeVabImageUrls() {
+      this.vabImageUrls.forEach(image => URL.revokeObjectURL(image.url))
+      this.vabImageUrls = []
     },
 
     // 主动加载数据集名称
@@ -809,11 +934,47 @@ export default {
   padding: 4px 0;
 }
 
+.vab-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(130px, 1fr));
+  gap: 8px;
+}
+
+.vab-summary-item {
+  padding: 10px;
+  border: 1px solid #dcdfe6;
+  border-radius: 4px;
+  background: #f8fbff;
+}
+
+.vab-summary-item span,
+.vab-summary-item strong {
+  display: block;
+}
+
+.vab-summary-item span {
+  margin-bottom: 4px;
+  color: #909399;
+  font-size: 12px;
+}
+
+.vab-summary-item strong {
+  color: #303133;
+  font-size: 14px;
+}
+
 .vab-result-row {
   display: flex;
   align-items: flex-start;
   gap: 12px;
   line-height: 20px;
+}
+
+.vab-config-tags {
+  display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
 .vab-result-label {
@@ -827,9 +988,43 @@ export default {
   flex-wrap: wrap;
 }
 
+.vab-metric-bars {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(210px, 1fr));
+  gap: 8px 14px;
+  flex: 1;
+}
+
 .vab-metric {
-  padding-right: 12px;
+  display: grid;
+  grid-template-columns: 52px minmax(80px, 1fr) 110px;
+  align-items: center;
+  gap: 8px;
   color: #303133;
+}
+
+.vab-metric-title,
+.vab-metric-value {
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.vab-preview-list {
+  align-items: flex-start;
+}
+
+.vab-image-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(180px, 1fr));
+  gap: 12px;
+  flex: 1;
+}
+
+.vab-image {
+  width: 100%;
+  height: 180px;
+  border: 1px solid #dcdfe6;
+  background: #fff;
 }
 
 .artifact-path {
@@ -843,6 +1038,14 @@ export default {
 .vab-config {
   flex: 1;
   max-height: 160px;
+}
+
+@media screen and (max-width: 760px) {
+  .vab-summary-grid,
+  .vab-metric-bars,
+  .vab-image-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .stats-info {

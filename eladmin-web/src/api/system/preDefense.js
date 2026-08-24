@@ -160,6 +160,15 @@ export function getCleaningReport(taskId) {
   })
 }
 
+export function previewTaskArtifact(taskId, artifactPath) {
+  return request({
+    url: `api/pre-defense/artifact-preview/${taskId}`,
+    method: 'get',
+    params: { artifactPath },
+    responseType: 'blob'
+  })
+}
+
 // 为了兼容数据集相关的查询，参考其他js文件的实现
 export function getTasksByDataset(datasetId) {
   return request({

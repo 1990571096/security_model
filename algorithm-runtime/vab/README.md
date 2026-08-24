@@ -9,29 +9,22 @@ repository. Set `VAB_ROOT` to the VaB project root:
 $env:VAB_ROOT='F:\Study\postgraduate\1下\VB backdoor defence\VaB-main'
 ```
 
-Supported implementation paths:
+Supported implementation path:
 
 - `vab://pre-defense/ldd`
-- `vab://pre-defense/vs-dcm`
-- `vab://pre-defense/vs-abl`
-- `vab://pre-defense/vs-meta-sift`
-- `vab://pre-defense/vs-mi-dcm`
-- `vab://pre-defense/vs-spectral-signature`
-- `vab://pre-defense/vs-spectre`
-- `vab://pre-defense/vs-telltale`
 
 `algorithm_entry.py` reads the platform request JSON, creates an AST-transformed
-single-task copy of the corresponding VaB experiment script, and writes the standard
-result JSON consumed by `PythonDefenseTaskExecutor`.
+single-task LDD script, and writes the standard result JSON consumed by
+`PythonDefenseTaskExecutor`.
 
 The original VaB scripts iterate over fixed experimental settings. The adapter changes
 only the generated task copy. It limits a platform task to one dataset, one trigger
 type, and one poisoned-data proportion; it also stores logs and selected sample
 indices in the task artifact directory.
 
-`VS_CT.py` is not registered because it has no standalone command-line entry contract.
-`VS_ABL_temp.py` is a temporary research variant and is intentionally not exposed as a
-platform algorithm.
+The adapter is intentionally limited to LDD in this iteration. Future algorithms must
+reuse the pre-defense request/result contract and be explicitly allow-listed after their
+input, output, and artifact semantics have been confirmed.
 
 ## Runtime Requirements
 
@@ -75,7 +68,6 @@ python algorithm-runtime\vab\algorithm_entry.py `
 - `clean_purity` is an evaluation metric based on VaB's known poisoned indices. It is
   appropriate for controlled experiments, not unlabeled production data.
 - A runtime lock serializes VaB tasks because the legacy scripts share the local GPU.
-- The registered algorithms have been integrated and statically validated at the
-  adapter level. They have not been accepted as experiment-verified results in the
-  platform; dataset, epoch, and research-specific configuration must be finalized
-  before running formal experiments.
+- LDD completed one local engineering verification run with CIFAR-10, SIG, batch size
+  128, and 5 epochs. Its output is an implementation verification artifact, not a
+  paper experiment conclusion.
