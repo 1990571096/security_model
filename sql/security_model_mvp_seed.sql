@@ -2,6 +2,13 @@
 -- Run this after sql/eladmin.sql on an existing development database.
 -- The script avoids destructive deletes so legacy role/menu references remain valid.
 
+-- The current thesis demonstration scope is LDD only.
+-- Keep historical mock algorithms in the database for migration compatibility,
+-- but disable them so they cannot be selected or used by the current platform.
+UPDATE `sys_algorithm`
+SET `enabled` = b'0', `update_by` = 'system', `update_time` = NOW()
+WHERE `implementation_path` LIKE 'builtin://baseline/%';
+
 -- Disable obvious test rows from the original competition/demo data.
 UPDATE `sys_algorithm`
 SET `enabled` = b'0', `update_by` = 'system', `update_time` = NOW()
@@ -235,9 +242,9 @@ WHERE a.`algorithm_name` = '基线-对抗训练占位'
 -- Role/menu permissions are kept intact; this only controls sidebar visibility.
 UPDATE `sys_menu`
 SET `hidden` = b'1', `update_by` = 'system', `update_time` = NOW()
-WHERE `menu_id` NOT IN (122, 117, 123, 124, 125, 126, 146);
+WHERE `menu_id` NOT IN (122, 117, 123, 124, 125, 146);
 
 -- Keep the core security training modules visible in the sidebar.
 UPDATE `sys_menu`
 SET `hidden` = b'0', `update_by` = 'system', `update_time` = NOW()
-WHERE `menu_id` IN (122, 117, 123, 124, 125, 126, 146);
+WHERE `menu_id` IN (122, 117, 123, 124, 125, 146);

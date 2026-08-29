@@ -18,6 +18,10 @@ public class DefenseTaskRequest {
 
     private Long taskId;
 
+    private Integer attempt;
+
+    private String runId;
+
     private String taskName;
 
     private String stage;
@@ -25,6 +29,8 @@ public class DefenseTaskRequest {
     private String description;
 
     private String createdBy;
+
+    private String customParams;
 
     private DefenseResourceRef dataset;
 

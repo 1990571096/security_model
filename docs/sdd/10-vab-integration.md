@@ -80,6 +80,19 @@ oracle metric and must not be described as an unlabeled production-data metric.
 The task-detail view renders effective configuration, purity by isolation ratio, selected
 sample counts, and task-local log/index artifact paths whenever a VaB result is present.
 
+## Cleaned Dataset Export
+
+LDD's `selected_indices_<ratio>.npy` is interpreted as the retained clean-subset index
+set for the corresponding isolation ratio. For successful CIFAR-10 LDD tasks, the report
+page offers a ratio-specific download. The backend verifies that the index file is inside
+the task artifact root, then invokes the adapter in export-only mode.
+
+The exported ZIP contains the selected raw CIFAR-10 training samples as PNG files, their
+labels, the original NPY index file and reconstruction metadata. This is a reproducible
+dataset subset for downstream platform demonstration and training. It deliberately does
+not serialize the trigger-modified tensors constructed inside VaB at runtime, so the ZIP
+must be described as “the raw CIFAR-10 subset reconstructed from LDD retained indices”.
+
 ## Runtime Constraints
 
 - `VAB_ROOT` must point to the external `VaB-main` directory.
@@ -97,6 +110,8 @@ sample counts, and task-local log/index artifact paths whenever a VaB result is 
 3. Original VaB source files remain unmodified.
 4. Logs and selected-index files are available through the task artifact path.
 5. A non-zero VaB process exit produces a structured failed result.
+6. A successful CIFAR-10 LDD task can export a ratio-specific raw clean subset from its
+   retained-index artifact.
 
 ## Engineering Verification
 

@@ -3,11 +3,17 @@
 
 import argparse
 import ast
+import csv
+import io
 import json
 import os
+import pickle
 import re
+import struct
 import subprocess
 import sys
+import zipfile
+import zlib
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -427,6 +433,8 @@ def run(args):
                 "success",
                 "VaB preflight passed; generated single-task script was validated without training",
                 started_at,
+                run_id=request.get("runId"),
+                attempt=request.get("attempt"),
                 algorithm=algorithm_key,
                 effective_config=config,
                 artifacts={
@@ -462,6 +470,8 @@ def run(args):
                 "success",
                 "VaB {} completed".format(Path(spec["source"]).stem),
                 started_at,
+                run_id=request.get("runId"),
+                attempt=request.get("attempt"),
                 algorithm=algorithm_key,
                 effective_config=config,
                 metrics={
@@ -491,6 +501,8 @@ def run(args):
             "failed",
             "VaB task failed",
             started_at,
+            run_id=request.get("runId") if "request" in locals() else None,
+            attempt=request.get("attempt") if "request" in locals() else None,
             error_code="VAB_INTEGRATION_ERROR",
             failure_reason=str(exc),
         )
@@ -500,13 +512,157 @@ def run(args):
     return 0 if result["status"] == "success" else 1
 
 
+def export_clean_subset(args):
+    """Rebuild a raw clean CIFAR-10 subset from LDD retained training indices."""
+    selection_path = Path(args.selection_file).expanduser().resolve()
+    dataset_root = Path(args.dataset_root).expanduser().resolve()
+    output_path = Path(args.output).expanduser().resolve()
+    metadata_path = Path(args.metadata).expanduser().resolve() if args.metadata else None
+    try:
+        if args.dataset.lower() != "cifar10":
+            raise IntegrationError("clean subset export currently supports dataset=cifar10 only")
+        if not selection_path.is_file():
+            raise IntegrationError("selection file does not exist: {}".format(selection_path))
+        if not dataset_root.is_dir():
+            raise IntegrationError("dataset root does not exist: {}".format(dataset_root))
+
+        import numpy as np
+
+        selected_indices = np.load(str(selection_path))
+        if selected_indices.ndim != 1 or selected_indices.size == 0:
+            raise IntegrationError("selection file must contain a non-empty one-dimensional index array")
+        if not np.issubdtype(selected_indices.dtype, np.integer):
+            raise IntegrationError("selection file must contain integer indices")
+
+        images, labels = load_cifar10_training_data(dataset_root, np)
+        selected_indices = selected_indices.astype(np.int64, copy=False)
+        if selected_indices.min() < 0 or selected_indices.max() >= len(images):
+            raise IntegrationError(
+                "selection indices must be within the CIFAR-10 training range [0, {}]".format(
+                    len(images) - 1
+                )
+            )
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        metadata = {
+            "format_version": 1,
+            "generated_at": utc_now(),
+            "dataset": "cifar10",
+            "source_split": "train",
+            "sample_count": int(selected_indices.size),
+            "selection_file": str(selection_path),
+            "selection_kind": "retained_clean_subset",
+            "reconstruction_note": (
+                "This archive reconstructs the raw clean CIFAR-10 training subset selected by "
+                "LDD retained indices. It does not serialize the in-memory trigger-modified "
+                "training samples used by the VaB experiment."
+            ),
+        }
+        with zipfile.ZipFile(str(output_path), "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("metadata.json", json.dumps(metadata, ensure_ascii=False, indent=2))
+            archive.writestr("selected_indices.npy", selection_path.read_bytes())
+
+            index_stream = io.StringIO()
+            csv.writer(index_stream).writerow(["position", "dataset_index"])
+            index_writer = csv.writer(index_stream)
+            for position, dataset_index in enumerate(selected_indices.tolist()):
+                index_writer.writerow([position, dataset_index])
+            archive.writestr("selected_indices.csv", index_stream.getvalue())
+
+            label_stream = io.StringIO()
+            label_writer = csv.writer(label_stream)
+            label_writer.writerow(["position", "dataset_index", "label", "image_file"])
+            for position, dataset_index in enumerate(selected_indices.tolist()):
+                label = int(labels[dataset_index])
+                image_name = "images/{:08d}_label_{}.png".format(dataset_index, label)
+                archive.writestr(image_name, encode_png(images[dataset_index]))
+                label_writer.writerow([position, dataset_index, label, image_name])
+            archive.writestr("labels.csv", label_stream.getvalue())
+
+        if metadata_path:
+            metadata_path.parent.mkdir(parents=True, exist_ok=True)
+            metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+        return 0
+    except Exception as exc:
+        print("clean subset export failed: {}".format(exc), file=sys.stderr)
+        return 1
+
+
+def load_cifar10_training_data(dataset_root, np):
+    """Load CIFAR-10 Python batches without requiring torchvision."""
+    batch_root = dataset_root / "cifar-10-batches-py"
+    if not batch_root.is_dir():
+        raise IntegrationError(
+            "CIFAR-10 Python batches were not found under {}".format(batch_root)
+        )
+    image_batches = []
+    labels = []
+    for batch_number in range(1, 6):
+        batch_path = batch_root / "data_batch_{}".format(batch_number)
+        if not batch_path.is_file():
+            raise IntegrationError("CIFAR-10 batch is missing: {}".format(batch_path))
+        with batch_path.open("rb") as handle:
+            batch = pickle.load(handle, encoding="bytes")
+        data = batch.get(b"data")
+        batch_labels = batch.get(b"labels")
+        if data is None or batch_labels is None:
+            raise IntegrationError("CIFAR-10 batch format is invalid: {}".format(batch_path))
+        image_batches.append(
+            np.asarray(data, dtype=np.uint8).reshape(-1, 3, 32, 32).transpose(0, 2, 3, 1)
+        )
+        labels.extend(batch_labels)
+    return np.concatenate(image_batches, axis=0), labels
+
+
+def encode_png(image):
+    """Encode one CIFAR-10 RGB image as PNG using only standard-library modules."""
+    if image.shape != (32, 32, 3):
+        raise IntegrationError("expected CIFAR-10 RGB image shape (32, 32, 3)")
+    raw = b"".join(b"\x00" + image[row].tobytes() for row in range(image.shape[0]))
+
+    def png_chunk(chunk_type, data):
+        return (
+            struct.pack(">I", len(data))
+            + chunk_type
+            + data
+            + struct.pack(">I", zlib.crc32(chunk_type + data) & 0xFFFFFFFF)
+        )
+
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + png_chunk(b"IHDR", struct.pack(">IIBBBBB", 32, 32, 8, 2, 0, 0, 0))
+        + png_chunk(b"IDAT", zlib.compress(raw))
+        + png_chunk(b"IEND", b"")
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description="Security model platform VaB adapter")
-    parser.add_argument("--stage", required=True)
-    parser.add_argument("--request", required=True)
-    parser.add_argument("--result", required=True)
+    parser.add_argument("--stage")
+    parser.add_argument("--request")
+    parser.add_argument("--result")
     parser.add_argument("--validate-only", action="store_true")
-    return run(parser.parse_args())
+    parser.add_argument("--export-clean-subset", action="store_true")
+    parser.add_argument("--selection-file")
+    parser.add_argument("--dataset-root")
+    parser.add_argument("--dataset")
+    parser.add_argument("--output")
+    parser.add_argument("--metadata")
+    args = parser.parse_args()
+    if args.export_clean_subset:
+        required = {
+            "--selection-file": args.selection_file,
+            "--dataset-root": args.dataset_root,
+            "--dataset": args.dataset,
+            "--output": args.output,
+        }
+        missing = [flag for flag, value in required.items() if not value]
+        if missing:
+            parser.error("export mode requires {}".format(", ".join(missing)))
+        return export_clean_subset(args)
+    if not args.stage or not args.request or not args.result:
+        parser.error("task mode requires --stage, --request and --result")
+    return run(args)
 
 
 if __name__ == "__main__":

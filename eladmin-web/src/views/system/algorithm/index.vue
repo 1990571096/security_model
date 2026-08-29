@@ -2,11 +2,18 @@
   <div class="app-container">
     <!--工具栏-->
     <div class="head-container">
+      <el-alert
+        title="当前平台算法范围：LDD 训练前数据清洗"
+        type="info"
+        :closable="false"
+        show-icon
+        class="scope-notice"
+      />
       <eHeader :permission="permission" />
       <crudOperation :permission="permission" />
     </div>
     <!--表格渲染-->
-    <el-table ref="table" v-loading="crud.loading" :data="crud.data" style="width: 100%;" @selection-change="crud.selectionChangeHandler">
+    <el-table ref="table" v-loading="crud.loading" :data="lddAlgorithms" style="width: 100%;" @selection-change="crud.selectionChangeHandler">
       <el-table-column type="selection" width="55" />
       <el-table-column :show-overflow-tooltip="true" prop="algorithmName" label="算法名称" width="120px"/>
       <el-table-column prop="algorithmType" label="算法类型" width="120px">
@@ -88,10 +95,13 @@ export default {
   data() {
     return {
       permission: {
-        add: ['admin', 'algorithm:add'],
-        edit: ['admin', 'algorithm:edit'],
-        del: ['admin', 'algorithm:del']
+        edit: ['admin', 'algorithm:edit']
       }
+    }
+  },
+  computed: {
+    lddAlgorithms() {
+      return (this.crud.data || []).filter(item => item.implementationPath === 'vab://pre-defense/ldd')
     }
   },
   methods: {
@@ -173,5 +183,8 @@ export default {
 <style rel="stylesheet/scss" lang="scss" scoped>
 ::v-deep .el-input-number .el-input__inner {
   text-align: left;
+}
+.scope-notice {
+  margin-bottom: 12px;
 }
 </style>

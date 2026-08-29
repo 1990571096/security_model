@@ -17,9 +17,14 @@ import me.zhengjie.annotation.Log;
 import me.zhengjie.exception.BadRequestException;
 import me.zhengjie.modules.system.domain.PreDefense;
 import me.zhengjie.modules.system.domain.dto.PreDefenseQueryCriteria;
+import me.zhengjie.modules.system.service.AlgorithmService;
+import me.zhengjie.modules.system.service.CleanSubsetExportService;
+import me.zhengjie.modules.system.service.DatasetService;
+import me.zhengjie.modules.system.service.HyperService;
 import me.zhengjie.modules.system.service.PreDefenseService;
 import me.zhengjie.utils.PageResult;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.core.io.FileSystemResource;
@@ -33,6 +38,9 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -48,6 +56,10 @@ import java.util.Set;
 public class PreDefenseController {
 
     private final PreDefenseService preDefenseService;
+    private final CleanSubsetExportService cleanSubsetExportService;
+    private final DatasetService datasetService;
+    private final AlgorithmService algorithmService;
+    private final HyperService hyperService;
     private static final String ENTITY_NAME = "preDefense";
 
     @ApiOperation("导出训练前防御任务数据")
@@ -111,6 +123,15 @@ public class PreDefenseController {
     public ResponseEntity<Object> startPreDefenseTask(@PathVariable Long taskId) {
         preDefenseService.startTask(taskId);
         return new ResponseEntity<>("任务启动成功", HttpStatus.OK);
+    }
+
+    @Log("重试训练前防御任务")
+    @ApiOperation("重试失败的训练前防御任务")
+    @PostMapping("/retry/{taskId}")
+    @PreAuthorize("@el.check('pre_defense:start')")
+    public ResponseEntity<Object> retryPreDefenseTask(@PathVariable Long taskId) {
+        preDefenseService.retryTask(taskId);
+        return new ResponseEntity<>("任务已重新启动", HttpStatus.OK);
     }
 
     @ApiOperation("获取任务进度")
@@ -200,20 +221,17 @@ public class PreDefenseController {
     @ApiOperation("下载清洗后数据集")
     @GetMapping("/download-cleaned-dataset/{taskId}")
     @PreAuthorize("@el.check('pre_defense:list')")
-    public ResponseEntity<Object> downloadCleanedDataset(@PathVariable Long taskId) {
+    public ResponseEntity<Resource> downloadCleanedDataset(
+            @PathVariable Long taskId,
+            @RequestParam(required = false) Integer isolationRatio) throws IOException {
         PreDefense task = preDefenseService.findById(taskId);
-
-        if (task.getOutputDatasetId() == null) {
-            throw new BadRequestException("该任务尚未生成清洗后数据集");
-        }
-
-        java.util.Map<String, Object> result = new java.util.HashMap<>();
-        result.put("taskId", taskId);
-        result.put("taskName", task.getTaskName());
-        result.put("outputDatasetId", task.getOutputDatasetId());
-        result.put("cleaningResult", task.getCleaningResult());
-
-        return new ResponseEntity<>(result, HttpStatus.OK);
+        Path zipFile = cleanSubsetExportService.export(task, isolationRatio);
+        String fileName = cleanSubsetExportService.buildDownloadFileName(task, isolationRatio);
+        return ResponseEntity.ok()
+                .contentType(MediaType.parseMediaType("application/zip"))
+                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + fileName + "\"")
+                .contentLength(Files.size(zipFile))
+                .body(new FileSystemResource(zipFile));
     }
 
     @ApiOperation("预览真实清洗任务结果图")
@@ -257,14 +275,35 @@ public class PreDefenseController {
     public ResponseEntity<Object> getCleaningReport(@PathVariable Long taskId) {
         PreDefense task = preDefenseService.findById(taskId);
 
-        java.util.Map<String, Object> report = new java.util.HashMap<>();
+        Map<String, Object> report = new LinkedHashMap<>();
         report.put("taskInfo", task);
-        report.put("cleaningResult", task.getCleaningResult());
-        report.put("algorithmId", task.getAlgorithmId());
-        report.put("datasetId", task.getDatasetId());
-        report.put("customParams", task.getCustomParams());
+        report.put("dataset", datasetService.findById(task.getDatasetId()));
+        report.put("algorithm", algorithmService.findById(task.getAlgorithmId()));
+        report.put("hyperParameter", task.getHyperId() == null ? null : hyperService.findById(task.getHyperId()));
+        report.put("executionSnapshot", parseJsonOrNull(task.getExecutionSnapshot()));
+        report.put("cleaningResult", parseJsonOrNull(task.getCleaningResult()));
+        report.put("cleanDatasetDownload", cleanSubsetExportService.describe(task));
+        report.put("reportGeneratedAt", java.time.LocalDateTime.now().toString());
 
         return new ResponseEntity<>(report, HttpStatus.OK);
+    }
+
+    @ApiOperation("获取任务执行日志")
+    @GetMapping("/logs/{taskId}")
+    @PreAuthorize("@el.check('pre_defense:list')")
+    public ResponseEntity<Object> getExecutionLogs(@PathVariable Long taskId) {
+        return new ResponseEntity<>(preDefenseService.getExecutionLogs(taskId), HttpStatus.OK);
+    }
+
+    private Object parseJsonOrNull(String raw) {
+        if (ObjectUtil.isEmpty(raw)) {
+            return null;
+        }
+        try {
+            return JSON.parse(raw);
+        } catch (Exception ignored) {
+            return raw;
+        }
     }
 
     @ApiOperation("根据状态查询任务")

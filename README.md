@@ -1,12 +1,13 @@
 # 面向数据清洗的安全模型训练系统
 
-本项目由早期网络安全竞赛项目重构而来，目标是形成一个面向数据清洗与安全模型训练的可视化平台。当前版本先保留 ELADMIN 既有工程基础，完成安全训练主链路的 MVP 闭环；后续再逐步迁移到更稳定的新技术栈，并接入真实训练前、训练中和训练后防御算法。
+本项目由早期网络安全竞赛项目重构而来，目标是形成一个面向数据清洗与安全模型训练的可视化平台。当前版本先保留 ELADMIN 既有工程基础，完成 LDD 训练前数据清洗、结果报告和清洗子集导出的可视化闭环；后续再扩展其他安全算法和安全模型训练能力。
 
 ## 当前定位
 
-- 管理数据集、模型、算法和超参数模板。
-- 创建并启动训练前防御任务，记录清洗结果。
-- 创建并启动训练中防御任务，记录训练日志、损失曲线和精度曲线。
+- 管理数据集、算法和 LDD 超参数模板。
+- 创建并启动 LDD 训练前数据清洗任务，记录清洗结果。
+- 查看失败任务并重试，保留每次启动的实验参数快照。
+- 查看 LDD 实验报告，并按保留索引导出清洗后的 CIFAR-10 子集。
 - 通过统一执行器接口为后续真实算法接入预留边界。
 - 按 SDD 文档驱动方式推进重构，降低返工风险。
 
@@ -33,23 +34,9 @@
 
 ## 算法执行范围
 
-为验证平台流程、接口协议和前端展示，系统仍保留 `MockDefenseTaskExecutor`
-提供的模拟基线结果。
+当前平台只展示、只允许启动 LDD（训练前防御）。历史 mock baseline 仅保留在旧代码和数据库结构中，用于兼容迁移，不属于当前演示功能。
 
-模拟训练前防御：
-
-- 基线-统计异常清洗
-- 基线-低置信样本过滤
-- 基线-IQR四分位清洗
-- 基线-IsolationForest异常清洗
-
-模拟训练中防御：
-
-- 基线-鲁棒训练
-- 基线-标签平滑训练
-- 基线-对抗训练占位
-
-当前真实接入的算法为 LDD（训练前防御）。平台通过
+当前真实接入的算法为 LDD。平台通过
 `PythonDefenseTaskExecutor` 和 `algorithm-runtime/vab/algorithm_entry.py` 调用外部
 VaB 项目中的 `LDD.py`，并将配置、结构化结果和任务产物渲染到训练前任务详情页。
 
@@ -142,8 +129,8 @@ npm run build:prod
 
 ## 当前限制
 
-- 内置 baseline 仍由 mock 执行器模拟；当前真实接入范围收敛为 LDD，后续算法将复用同一任务和结果协议接入。
-- 训练后防御暂未作为 MVP 主链路开放。
+- 当前真实运行和答辩展示只覆盖 LDD 训练前数据清洗。
+- 训练中、训练后和其他对比算法暂不接入主流程。
 - 前端和后端仍保留部分 ELADMIN 历史模块与技术债，后续按 SDD 逐步裁剪和迁移。
 
 ## 原始项目来源
@@ -162,12 +149,21 @@ LDD（论文提出方法）已通过 `algorithm-runtime/vab/algorithm_entry.py` 
 CIFAR-10 / SIG / batch size 128 / 5 epoch 的本地真实运行，结果产物保存在外部
 VaB 目录；该运行用于验证工程闭环，不作为论文正式实验结论。
 
+训练前任务详情支持失败重试、每次启动的参数快照和可视化实验报告。对成功的 LDD
+CIFAR-10 任务，报告页可按隔离比例读取 `selected_indices_<ratio>.npy`，重建原始
+CIFAR-10 训练样本并下载 ZIP；压缩包包含 PNG 图片、标签、索引及重建元数据，而非
+VaB 运行期构造的触发器修改张量。
+
 启动使用真实 VaB 算法的后端前，需要设置：
 
 ```powershell
 $env:VAB_ROOT='F:\Study\postgraduate\1下\VB backdoor defence\VaB-main'
 $env:SECURITY_MODEL_PYTHON_SCRIPT='F:\Study\postgraduate\毕业论文\security_model\algorithm-runtime\vab\algorithm_entry.py'
+$env:PYTHON_EXECUTABLE='F:\path\to\the\VaB-python.exe'
 ```
+
+`PYTHON_EXECUTABLE` 必须指向可运行 LDD 的 Python 环境。清洗子集导出仅依赖该环境
+中的 `numpy`，不额外依赖 PyTorch、torchvision 或 Pillow。
 
 然后用 Python 执行器 profile 启动后端：
 

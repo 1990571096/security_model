@@ -161,6 +161,29 @@
             </div>
           </el-card>
         </el-descriptions-item>
+        <el-descriptions-item v-if="cleaningResultData" label="执行日志" :span="2">
+          <el-card class="parameter-card execution-log-card" v-loading="logsLoading">
+            <el-empty
+              v-if="!logsLoading && !executionLogs.length"
+              :description="logsMessage || '暂无可读取的执行日志'"
+              :image-size="60"
+            />
+            <el-tabs v-else v-model="activeLogName" type="border-card">
+              <el-tab-pane
+                v-for="(item, index) in executionLogs"
+                :key="item.path"
+                :label="item.name"
+                :name="String(index)"
+              >
+                <div class="log-meta">
+                  <span>{{ formatFileSize(item.size) }}</span>
+                  <el-tag v-if="item.truncated" type="warning" size="mini">仅展示前 256 KB</el-tag>
+                </div>
+                <pre class="execution-log">{{ item.content || '日志文件为空' }}</pre>
+              </el-tab-pane>
+            </el-tabs>
+          </el-card>
+        </el-descriptions-item>
       </el-descriptions>
 
       <el-alert
@@ -193,7 +216,7 @@
           启动任务
         </el-button>
         <el-button
-          v-if="taskData.status === 'success' && taskData.outputDatasetId"
+          v-if="taskData.status === 'success' && isVabResult"
           type="success"
           size="small"
           icon="el-icon-download"
@@ -319,17 +342,20 @@
     <div slot="footer" class="dialog-footer">
       <el-button @click="handleClose">关闭</el-button>
     </div>
+    <report-dialog :visible.sync="reportVisible" :task-id="taskData ? taskData.taskId : null" />
   </el-dialog>
 </template>
 
 <script>
-import { startTask, getTaskProgress, downloadCleanedDataset, getCleaningReport, previewTaskArtifact } from '@/api/system/preDefense'
+import { startTask, retryTask, getTaskProgress, downloadCleanedDataset, previewTaskArtifact, getExecutionLogs } from '@/api/system/preDefense'
 import { getParameterSchema } from '@/api/system/hyper'
 import { get as getDataset } from '@/api/system/datasetDetail'
 import { getHyper } from '@/api/system/hyper'
+import reportDialog from './reportDialog'
 import * as echarts from 'echarts'
 
 export default {
+  components: { reportDialog },
   props: {
     visible: {
       type: Boolean,
@@ -358,7 +384,12 @@ export default {
       progressTimer: null,
       chart: null,
       templateConfig: null,
-      vabImageUrls: []
+      vabImageUrls: [],
+      reportVisible: false,
+      executionLogs: [],
+      logsLoading: false,
+      logsMessage: '',
+      activeLogName: '0'
     }
   },
   computed: {
@@ -533,6 +564,7 @@ export default {
         })
       }
       this.loadVabImages()
+      this.loadExecutionLogs()
 
       // 加载模板配置
       if (this.taskData.hyperId) {
@@ -566,6 +598,23 @@ export default {
     revokeVabImageUrls() {
       this.vabImageUrls.forEach(image => URL.revokeObjectURL(image.url))
       this.vabImageUrls = []
+    },
+
+    loadExecutionLogs() {
+      this.executionLogs = []
+      this.logsMessage = ''
+      this.activeLogName = '0'
+      if (!this.taskData || !this.taskData.taskId || !this.cleaningResultData) return
+      this.logsLoading = true
+      getExecutionLogs(this.taskData.taskId).then(response => {
+        const result = response.data || response
+        this.executionLogs = result.logs || []
+        this.logsMessage = result.message || ''
+      }).catch(() => {
+        this.logsMessage = '执行日志暂时无法读取'
+      }).finally(() => {
+        this.logsLoading = false
+      })
     },
 
     // 主动加载数据集名称
@@ -618,34 +667,35 @@ export default {
 
     // 重新启动任务
     retryTask() {
-      this.startTask()
+      if (!this.taskData) return
+      this.$confirm('将清除本次失败运行结果，并按新的启动快照重新执行。是否继续？', '重试任务', {
+        confirmButtonText: '重试',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }).then(() => {
+        retryTask(this.taskData.taskId).then(() => {
+          this.$message.success('任务已重新启动')
+          this.taskData.status = 'running'
+          this.taskData.progress = 1
+          this.startProgressMonitoring()
+          this.$emit('refresh')
+        }).catch(err => {
+          this.$message.error('任务重试失败：' + (err.message || '未知错误'))
+        })
+      })
     },
 
     // 下载清洗结果
     downloadResult() {
-      if (!this.taskData || !this.taskData.outputDatasetId) return
-
-      downloadCleanedDataset(this.taskData.taskId).then(() => {
-        this.$message.success('开始下载清洗后数据集')
-      }).catch(err => {
-        this.$message.error('下载失败：' + (err.message || '未知错误'))
-      })
+      if (!this.taskData) return
+      this.reportVisible = true
     },
 
     // 查看清洗报告
     viewCleaningReport() {
       if (!this.taskData) return
 
-      getCleaningReport(this.taskData.taskId).then(response => {
-        const report = response.data || response
-        // 这里可以打开一个新的对话框显示详细报告
-        this.$alert(JSON.stringify(report, null, 2), '清洗报告', {
-          confirmButtonText: '确定',
-          customClass: 'report-dialog'
-        })
-      }).catch(err => {
-        this.$message.error('获取报告失败：' + (err.message || '未知错误'))
-      })
+      this.reportVisible = true
     },
 
     // 刷新任务信息
@@ -804,6 +854,12 @@ export default {
       }
     },
 
+    formatFileSize(size) {
+      if (!size || size < 1024) return (size || 0) + ' B'
+      if (size < 1024 * 1024) return (size / 1024).toFixed(1) + ' KB'
+      return (size / (1024 * 1024)).toFixed(1) + ' MB'
+    },
+
     // 获取数据集名称
     getDatasetName(datasetId) {
       if (!datasetId) return '未选择'
@@ -925,6 +981,33 @@ export default {
   white-space: pre-wrap;
   word-wrap: break-word;
   margin: 0;
+}
+
+.execution-log-card {
+  width: 100%;
+}
+
+.log-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  color: #909399;
+  font-size: 12px;
+}
+
+.execution-log {
+  max-height: 280px;
+  margin: 0;
+  padding: 12px;
+  overflow: auto;
+  color: #f5f7fa;
+  background: #1f2933;
+  border-radius: 4px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 .vab-result {

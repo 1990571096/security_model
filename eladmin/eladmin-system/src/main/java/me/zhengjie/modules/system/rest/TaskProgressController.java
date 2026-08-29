@@ -41,8 +41,9 @@ public class TaskProgressController {
     @PreAuthorize("@el.check('task_progress:list')")
     public ResponseEntity<List<TaskProgressDto>> getAllTasks(
             @RequestParam(required = false) String status,
-            @RequestParam(required = false) String taskType) {
-        List<TaskProgressDto> tasks = taskProgressService.getAllTasks(status, taskType);
+            @RequestParam(required = false) String taskType,
+            @RequestParam(required = false) String blurry) {
+        List<TaskProgressDto> tasks = taskProgressService.getAllTasks(status, taskType, blurry);
         return new ResponseEntity<>(tasks, HttpStatus.OK);
     }
 

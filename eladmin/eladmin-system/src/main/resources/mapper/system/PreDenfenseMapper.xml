@@ -17,6 +17,7 @@
         <result column="progress" property="progress"/>
         <result column="output_dataset_id" property="outputDatasetId"/>
         <result column="cleaning_result" property="cleaningResult"/>
+        <result column="execution_snapshot" property="executionSnapshot"/>
         <result column="create_by" property="createBy"/>
         <result column="update_by" property="updateBy"/>
         <result column="create_time" property="createTime"/>
@@ -27,7 +28,7 @@
     <sql id="Base_Column_List">
         task_id, task_name, description, status, dataset_id, algorithm_id, hyper_id,
     custom_params, start_time, end_time, progress, output_dataset_id,
-    cleaning_result, create_by, update_by, create_time, update_time
+    cleaning_result, execution_snapshot, create_by, update_by, create_time, update_time
     </sql>
 
     <!-- 查询条件 -->
@@ -133,6 +134,19 @@
             cleaning_result = #{cleaningResult},
             update_time = now()
         where task_id = #{taskId}
+    </update>
+
+    <update id="resetForRetry">
+        update sys_pre_defense
+        set status = 'pending',
+            progress = 0,
+            start_time = null,
+            end_time = null,
+            output_dataset_id = null,
+            cleaning_result = null,
+            update_time = now()
+        where task_id = #{taskId}
+          and status = 'failed'
     </update>
 
     <!-- 新增：根据数据集ID和算法ID查询（用于统计） -->

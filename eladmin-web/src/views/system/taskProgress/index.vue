@@ -31,10 +31,7 @@
             </el-form-item>
             <el-form-item label="任务类型" prop="taskType">
               <el-select v-model="query.taskType" clearable placeholder="请选择" class="filter-item" style="width: 130px">
-                <el-option label="全部类型" value="" />
                 <el-option label="训练前防御" value="pre_defense" />
-                <el-option label="训练中防御" value="during_defense" />
-                <el-option label="训练后防御" value="post_defense" />
               </el-select>
             </el-form-item>
             <el-form-item label="任务状态" prop="status">
@@ -200,16 +197,12 @@ import { getAllDataset } from '@/api/system/dataset'
 import { getAllAlgorithm } from '@/api/system/algorithm'
 import { getAllHyper } from '@/api/system/hyper'
 import PreDefenseTaskDetailDialog from '@/views/system/preDefense/taskDetailDialog'
-import DuringDefenseTaskDetailDialog from '@/views/system/duringDefense/taskDetailDialog'
-import PostDefenseTaskDetailDialog from '@/views/system/postDefense/taskDetailDialog'
 
 export default {
   name: 'TaskProgress',
   components: {
     SystemMonitor,
     PreDefenseTaskDetailDialog,
-    DuringDefenseTaskDetailDialog,
-    PostDefenseTaskDetailDialog
   },
   data() {
     return {
@@ -221,7 +214,7 @@ export default {
       searchToggle: false,
       query: {
         blurry: '',
-        taskType: '',
+        taskType: 'pre_defense',
         status: 'running'
       },
       detailDialogVisible: false,
@@ -269,7 +262,7 @@ export default {
     resetQuery() {
       this.query = {
         blurry: '',
-        taskType: '',
+        taskType: 'pre_defense',
         status: 'running'
       }
       this.loadData()
@@ -291,21 +284,11 @@ export default {
     // 显示任务详情
     showTaskDetail(task) {
       this.selectedTask = task
-      // 根据任务类型选择对应的详情组件
-      switch (task.taskType) {
-        case 'pre_defense':
-          this.currentDetailComponent = 'PreDefenseTaskDetailDialog'
-          break
-        case 'during_defense':
-          this.currentDetailComponent = 'DuringDefenseTaskDetailDialog'
-          break
-        case 'post_defense':
-          this.currentDetailComponent = 'PostDefenseTaskDetailDialog'
-          break
-        default:
-          this.$message.warning('不支持的任务类型')
-          return
+      if (task.taskType !== 'pre_defense') {
+        this.$message.warning('当前平台仅展示训练前 LDD 清洗任务')
+        return
       }
+      this.currentDetailComponent = 'PreDefenseTaskDetailDialog'
       this.detailDialogVisible = true
     },
 
@@ -323,25 +306,14 @@ export default {
 
     // 跳转到对应的任务页面
     navigateToTask(task) {
-      let routePath
-      switch (task.taskType) {
-        case 'pre_defense':
-          routePath = '/system/preDefense'
-          break
-        case 'during_defense':
-          routePath = '/system/duringDefense'
-          break
-        case 'post_defense':
-          routePath = '/system/postDefense'
-          break
-        default:
-          this.$message.warning('不支持的任务类型')
-          return
+      if (task.taskType !== 'pre_defense') {
+        this.$message.warning('当前平台仅展示训练前 LDD 清洗任务')
+        return
       }
 
       // 跳转到对应页面
       this.$router.push({
-        path: routePath,
+        path: '/system/preDefense',
         query: { taskId: task.taskId }
       })
     },
@@ -360,7 +332,7 @@ export default {
         console.error('加载数据集缓存失败:', err)
       })
 
-      // 加载所有阶段的算法缓存
+      // 当前演示范围只加载 LDD 算法
       this.loadAlgorithmCache()
 
       // 加载模板缓存
@@ -379,15 +351,13 @@ export default {
     // 加载算法缓存（分阶段加载，确保覆盖所有类型）
     async loadAlgorithmCache() {
       try {
-        // 方法1：尝试获取所有算法
         const allAlgorithmsResponse = await getAllAlgorithm()
-        const allAlgorithms = allAlgorithmsResponse.data || allAlgorithmsResponse
-        if (Array.isArray(allAlgorithms) && allAlgorithms.length > 0) {
-          allAlgorithms.forEach(alg => {
-            this.algorithmCache[alg.algorithmId] = alg.algorithmName
-          })
-          return
-        }
+        const allAlgorithms = (allAlgorithmsResponse.data || allAlgorithmsResponse || [])
+          .filter(alg => alg.implementationPath === 'vab://pre-defense/ldd')
+        allAlgorithms.forEach(alg => {
+          this.algorithmCache[alg.algorithmId] = alg.algorithmName
+        })
+        if (allAlgorithms.length > 0) return
       } catch (error) {
         console.log('getAllAlgorithm失败，尝试分阶段加载:', error)
       }
@@ -405,23 +375,6 @@ export default {
           })
         }
 
-        // 加载训练中防御算法
-        const duringAlgorithms = await getAlgorithmsByStage('during')
-        const duringAlgs = duringAlgorithms.data || duringAlgorithms
-        if (Array.isArray(duringAlgs)) {
-          duringAlgs.forEach(alg => {
-            this.algorithmCache[alg.algorithmId] = alg.algorithmName
-          })
-        }
-
-        // 加载训练后防御算法
-        const postAlgorithms = await getAlgorithmsByStage('post')
-        const postAlgs = postAlgorithms.data || postAlgorithms
-        if (Array.isArray(postAlgs)) {
-          postAlgs.forEach(alg => {
-            this.algorithmCache[alg.algorithmId] = alg.algorithmName
-          })
-        }
       } catch (err) {
         console.error('加载算法缓存失败:', err)
       }

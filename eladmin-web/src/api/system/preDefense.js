@@ -144,11 +144,19 @@ export function getAlgorithmUsageStatistics() {
 }
 
 // 新增：下载清洗后数据集
-export function downloadCleanedDataset(taskId) {
+export function downloadCleanedDataset(taskId, isolationRatio) {
   return request({
     url: `api/pre-defense/download-cleaned-dataset/${taskId}`,
     method: 'get',
+    params: { isolationRatio },
     responseType: 'blob'
+  })
+}
+
+export function retryTask(taskId) {
+  return request({
+    url: `api/pre-defense/retry/${taskId}`,
+    method: 'post'
   })
 }
 
@@ -156,6 +164,13 @@ export function downloadCleanedDataset(taskId) {
 export function getCleaningReport(taskId) {
   return request({
     url: `api/pre-defense/report/${taskId}`,
+    method: 'get'
+  })
+}
+
+export function getExecutionLogs(taskId) {
+  return request({
+    url: `api/pre-defense/logs/${taskId}`,
     method: 'get'
   })
 }

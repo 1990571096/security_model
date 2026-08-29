@@ -81,6 +81,12 @@ public interface PreDefenseService extends IService<PreDefense> {
     void startTask(Long taskId);
 
     /**
+     * 重试失败的清洗任务。
+     * @param taskId 任务ID
+     */
+    void retryTask(Long taskId);
+
+    /**
      * 更新任务状态
      * @param taskId 任务ID
      * @param status 任务状态
@@ -158,5 +164,12 @@ public interface PreDefenseService extends IService<PreDefense> {
      */
     List<Map<String, Object>> getTimeTrendStatistics();
 
+    /**
+     * 获取任务执行日志。
+     *
+     * @param taskId 任务ID
+     * @return 日志文件及其内容
+     */
+    Map<String, Object> getExecutionLogs(Long taskId);
 
 }

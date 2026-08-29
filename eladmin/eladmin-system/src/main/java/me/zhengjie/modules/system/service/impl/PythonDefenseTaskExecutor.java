@@ -76,12 +76,12 @@ public class PythonDefenseTaskExecutor implements DefenseTaskExecutor {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             persistResult(stage, taskId, buildFailureResult(stage, startedAt,
-                    "TASK_INTERRUPTED", "Task was interrupted"));
+                    request, "TASK_INTERRUPTED", "Task was interrupted"));
             finishTask(stage, taskId, "failed", 0);
             log.warn("Python {} task {} interrupted", stage, taskId);
         } catch (Exception e) {
             persistResult(stage, taskId, buildFailureResult(stage, startedAt,
-                    "PYTHON_EXECUTION_ERROR", e.getMessage()));
+                    request, "PYTHON_EXECUTION_ERROR", e.getMessage()));
             finishTask(stage, taskId, "failed", 0);
             log.error("Python {} task {} failed", stage, taskId, e);
         }
@@ -93,7 +93,10 @@ public class PythonDefenseTaskExecutor implements DefenseTaskExecutor {
             throw new IllegalStateException("security-model.executor.python.script is not configured");
         }
 
-        Path taskDir = Paths.get(executorWorkspace, stage + "-" + request.getTaskId());
+        String attemptName = request.getAttempt() == null
+                ? "attempt-" + request.getRunId()
+                : "attempt-" + request.getAttempt();
+        Path taskDir = Paths.get(executorWorkspace, stage + "-" + request.getTaskId(), attemptName);
         Files.createDirectories(taskDir);
 
         Path requestFile = taskDir.resolve("request.json");
@@ -146,12 +149,15 @@ public class PythonDefenseTaskExecutor implements DefenseTaskExecutor {
         return JSON.toJSONString(result);
     }
 
-    private String buildFailureResult(String stage, String startedAt, String errorCode, String failureReason) {
+    private String buildFailureResult(String stage, String startedAt, DefenseTaskRequest request,
+                                      String errorCode, String failureReason) {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("executor", "python-process");
         result.put("stage", stage);
         result.put("status", "failed");
         result.put("message", "python executor failed");
+        result.put("run_id", request.getRunId());
+        result.put("attempt", request.getAttempt());
         result.put("error_code", errorCode);
         result.put("failure_reason", StringUtils.hasText(failureReason) ? failureReason : "Unknown execution error");
         result.put("started_at", startedAt);

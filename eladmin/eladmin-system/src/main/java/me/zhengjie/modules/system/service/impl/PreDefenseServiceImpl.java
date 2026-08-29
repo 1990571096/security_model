@@ -1,6 +1,9 @@
 package me.zhengjie.modules.system.service.impl;
 
 import cn.hutool.core.util.ObjectUtil;
+import com.alibaba.fastjson2.JSON;
+import com.alibaba.fastjson2.JSONArray;
+import com.alibaba.fastjson2.JSONObject;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
@@ -30,6 +33,10 @@ import org.springframework.transaction.annotation.Transactional;
 
 import javax.servlet.http.HttpServletResponse;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.time.LocalDateTime;
 import java.util.*;
 
@@ -88,6 +95,9 @@ public class PreDefenseServiceImpl extends ServiceImpl<PreDefenseMapper, PreDefe
     @Transactional(rollbackFor = Exception.class)
     public void update(PreDefense resources) {
         PreDefense task = findById(resources.getTaskId());
+        if (!"pending".equals(task.getStatus())) {
+            throw new BadRequestException("只有等待中的任务才能编辑");
+        }
 
         // 检查任务名称是否已被其他任务使用
         PreDefense taskByName = preDefenseMapper.findByTaskName(resources.getTaskName());
@@ -214,6 +224,91 @@ public class PreDefenseServiceImpl extends ServiceImpl<PreDefenseMapper, PreDefe
     }
 
     @Override
+    public Map<String, Object> getExecutionLogs(Long taskId) {
+        PreDefense task = findById(taskId);
+        Map<String, Object> response = new LinkedHashMap<>();
+        List<Map<String, Object>> logs = new ArrayList<>();
+        response.put("taskId", taskId);
+        response.put("available", false);
+        response.put("logs", logs);
+
+        if (ObjectUtil.isEmpty(task.getCleaningResult())) {
+            response.put("message", "任务尚未生成执行结果");
+            return response;
+        }
+
+        try {
+            JSONObject result = JSON.parseObject(task.getCleaningResult());
+            JSONObject artifacts = result.getJSONObject("artifacts");
+            if (artifacts == null) {
+                response.put("message", "任务结果未登记执行日志");
+                return response;
+            }
+
+            Object rawLogs = artifacts.get("logs");
+            if (!(rawLogs instanceof Collection)) {
+                response.put("message", "任务结果未登记执行日志");
+                return response;
+            }
+
+            Set<String> uniquePaths = new LinkedHashSet<>();
+            for (Object rawPath : (Collection<?>) rawLogs) {
+                if (rawPath != null && !ObjectUtil.isEmpty(rawPath.toString())) {
+                    uniquePaths.add(rawPath.toString());
+                }
+            }
+
+            for (String rawPath : uniquePaths) {
+                Path path;
+                try {
+                    path = Paths.get(rawPath).toAbsolutePath().normalize();
+                } catch (Exception ignored) {
+                    continue;
+                }
+                if (!Files.isRegularFile(path) || !isReadableLogFile(path)) {
+                    continue;
+                }
+
+                long fileSize = Files.size(path);
+                int length = (int) Math.min(fileSize, 256 * 1024);
+                byte[] bytes = new byte[length];
+                try (java.io.InputStream input = Files.newInputStream(path)) {
+                    int offset = 0;
+                    while (offset < length) {
+                        int read = input.read(bytes, offset, length - offset);
+                        if (read < 0) {
+                            break;
+                        }
+                        offset += read;
+                    }
+                    if (offset < length) {
+                        bytes = Arrays.copyOf(bytes, offset);
+                    }
+                }
+                Map<String, Object> item = new LinkedHashMap<>();
+                item.put("name", path.getFileName().toString());
+                item.put("path", path.toString());
+                item.put("content", new String(bytes, StandardCharsets.UTF_8));
+                item.put("size", fileSize);
+                item.put("truncated", fileSize > 256 * 1024);
+                logs.add(item);
+            }
+
+            response.put("available", !logs.isEmpty());
+            response.put("message", logs.isEmpty() ? "暂未找到可读取的执行日志" : "执行日志读取成功");
+        } catch (Exception e) {
+            log.warn("读取任务 {} 执行日志失败: {}", taskId, e.getMessage());
+            response.put("message", "执行日志读取失败");
+        }
+        return response;
+    }
+
+    private boolean isReadableLogFile(Path path) {
+        String fileName = path.getFileName().toString().toLowerCase(Locale.ROOT);
+        return fileName.endsWith(".log") || fileName.endsWith(".txt");
+    }
+
+    @Override
     public PreDefense findByTaskName(String taskName) {
         return preDefenseMapper.findByTaskName(taskName);
     }
@@ -254,33 +349,58 @@ public class PreDefenseServiceImpl extends ServiceImpl<PreDefenseMapper, PreDefe
     @Transactional(rollbackFor = Exception.class)
     public void startTask(Long taskId) {
         PreDefense task = findById(taskId);
-        
-        // 检查任务状态
         if (!"pending".equals(task.getStatus())) {
             throw new BadRequestException("只有等待中的任务才能启动");
         }
+        launchTask(task);
+    }
 
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void retryTask(Long taskId) {
+        PreDefense task = findById(taskId);
+        if (!"failed".equals(task.getStatus())) {
+            throw new BadRequestException("只有失败的任务才能重试");
+        }
+        if (preDefenseMapper.resetForRetry(taskId) != 1) {
+            throw new BadRequestException("任务状态已变化，请刷新后重试");
+        }
+        task = findById(taskId);
+        launchTask(task);
+        log.info("重试训练前防御任务: {} (ID: {})", task.getTaskName(), taskId);
+    }
+
+    private void launchTask(PreDefense task) {
         validateTask(task);
-        
-        // 更新任务状态为运行中
+        DefenseTaskRequest request = buildExecutionRequest(task);
         task.setStatus("running");
         task.setProgress(1);
         task.setStartTime(LocalDateTime.now());
+        task.setEndTime(null);
+        task.setExecutionSnapshot(appendExecutionSnapshot(task.getExecutionSnapshot(), request, task.getStartTime()));
         preDefenseMapper.updateById(task);
-        
-        defenseTaskExecutor.runPreDefense(buildExecutionRequest(task));
+        defenseTaskExecutor.runPreDefense(request);
 
-        log.info("启动训练前防御任务: {} (ID: {})", task.getTaskName(), taskId);
+        log.info("启动训练前防御任务: {} (ID: {})", task.getTaskName(), task.getTaskId());
     }
 
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void updateTaskStatus(Long taskId, String status, Integer progress) {
+        PreDefense task = findById(taskId);
+        if (!Arrays.asList("pending", "running", "success", "failed").contains(status)) {
+            throw new BadRequestException("不支持的任务状态: " + status);
+        }
+        if (!isValidStatusTransition(task.getStatus(), status)) {
+            throw new BadRequestException("不允许的任务状态流转: " + task.getStatus() + " -> " + status);
+        }
+        if (progress == null || progress < 0 || progress > 100) {
+            throw new BadRequestException("任务进度必须在0到100之间");
+        }
         preDefenseMapper.updateStatus(taskId, status, progress);
         
         // 如果任务完成，设置结束时间
         if ("success".equals(status) || "failed".equals(status)) {
-            PreDefense task = findById(taskId);
             task.setEndTime(LocalDateTime.now());
             preDefenseMapper.updateById(task);
         }
@@ -289,6 +409,13 @@ public class PreDefenseServiceImpl extends ServiceImpl<PreDefenseMapper, PreDefe
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void updateTaskResult(Long taskId, Long outputDatasetId, String cleaningResult) {
+        PreDefense task = findById(taskId);
+        if (!"running".equals(task.getStatus())) {
+            throw new BadRequestException("只有运行中的任务才能写入执行结果");
+        }
+        if (ObjectUtil.isEmpty(cleaningResult)) {
+            throw new BadRequestException("清洗结果不能为空");
+        }
         preDefenseMapper.updateResult(taskId, outputDatasetId, cleaningResult);
     }
 
@@ -325,6 +452,9 @@ public class PreDefenseServiceImpl extends ServiceImpl<PreDefenseMapper, PreDefe
         if (algorithm == null || !Boolean.TRUE.equals(algorithm.getEnabled()) || !"pre".equals(algorithm.getDefenseStage())) {
             throw new BadRequestException("指定的算法不存在、未启用或不是训练前防御算法");
         }
+        if (!"vab://pre-defense/ldd".equals(algorithm.getImplementationPath())) {
+            throw new BadRequestException("当前平台仅开放 LDD 训练前数据清洗算法");
+        }
 
         if (resources.getHyperId() != null) {
             Hyper hyper = hyperService.findById(resources.getHyperId());
@@ -340,14 +470,63 @@ public class PreDefenseServiceImpl extends ServiceImpl<PreDefenseMapper, PreDefe
         Hyper hyper = task.getHyperId() == null ? null : hyperService.findById(task.getHyperId());
         return DefenseTaskRequest.builder()
                 .taskId(task.getTaskId())
+                .attempt(nextAttempt(task.getExecutionSnapshot()))
+                .runId(UUID.randomUUID().toString())
                 .taskName(task.getTaskName())
                 .stage("pre_defense")
                 .description(task.getDescription())
                 .createdBy(task.getCreateBy())
+                .customParams(task.getCustomParams())
                 .dataset(toDatasetRef(dataset))
                 .algorithm(toAlgorithmRef(algorithm))
                 .hyperParameter(toHyperRef(hyper))
                 .build();
+    }
+
+    private String appendExecutionSnapshot(String existingSnapshot, DefenseTaskRequest request, LocalDateTime launchedAt) {
+        JSONObject snapshot = new JSONObject();
+        JSONArray attempts = new JSONArray();
+        if (!ObjectUtil.isEmpty(existingSnapshot)) {
+            try {
+                JSONObject previous = JSON.parseObject(existingSnapshot);
+                JSONArray previousAttempts = previous.getJSONArray("attempts");
+                if (previousAttempts != null) {
+                    attempts.addAll(previousAttempts);
+                }
+            } catch (Exception ignored) {
+                log.warn("任务 {} 的历史执行快照无法解析，将从本次启动重新记录", request.getTaskId());
+            }
+        }
+        JSONObject attempt = new JSONObject();
+        attempt.put("attempt", request.getAttempt() == null ? attempts.size() + 1 : request.getAttempt());
+        attempt.put("runId", request.getRunId());
+        attempt.put("launchedAt", launchedAt.toString());
+        attempt.put("request", JSON.parseObject(JSON.toJSONString(request)));
+        attempts.add(attempt);
+        snapshot.put("version", 1);
+        snapshot.put("attempts", attempts);
+        return snapshot.toJSONString();
+    }
+
+    private boolean isValidStatusTransition(String current, String next) {
+        if (Objects.equals(current, next)) {
+            return "running".equals(current);
+        }
+        return ("pending".equals(current) && "running".equals(next))
+                || ("running".equals(current) && ("success".equals(next) || "failed".equals(next)));
+    }
+
+    private int nextAttempt(String existingSnapshot) {
+        if (ObjectUtil.isEmpty(existingSnapshot)) {
+            return 1;
+        }
+        try {
+            JSONObject previous = JSON.parseObject(existingSnapshot);
+            JSONArray attempts = previous.getJSONArray("attempts");
+            return attempts == null ? 1 : attempts.size() + 1;
+        } catch (Exception ignored) {
+            return 1;
+        }
     }
 
     private DefenseResourceRef toDatasetRef(Dataset dataset) {

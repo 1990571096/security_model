@@ -24,7 +24,7 @@ public interface TaskProgressService {
      * @param taskType 任务类型（可选）
      * @return 任务列表
      */
-    List<TaskProgressDto> getAllTasks(String status, String taskType);
+    List<TaskProgressDto> getAllTasks(String status, String taskType, String blurry);
 
     /**
      * 根据任务类型和ID获取任务详情

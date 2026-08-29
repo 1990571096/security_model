@@ -15,11 +15,11 @@ export function getRunningTasks() {
  * @param {String} status 任务状态（可选）
  * @param {String} taskType 任务类型（可选）
  */
-export function getAllTasks(status, taskType) {
+export function getAllTasks(status, taskType, blurry) {
   return request({
     url: 'api/task-progress',
     method: 'get',
-    params: { status, taskType }
+    params: { status, taskType, blurry }
   })
 }
 

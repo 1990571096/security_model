@@ -82,6 +82,10 @@ public class PreDefense extends BaseEntity implements Serializable {
     @ApiModelProperty(value = "清洗结果(JSON格式): 包含样本统计、损失分布、质量指标等")
     private String cleaningResult;
 
+    @TableField("execution_snapshot")
+    @ApiModelProperty(value = "执行参数快照(JSON格式): 每次启动时冻结的资源与参数")
+    private String executionSnapshot;
+
     @Override
     public boolean equals(Object o) {
         if (this == o) {

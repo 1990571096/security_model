@@ -80,7 +80,8 @@ export default {
     // 加载算法选项
     loadAlgorithms() {
       getAlgorithmsByStage('pre').then(response => {
-        this.algorithmOptions = response.data || response
+        const algorithms = response.data || response || []
+        this.algorithmOptions = algorithms.filter(item => item.implementationPath === 'vab://pre-defense/ldd')
       }).catch(err => {
         console.error('加载算法列表失败:', err)
       })

@@ -96,11 +96,9 @@ export default {
       recentTasks: [],
       workflow: [
         { title: '数据集', desc: '导入和解析图像训练数据', path: '/system/dataset', icon: 'el-icon-folder-opened' },
-        { title: '算法库', desc: '维护防御算法和参数 schema', path: '/system/algorithm', icon: 'el-icon-cpu' },
-        { title: '训练前防御', desc: '检测中毒样本并筛选干净子集', path: '/system/preDefense', icon: 'el-icon-document-checked' },
-        { title: '训练中防御', desc: '执行安全训练和训练阶段防御', path: '/system/duringDefense', icon: 'el-icon-data-line' },
-        { title: '模型库', desc: '管理内置和自定义图像模型', path: '/system/model', icon: 'el-icon-box' },
-        { title: '任务进度', desc: '跟踪清洗、训练和评估任务', path: '/system/taskProgress', icon: 'el-icon-tickets' }
+        { title: '算法库', desc: '查看 LDD 算法和参数 schema', path: '/system/algorithm', icon: 'el-icon-cpu' },
+        { title: 'LDD 数据清洗', desc: '检测风险样本并筛选干净子集', path: '/system/preDefense', icon: 'el-icon-document-checked' },
+        { title: '任务进度', desc: '跟踪 LDD 清洗任务和实验状态', path: '/system/taskProgress', icon: 'el-icon-tickets' }
       ]
     }
   },
@@ -134,10 +132,10 @@ export default {
         const tasks = this.normalizeList(tasksRes)
 
         this.stats.datasets = datasets.length
-        this.stats.algorithms = algorithms.filter(item => item.enabled !== false).length
+        this.stats.algorithms = algorithms.filter(item => item.enabled !== false && item.implementationPath === 'vab://pre-defense/ldd').length
         this.stats.running = taskStats.runningCount || 0
         this.stats.totalTasks = taskStats.totalCount || tasks.length
-        this.recentTasks = tasks.slice(0, 8)
+        this.recentTasks = tasks.filter(item => item.taskType === 'pre_defense').slice(0, 8)
       } catch (error) {
         this.stats = {
           datasets: 0,

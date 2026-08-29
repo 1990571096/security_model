@@ -77,15 +77,16 @@ public class TaskProgressServiceImpl implements TaskProgressService {
     }
 
     @Override
-    public List<TaskProgressDto> getAllTasks(String status, String taskType) {
+    public List<TaskProgressDto> getAllTasks(String status, String taskType, String blurry) {
         List<TaskProgressDto> allTasks = new ArrayList<>();
 
         try {
             // 根据任务类型筛选
             if (ObjectUtil.isEmpty(taskType) || "pre_defense".equals(taskType)) {
-                List<PreDefense> preTasks = ObjectUtil.isEmpty(status) ?
-                        preDefenseService.queryAll(new PreDefenseQueryCriteria()) :
-                        preDefenseService.findByStatus(status);
+                PreDefenseQueryCriteria criteria = new PreDefenseQueryCriteria();
+                criteria.setStatus(status);
+                criteria.setBlurry(blurry);
+                List<PreDefense> preTasks = preDefenseService.queryAll(criteria);
                 allTasks.addAll(preTasks.stream()
                         .map(this::convertPreDefenseToDto)
                         .collect(Collectors.toList()));

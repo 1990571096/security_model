@@ -94,6 +94,12 @@ public interface PreDefenseMapper extends BaseMapper<PreDefense> {
                       @Param("outputDatasetId") Long outputDatasetId,
                       @Param("cleaningResult") String cleaningResult);
 
+    /**
+     * 将失败任务恢复为待启动状态，同时清除上一次运行结果。
+     * @return 成功更新的记录数
+     */
+    int resetForRetry(@Param("taskId") Long taskId);
+
     // 新增统计相关方法
 
     /**

@@ -74,15 +74,6 @@
               @click="startTask(scope.row)"
             >
             </el-button>
-            <!-- 下载按钮 - 蓝色 -->
-            <el-button
-              v-if="scope.row.status === 'success' && scope.row.outputDatasetId && checkPer(['admin','pre_defense:list'])"
-              size="mini"
-              type="primary"
-              icon="el-icon-download"
-              @click="downloadCleanedDataset(scope.row)"
-            >
-            </el-button>
             <!-- 标准编辑与删除按钮 -->
             <udOperation
               :data="scope.row"
@@ -130,7 +121,7 @@ import taskDetailDialog from './taskDetailDialog'
 import { getAlgorithmsByStage } from '@/api/system/algorithm'
 import { getAllDataset } from '@/api/system/dataset'
 import { getAllHyper } from '@/api/system/hyper'
-import { startTask, startBatchTasks, downloadCleanedDataset } from '@/api/system/preDefense'
+import { startTask, startBatchTasks } from '@/api/system/preDefense'
 import CRUD, { presenter } from '@crud/crud'
 import crudOperation from '@crud/CRUD.operation'
 import pagination from '@crud/Pagination'
@@ -224,20 +215,6 @@ export default {
         })
       })
     },
-    // 下载清洗后数据集
-    downloadCleanedDataset(task) {
-      this.$confirm('确定要下载清洗后的数据集吗？', '提示', {
-        confirmButtonText: '确定',
-        cancelButtonText: '取消',
-        type: 'info'
-      }).then(() => {
-        downloadCleanedDataset(task.taskId).then(() => {
-          this.$message.success('开始下载清洗后数据集')
-        }).catch(err => {
-          this.$message.error('下载失败：' + (err.message || '未知错误'))
-        })
-      })
-    },
     // 修改：从JSON中计算清洗效率（去掉可选链操作符）
     getCleaningRate(task) {
       if (task.cleaningResult) {
@@ -284,7 +261,7 @@ export default {
 
       // 加载算法缓存
       getAlgorithmsByStage('pre').then(response => {
-        const algorithms = response.data || response
+        const algorithms = (response.data || response || []).filter(item => item.implementationPath === 'vab://pre-defense/ldd')
         if (Array.isArray(algorithms)) {
           algorithms.forEach(alg => {
             this.algorithmCache[alg.algorithmId] = alg.algorithmName
@@ -382,4 +359,3 @@ export default {
   transition: width 0.6s ease;
 }
 </style>
-
