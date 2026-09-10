@@ -40,6 +40,10 @@ PONG
 - `DB_NAME`
 - `DB_USER`
 - `DB_PWD`
+- `JWT_BASE64_SECRET`
+- `RSA_PRIVATE_KEY`
+- `SECURITY_MODEL_DEFAULT_USER_PASSWORD`
+- `DRUID_LOGIN_PASSWORD` (仅生产环境 Druid 监控)
 
 Defaults remain compatible with the old local config:
 
@@ -50,6 +54,8 @@ DB_NAME=eladmin
 DB_USER=root
 DB_PWD=<本机 MySQL 密码>
 ```
+
+JWT 签名密钥、RSA 私钥和用户初始密码必须通过环境变量提供，不能写入配置文件或提交到仓库。
 
 The current local MySQL service is reachable on `localhost:3306`. The MVP database is `eladmin`; the old `xm-qingge` database is not reused.
 

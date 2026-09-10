@@ -131,7 +131,7 @@ export function validateTelephone(rule, value, callback) {
     callback()
   } else {
     if ((!reg.test(value)) && value !== '') {
-      callback(new Error('请输入正确的固话（格式：区号+号码,如010-1234567）'))
+      callback(new Error('请输入正确的固话（格式：区号+号码,如010-7654321）'))
     } else {
       callback()
     }

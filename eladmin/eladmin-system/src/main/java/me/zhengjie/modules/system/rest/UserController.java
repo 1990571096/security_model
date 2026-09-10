@@ -39,6 +39,8 @@ import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.util.CollectionUtils;
 import org.springframework.util.ObjectUtils;
+import org.springframework.util.StringUtils;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
@@ -63,6 +65,9 @@ public class UserController {
 //    private final DeptService deptService;
     private final RoleService roleService;
     private final VerifyService verificationCodeService;
+
+    @Value("${security-model.auth.default-user-password:}")
+    private String defaultUserPassword;
 
     @ApiOperation("导出用户数据")
     @GetMapping(value = "/download")
@@ -114,8 +119,7 @@ public class UserController {
     @PreAuthorize("@el.check('user:add')")
     public ResponseEntity<Object> createUser(@Validated @RequestBody User resources){
         checkLevel(resources);
-        // 默认密码 123456
-        resources.setPassword(passwordEncoder.encode("123456"));
+        resources.setPassword(passwordEncoder.encode(requireDefaultUserPassword()));
         userService.create(resources);
         return new ResponseEntity<>(HttpStatus.CREATED);
     }
@@ -176,9 +180,16 @@ public class UserController {
     @ApiOperation("重置密码")
     @PutMapping(value = "/resetPwd")
     public ResponseEntity<Object> resetPwd(@RequestBody Set<Long> ids) {
-        String pwd = passwordEncoder.encode("123456");
+        String pwd = passwordEncoder.encode(requireDefaultUserPassword());
         userService.resetPwd(ids, pwd);
         return new ResponseEntity<>(HttpStatus.OK);
+    }
+
+    private String requireDefaultUserPassword() {
+        if (!StringUtils.hasText(defaultUserPassword)) {
+            throw new BadRequestException("未配置用户初始密码，请设置 SECURITY_MODEL_DEFAULT_USER_PASSWORD");
+        }
+        return defaultUserPassword;
     }
 
     @ApiOperation("修改头像")

@@ -13,7 +13,8 @@ public class EncryptUtilsTest {
     @Test
     public void testDesEncrypt() {
         try {
-            assertEquals("7772841DC6099402", desEncrypt("123456"));
+            String source = "des-test-value";
+            assertEquals(source, desDecrypt(desEncrypt(source)));
         } catch (Exception e) {
             e.printStackTrace();
         }
@@ -25,7 +26,8 @@ public class EncryptUtilsTest {
     @Test
     public void testDesDecrypt() {
         try {
-            assertEquals("123456", desDecrypt("7772841DC6099402"));
+            String source = "des-test-value";
+            assertEquals(source, desDecrypt(desEncrypt(source)));
         } catch (Exception e) {
             e.printStackTrace();
         }

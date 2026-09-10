@@ -57,6 +57,8 @@ VaB 项目中的 `LDD.py`，并将配置、结构化结果和任务产物渲染�
 - 用户名：`root`
 - 密码：通过 `DB_PWD` 环境变量配置，不在仓库中保存真实密码。
 - Redis：默认本地服务，后端开发环境使用 Redis DB `1`
+- JWT、RSA 私钥和用户初始密码通过 `JWT_BASE64_SECRET`、`RSA_PRIVATE_KEY`、
+  `SECURITY_MODEL_DEFAULT_USER_PASSWORD` 环境变量配置。
 
 首次初始化数据库：
 

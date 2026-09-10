@@ -69,9 +69,12 @@ code:
 
 #密码加密传输，前端公钥加密，后端私钥解密
 rsa:
-  private_key: MIIBUwIBADANBgkqhkiG9w0BAQEFAASCAT0wggE5AgEAAkEA0vfvyTdGJkdbHkB8mp0f3FE0GYP3AYPaJF7jUd1M0XxFSE2ceK3k2kw20YvQ09NJKk+OMjWQl9WitG9pB6tSCQIDAQABAkA2SimBrWC2/wvauBuYqjCFwLvYiRYqZKThUS3MZlebXJiLB+Ue/gUifAAKIg1avttUZsHBHrop4qfJCwAI0+YRAiEA+W3NK/RaXtnRqmoUUkb59zsZUBLpvZgQPfj1MhyHDz0CIQDYhsAhPJ3mgS64NbUZmGWuuNKp5coY2GIj/zYDMJp6vQIgUueLFXv/eZ1ekgz2Oi67MNCk5jeTF2BurZqNLR3MSmUCIFT3Q6uHMtsB9Eha4u7hS31tj1UWE+D+ADzp59MGnoftAiBeHT7gDMuqeJHPL4b+kC+gzV4FGTfhR9q3tTbklZkD2A==
+  private_key: ${RSA_PRIVATE_KEY:}
 
 security-model:
+  auth:
+    # 新增或重置用户时使用的初始密码，必须通过环境变量提供。
+    default-user-password: ${SECURITY_MODEL_DEFAULT_USER_PASSWORD:}
   executor:
     task-pool:
       # 独立承载 LDD 与清洗子集导出任务，避免使用 Web 请求线程执行长任务。
