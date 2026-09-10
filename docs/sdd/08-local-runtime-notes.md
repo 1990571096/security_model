@@ -48,7 +48,7 @@ DB_HOST=localhost
 DB_PORT=3306
 DB_NAME=eladmin
 DB_USER=root
-DB_PWD=123456
+DB_PWD=<本机 MySQL 密码>
 ```
 
 The current local MySQL service is reachable on `localhost:3306`. The MVP database is `eladmin`; the old `xm-qingge` database is not reused.
