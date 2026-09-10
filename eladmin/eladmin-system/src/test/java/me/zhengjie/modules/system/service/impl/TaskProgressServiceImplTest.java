@@ -5,6 +5,7 @@ import me.zhengjie.modules.system.service.AlgorithmService;
 import me.zhengjie.modules.system.service.DatasetService;
 import me.zhengjie.modules.system.service.ModelService;
 import me.zhengjie.modules.system.service.PreDefenseService;
+import me.zhengjie.modules.system.service.policy.TaskExecutionQuotaPolicy;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -42,6 +43,9 @@ class TaskProgressServiceImplTest {
     @Mock
     private ThreadPoolTaskExecutor taskExecutor;
 
+    @Mock
+    private TaskExecutionQuotaPolicy taskExecutionQuotaPolicy;
+
     private TaskProgressServiceImpl service;
 
     @BeforeEach
@@ -51,7 +55,8 @@ class TaskProgressServiceImplTest {
                 algorithmService,
                 datasetService,
                 modelService,
-                taskExecutor);
+                taskExecutor,
+                taskExecutionQuotaPolicy);
     }
 
     @Test

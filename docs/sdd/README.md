@@ -15,6 +15,8 @@
 - [09-project-status.md](09-project-status.md)：项目整体目标、当前进度、已完成能力和后续待办。
 - [10-vab-integration.md](10-vab-integration.md)：LDD 训练前防御算法的 VaB 适配、参数和产物约定。
 - [11-platform-implementation.md](11-platform-implementation.md)：当前平台实现、业务流程、LDD 执行链路和扩展思路。
+- [12-resume-project-narrative.md](12-resume-project-narrative.md)：简历项目描述与面试讲解提纲。
+- [13-framework-migration-readiness.md](13-framework-migration-readiness.md)：Spring Boot 3、Java 17、Vue 3 迁移准备清单。
 
 ## 迭代原则
 

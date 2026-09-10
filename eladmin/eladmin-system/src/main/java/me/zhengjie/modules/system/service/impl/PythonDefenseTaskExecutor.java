@@ -9,6 +9,7 @@ import me.zhengjie.modules.system.domain.PreDefense;
 import me.zhengjie.modules.system.mapper.DuringDefenseMapper;
 import me.zhengjie.modules.system.mapper.PreDefenseMapper;
 import me.zhengjie.modules.system.service.executor.DefenseTaskExecutor;
+import me.zhengjie.modules.system.service.executor.PythonProcessWaiter;
 import me.zhengjie.modules.system.service.executor.dto.DefenseTaskRequest;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Profile;
@@ -42,6 +43,7 @@ public class PythonDefenseTaskExecutor implements DefenseTaskExecutor {
 
     private final PreDefenseMapper preDefenseMapper;
     private final DuringDefenseMapper duringDefenseMapper;
+    private final PythonProcessWaiter processWaiter = new PythonProcessWaiter();
     private final ConcurrentMap<String, Process> activeProcesses = new ConcurrentHashMap<>();
     private final java.util.Set<String> canceledRuns = ConcurrentHashMap.newKeySet();
 
@@ -165,9 +167,12 @@ public class PythonDefenseTaskExecutor implements DefenseTaskExecutor {
                 throw new TaskCanceledException();
             }
 
-            boolean finished = process.waitFor(timeoutSeconds, TimeUnit.SECONDS);
-            if (!finished) {
-                process.destroyForcibly();
+            PythonProcessWaiter.Outcome outcome =
+                    processWaiter.waitFor(process, timeoutSeconds, () -> isCanceled(request));
+            if (outcome == PythonProcessWaiter.Outcome.CANCELED) {
+                throw new TaskCanceledException();
+            }
+            if (outcome == PythonProcessWaiter.Outcome.TIMED_OUT) {
                 throw new IllegalStateException("TASK_TIMEOUT: Python executor timed out after "
                         + timeoutSeconds + " seconds; process was forcibly terminated");
             }

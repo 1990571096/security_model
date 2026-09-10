@@ -26,6 +26,7 @@ import me.zhengjie.modules.system.service.executor.DefenseTaskExecutor;
 import me.zhengjie.modules.system.service.executor.dto.DefenseResourceRef;
 import me.zhengjie.modules.system.service.executor.dto.DefenseTaskRequest;
 import me.zhengjie.modules.system.service.policy.LddConfigurationPolicy;
+import me.zhengjie.modules.system.service.policy.TaskExecutionQuotaPolicy;
 import me.zhengjie.modules.system.service.snapshot.ExecutionFingerprintService;
 import me.zhengjie.utils.FileUtil;
 import me.zhengjie.utils.PageResult;
@@ -59,6 +60,7 @@ public class PreDefenseServiceImpl extends ServiceImpl<PreDefenseMapper, PreDefe
     private final AlgorithmService algorithmService;
     private final HyperService hyperService;
     private final LddConfigurationPolicy lddConfigurationPolicy;
+    private final TaskExecutionQuotaPolicy taskExecutionQuotaPolicy;
     private final ExecutionFingerprintService executionFingerprintService;
     private final AfterCommitTaskDispatcher afterCommitTaskDispatcher;
 
@@ -528,9 +530,11 @@ public class PreDefenseServiceImpl extends ServiceImpl<PreDefenseMapper, PreDefe
 
     private void launchTask(PreDefense task) {
         validateTask(task);
+        JSONObject quotaSnapshot = taskExecutionQuotaPolicy.validateAndBuildSnapshot(task);
         DefenseTaskRequest request = buildExecutionRequest(task);
         LocalDateTime launchedAt = LocalDateTime.now();
-        String executionSnapshot = appendExecutionSnapshot(task.getExecutionSnapshot(), request, launchedAt);
+        String executionSnapshot = appendExecutionSnapshot(
+                task.getExecutionSnapshot(), request, launchedAt, quotaSnapshot);
         int claimed = preDefenseMapper.claimForExecution(
                 task.getTaskId(),
                 request.getRunId(),
@@ -684,7 +688,11 @@ public class PreDefenseServiceImpl extends ServiceImpl<PreDefenseMapper, PreDefe
                 .build();
     }
 
-    private String appendExecutionSnapshot(String existingSnapshot, DefenseTaskRequest request, LocalDateTime launchedAt) {
+    private String appendExecutionSnapshot(
+            String existingSnapshot,
+            DefenseTaskRequest request,
+            LocalDateTime launchedAt,
+            JSONObject quotaSnapshot) {
         JSONObject snapshot = new JSONObject();
         JSONArray attempts = new JSONArray();
         if (!ObjectUtil.isEmpty(existingSnapshot)) {
@@ -704,6 +712,7 @@ public class PreDefenseServiceImpl extends ServiceImpl<PreDefenseMapper, PreDefe
         attempt.put("launchedAt", launchedAt.toString());
         attempt.put("request", JSON.parseObject(JSON.toJSONString(request)));
         attempt.put("runtime", executionFingerprintService.buildRuntimeSnapshot(request));
+        attempt.put("quota", quotaSnapshot);
         attempt.put("snapshotHash", executionFingerprintService.calculateSha256(JSON.toJSONString(attempt)));
         attempts.add(attempt);
         snapshot.put("version", 2);

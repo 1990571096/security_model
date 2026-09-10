@@ -13,6 +13,7 @@
 - 查看 LDD 实验报告，并按保留索引导出清洗后的 CIFAR-10 子集。
 - 通过统一执行器接口为后续真实算法接入预留边界。
 - 观测有界任务执行池的线程、队列和饱和状态，并在队列满载时将任务收敛为可重试失败。
+- 通过单机运行任务总数、单用户运行任务数和执行池接收状态进行任务准入，并记录每次尝试的配额快照。
 - 按 SDD 文档驱动方式推进重构，降低返工风险。
 
 ## 技术栈
@@ -140,7 +141,7 @@ cd F:\Study\postgraduate\毕业论文\security_model\eladmin
 mvn -pl eladmin-system -am test "-Denforcer.skip=true" "-Dsecurity-model.skip-tests=false" "-Dtest=CleanSubsetExportTaskServiceImplTest,PreDefenseControllerTest,LddConfigurationPolicyTest,PreDefenseTaskStatePolicyTest,ExecutionFingerprintServiceTest,CleanSubsetExportServiceImplTest,AfterCommitTaskDispatcherTest" "-Dsurefire.failIfNoSpecifiedTests=false"
 ```
 
-当前核心服务、控制器、策略、快照、导出幂等、队列拒绝和批量接口边界测试共 36 项；普通 Maven 流程仍保持跳过测试，
+当前核心服务、控制器、策略、快照、导出幂等、队列拒绝、批量接口边界、Python 进程控制和配额测试共 42 项；普通 Maven 流程仍保持跳过测试，
 以兼容原项目的默认打包行为。
 
 ## SDD 文档
@@ -157,6 +158,7 @@ mvn -pl eladmin-system -am test "-Denforcer.skip=true" "-Dsecurity-model.skip-te
 - `docs/sdd/10-vab-integration.md`：VaB 训练前防御算法适配、参数和产物约定。
 - `docs/sdd/11-platform-implementation.md`：当前平台实现、业务流程和实现思路。
 - `docs/sdd/12-resume-project-narrative.md`：简历项目描述与面试讲解提纲。
+- `docs/sdd/13-framework-migration-readiness.md`：Spring Boot 3、Java 17、Vue 3 迁移准备清单。
 
 ## 当前限制
 
@@ -164,7 +166,7 @@ mvn -pl eladmin-system -am test "-Denforcer.skip=true" "-Dsecurity-model.skip-te
 - 训练中、训练后和其他对比算法暂不接入主流程。
 - 前端和后端仍保留部分 ELADMIN 历史模块与技术债，后续按 SDD 逐步裁剪和迁移。
 - 清洗子集导出已改为异步任务，支持进度查询、失败重试和应用重启恢复；旧同步下载接口仅用于兼容。
-- 任务详情已支持 stdout/stderr 按 offset 增量轮询，任务中心已展示有界执行池状态；SSE/WebSocket 日志流、运行资源配额和后续模型训练衔接仍为后续优化项。
+- 任务详情已支持 stdout/stderr 按 offset 增量轮询，任务中心已展示有界执行池和任务配额状态；SSE/WebSocket 日志流和后续模型训练衔接仍为后续优化项。
 
 ## 可用于简历的工程亮点
 

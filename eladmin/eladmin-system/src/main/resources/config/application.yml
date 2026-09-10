@@ -81,6 +81,11 @@ security-model:
       queue-capacity: ${SECURITY_MODEL_TASK_QUEUE_CAPACITY:20}
       wait-for-tasks-on-shutdown: ${SECURITY_MODEL_TASK_WAIT_ON_SHUTDOWN:true}
       await-termination-seconds: ${SECURITY_MODEL_TASK_AWAIT_TERMINATION_SECONDS:30}
+    quota:
+      # 当前单机 LDD 执行准入上限，0 表示不限制。
+      max-running-tasks: ${SECURITY_MODEL_MAX_RUNNING_TASKS:4}
+      max-running-tasks-per-user: ${SECURITY_MODEL_MAX_RUNNING_TASKS_PER_USER:2}
+      max-task-timeout-seconds: ${SECURITY_MODEL_MAX_TASK_TIMEOUT_SECONDS:3600}
     python:
       executable: ${PYTHON_EXECUTABLE:python}
       script: ${SECURITY_MODEL_PYTHON_SCRIPT:}

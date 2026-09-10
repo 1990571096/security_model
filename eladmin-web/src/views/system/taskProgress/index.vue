@@ -76,6 +76,18 @@
             已完成
             <strong>{{ executorStatus.completedTaskCount || 0 }}</strong>
           </span>
+          <span v-if="executorStatus.quota">
+            运行配额
+            <strong>
+              {{ executorStatus.quota.runningTasks || 0 }}/{{ executorStatus.quota.maxRunningTasks || '不限' }}
+            </strong>
+          </span>
+          <span v-if="executorStatus.quota">
+            剩余名额
+            <strong>
+              {{ executorStatus.quota.remainingTaskSlots < 0 ? '不限' : executorStatus.quota.remainingTaskSlots }}
+            </strong>
+          </span>
           <el-tag size="mini" :type="executorStatus.saturated ? 'danger' : 'info'">
             {{ executorStatus.saturated ? '执行池已饱和' : '运行正常' }}
           </el-tag>

@@ -14,6 +14,7 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.stereotype.Service;
 import me.zhengjie.modules.system.service.policy.PreDefenseTaskStatePolicy;
+import me.zhengjie.modules.system.service.policy.TaskExecutionQuotaPolicy;
 
 import java.util.*;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -36,18 +37,21 @@ public class TaskProgressServiceImpl implements TaskProgressService {
     private final DatasetService datasetService;
     private final ModelService modelService;
     private final ThreadPoolTaskExecutor taskExecutor;
+    private final TaskExecutionQuotaPolicy taskExecutionQuotaPolicy;
 
     public TaskProgressServiceImpl(
             PreDefenseService preDefenseService,
             AlgorithmService algorithmService,
             DatasetService datasetService,
             ModelService modelService,
-            @Qualifier("taskAsync") ThreadPoolTaskExecutor taskExecutor) {
+            @Qualifier("taskAsync") ThreadPoolTaskExecutor taskExecutor,
+            TaskExecutionQuotaPolicy taskExecutionQuotaPolicy) {
         this.preDefenseService = preDefenseService;
         this.algorithmService = algorithmService;
         this.datasetService = datasetService;
         this.modelService = modelService;
         this.taskExecutor = taskExecutor;
+        this.taskExecutionQuotaPolicy = taskExecutionQuotaPolicy;
     }
 
     @Override
@@ -169,6 +173,7 @@ public class TaskProgressServiceImpl implements TaskProgressService {
         status.put("saturated", executor.getActiveCount() >= executor.getMaximumPoolSize()
                 && executor.getQueue().remainingCapacity() == 0);
         status.put("acceptingTasks", !executor.isShutdown() && !executor.isTerminated());
+        status.put("quota", taskExecutionQuotaPolicy.getStatus());
         return status;
     }
 
