@@ -28,6 +28,9 @@ import java.util.stream.Collectors;
 @Service
 public class TaskProgressServiceImpl implements TaskProgressService {
 
+    private static final int MAX_BATCH_TASKS = 100;
+    private static final String PRE_DEFENSE_TASK_TYPE = "pre_defense";
+
     private final PreDefenseService preDefenseService;
     private final AlgorithmService algorithmService;
     private final DatasetService datasetService;
@@ -171,29 +174,58 @@ public class TaskProgressServiceImpl implements TaskProgressService {
 
     @Override
     public Map<String, Object> getBatchTaskProgress(List<Map<String, Object>> taskInfos) {
+        validateBatchTaskInfos(taskInfos);
         Map<String, Object> progressMap = new HashMap<>();
 
         for (Map<String, Object> taskInfo : taskInfos) {
+            String taskType = (String) taskInfo.get("taskType");
+            Long taskId = parseTaskId(taskInfo.get("taskId"));
+            String key = taskType + "_" + taskId;
             try {
-                String taskType = (String) taskInfo.get("taskType");
-                Long taskId = Long.valueOf(taskInfo.get("taskId").toString());
-                String key = taskType + "_" + taskId;
-
-                Integer progress = null;
-                if (!"pre_defense".equals(taskType)) {
-                    throw new BadRequestException("当前平台仅支持 LDD 训练前清洗任务");
-                }
-                progress = preDefenseService.getTaskProgress(taskId);
+                Integer progress = preDefenseService.getTaskProgress(taskId);
                 progressMap.put(key, progress != null ? progress : -1);
 
             } catch (Exception e) {
-                log.warn("获取任务进度失败: {}", e.getMessage());
-                String key = taskInfo.get("taskType") + "_" + taskInfo.get("taskId");
+                log.warn("获取任务进度失败: taskType={}, taskId={}, reason={}",
+                        taskType, taskId, e.getMessage());
                 progressMap.put(key, -1);
             }
         }
 
         return progressMap;
+    }
+
+    private void validateBatchTaskInfos(List<Map<String, Object>> taskInfos) {
+        if (taskInfos == null || taskInfos.isEmpty()) {
+            throw new BadRequestException("任务信息列表不能为空");
+        }
+        if (taskInfos.size() > MAX_BATCH_TASKS) {
+            throw new BadRequestException("单次最多处理 " + MAX_BATCH_TASKS + " 个任务");
+        }
+        for (Map<String, Object> taskInfo : taskInfos) {
+            if (taskInfo == null) {
+                throw new BadRequestException("任务信息不能包含空值");
+            }
+            if (!PRE_DEFENSE_TASK_TYPE.equals(taskInfo.get("taskType"))) {
+                throw new BadRequestException("当前平台仅支持 LDD 训练前清洗任务");
+            }
+            parseTaskId(taskInfo.get("taskId"));
+        }
+    }
+
+    private Long parseTaskId(Object rawTaskId) {
+        if (rawTaskId == null) {
+            throw new BadRequestException("任务ID不能为空");
+        }
+        try {
+            long taskId = Long.parseLong(rawTaskId.toString());
+            if (taskId <= 0) {
+                throw new NumberFormatException("non-positive task ID");
+            }
+            return taskId;
+        } catch (NumberFormatException e) {
+            throw new BadRequestException("任务ID必须是正整数");
+        }
     }
 
     @Override

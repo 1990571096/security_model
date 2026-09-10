@@ -140,7 +140,7 @@ cd F:\Study\postgraduate\毕业论文\security_model\eladmin
 mvn -pl eladmin-system -am test "-Denforcer.skip=true" "-Dsecurity-model.skip-tests=false" "-Dtest=CleanSubsetExportTaskServiceImplTest,PreDefenseControllerTest,LddConfigurationPolicyTest,PreDefenseTaskStatePolicyTest,ExecutionFingerprintServiceTest,CleanSubsetExportServiceImplTest,AfterCommitTaskDispatcherTest" "-Dsurefire.failIfNoSpecifiedTests=false"
 ```
 
-当前核心服务、控制器、策略、快照、导出幂等、队列拒绝和批量接口边界测试共 32 项；普通 Maven 流程仍保持跳过测试，
+当前核心服务、控制器、策略、快照、导出幂等、队列拒绝和批量接口边界测试共 36 项；普通 Maven 流程仍保持跳过测试，
 以兼容原项目的默认打包行为。
 
 ## SDD 文档
