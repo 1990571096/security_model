@@ -41,6 +41,13 @@ public interface TaskProgressService {
     Map<String, Object> getTaskStatistics();
 
     /**
+     * 获取任务执行线程池状态。
+     *
+     * @return 线程池容量、活跃线程数、队列和饱和状态
+     */
+    Map<String, Object> getExecutorStatus();
+
+    /**
      * 批量获取任务进度
      * @param taskInfos 任务信息列表
      * @return 进度信息
@@ -59,17 +66,4 @@ public interface TaskProgressService {
      */
     TaskProgressDto convertPreDefenseToDto(me.zhengjie.modules.system.domain.PreDefense preDefense);
 
-    /**
-     * 将DuringDefense转换为TaskProgressDto
-     * @param duringDefense 训练中防御任务
-     * @return TaskProgressDto
-     */
-    TaskProgressDto convertDuringDefenseToDto(me.zhengjie.modules.system.domain.DuringDefense duringDefense);
-
-    /**
-     * 将PostDefense转换为TaskProgressDto
-     * @param postDefense 训练后防御任务
-     * @return TaskProgressDto
-     */
-    TaskProgressDto convertPostDefenseToDto(me.zhengjie.modules.system.domain.PostDefense postDefense);
 }

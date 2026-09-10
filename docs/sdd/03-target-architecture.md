@@ -149,7 +149,9 @@ draft/pending -> queued -> running -> success
                          -> canceled
 ```
 
-当前代码只有 `pending/running/success/failed`。第一阶段继续兼容，后续新增 `queued/canceled` 需要同步数据库、前端标签和统计接口。
+当前已实现 `pending/running/success/failed/canceled`。当前 MVP 不单独引入队列中的
+`queued` 状态；启动请求通过数据库条件更新原子领取任务，取消请求先持久化
+`canceled`，事务提交后再回收外部 Python 进程，避免数据库状态与运行时进程不一致。
 
 ## 关键接口方向
 

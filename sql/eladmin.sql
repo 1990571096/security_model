@@ -824,7 +824,7 @@ CREATE TABLE `sys_pre_defense`  (
   `task_id` bigint NOT NULL AUTO_INCREMENT COMMENT '任务ID',
   `task_name` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL COMMENT '任务名称',
   `description` text CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL COMMENT '任务描述',
-  `status` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT 'pending' COMMENT '任务状态: pending-等待中, running-运行中, success-成功, failed-失败',
+  `status` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT 'pending' COMMENT '任务状态: pending-等待中, running-运行中, success-成功, failed-失败, canceled-已取消',
   `dataset_id` bigint NOT NULL COMMENT '输入数据集ID',
   `algorithm_id` bigint NOT NULL COMMENT '清洗算法ID',
   `cleaning_result` json NULL COMMENT '清洗结果(JSON格式): 包含样本统计、损失分布、质量指标等',

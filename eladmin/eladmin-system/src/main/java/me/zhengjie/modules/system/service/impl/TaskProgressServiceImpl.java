@@ -1,23 +1,21 @@
 package me.zhengjie.modules.system.service.impl;
 
 import cn.hutool.core.util.ObjectUtil;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import me.zhengjie.exception.BadRequestException;
 import me.zhengjie.modules.system.domain.Algorithm;
 import me.zhengjie.modules.system.domain.Dataset;
-import me.zhengjie.modules.system.domain.DuringDefense;
 import me.zhengjie.modules.system.domain.Model;
-import me.zhengjie.modules.system.domain.PostDefense;
 import me.zhengjie.modules.system.domain.PreDefense;
-import me.zhengjie.modules.system.domain.dto.DuringDefenseQueryCriteria;
-import me.zhengjie.modules.system.domain.dto.PostDefenseQueryCriteria;
 import me.zhengjie.modules.system.domain.dto.PreDefenseQueryCriteria;
 import me.zhengjie.modules.system.domain.dto.TaskProgressDto;
 import me.zhengjie.modules.system.service.*;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.stereotype.Service;
 
 import java.util.*;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.stream.Collectors;
 
 /**
@@ -27,15 +25,26 @@ import java.util.stream.Collectors;
  */
 @Slf4j
 @Service
-@RequiredArgsConstructor
 public class TaskProgressServiceImpl implements TaskProgressService {
 
     private final PreDefenseService preDefenseService;
-    private final DuringDefenseService duringDefenseService;
-    private final PostDefenseService postDefenseService;
     private final AlgorithmService algorithmService;
     private final DatasetService datasetService;
     private final ModelService modelService;
+    private final ThreadPoolTaskExecutor taskExecutor;
+
+    public TaskProgressServiceImpl(
+            PreDefenseService preDefenseService,
+            AlgorithmService algorithmService,
+            DatasetService datasetService,
+            ModelService modelService,
+            @Qualifier("taskAsync") ThreadPoolTaskExecutor taskExecutor) {
+        this.preDefenseService = preDefenseService;
+        this.algorithmService = algorithmService;
+        this.datasetService = datasetService;
+        this.modelService = modelService;
+        this.taskExecutor = taskExecutor;
+    }
 
     @Override
     public List<TaskProgressDto> getRunningTasks() {
@@ -46,18 +55,6 @@ public class TaskProgressServiceImpl implements TaskProgressService {
             List<PreDefense> runningPreDefense = preDefenseService.findByStatus("running");
             runningTasks.addAll(runningPreDefense.stream()
                     .map(this::convertPreDefenseToDto)
-                    .collect(Collectors.toList()));
-
-            // 获取运行中的训练中防御任务
-            List<DuringDefense> runningDuringDefense = duringDefenseService.findByStatus("running");
-            runningTasks.addAll(runningDuringDefense.stream()
-                    .map(this::convertDuringDefenseToDto)
-                    .collect(Collectors.toList()));
-
-            // 获取运行中的训练后防御任务
-            List<PostDefense> runningPostDefense = postDefenseService.findByStatus("running");
-            runningTasks.addAll(runningPostDefense.stream()
-                    .map(this::convertPostDefenseToDto)
                     .collect(Collectors.toList()));
 
             // 按开始时间排序，最新的在前
@@ -78,37 +75,17 @@ public class TaskProgressServiceImpl implements TaskProgressService {
 
     @Override
     public List<TaskProgressDto> getAllTasks(String status, String taskType, String blurry) {
+        ensurePreDefenseTaskType(taskType);
         List<TaskProgressDto> allTasks = new ArrayList<>();
 
         try {
-            // 根据任务类型筛选
-            if (ObjectUtil.isEmpty(taskType) || "pre_defense".equals(taskType)) {
-                PreDefenseQueryCriteria criteria = new PreDefenseQueryCriteria();
-                criteria.setStatus(status);
-                criteria.setBlurry(blurry);
-                List<PreDefense> preTasks = preDefenseService.queryAll(criteria);
-                allTasks.addAll(preTasks.stream()
-                        .map(this::convertPreDefenseToDto)
-                        .collect(Collectors.toList()));
-            }
-
-            if (ObjectUtil.isEmpty(taskType) || "during_defense".equals(taskType)) {
-                List<DuringDefense> duringTasks = ObjectUtil.isEmpty(status) ?
-                        duringDefenseService.queryAll(new DuringDefenseQueryCriteria()) :
-                        duringDefenseService.findByStatus(status);
-                allTasks.addAll(duringTasks.stream()
-                        .map(this::convertDuringDefenseToDto)
-                        .collect(Collectors.toList()));
-            }
-
-            if (ObjectUtil.isEmpty(taskType) || "post_defense".equals(taskType)) {
-                List<PostDefense> postTasks = ObjectUtil.isEmpty(status) ?
-                        postDefenseService.queryAll(new PostDefenseQueryCriteria()) :
-                        postDefenseService.findByStatus(status);
-                allTasks.addAll(postTasks.stream()
-                        .map(this::convertPostDefenseToDto)
-                        .collect(Collectors.toList()));
-            }
+            PreDefenseQueryCriteria criteria = new PreDefenseQueryCriteria();
+            criteria.setStatus(status);
+            criteria.setBlurry(blurry);
+            List<PreDefense> preTasks = preDefenseService.queryAll(criteria);
+            allTasks.addAll(preTasks.stream()
+                    .map(this::convertPreDefenseToDto)
+                    .collect(Collectors.toList()));
 
             // 按创建时间排序，最新的在前
             allTasks.sort((a, b) -> {
@@ -128,20 +105,10 @@ public class TaskProgressServiceImpl implements TaskProgressService {
 
     @Override
     public TaskProgressDto getTaskDetail(String taskType, Long taskId) {
+        ensurePreDefenseTaskType(taskType);
         try {
-            switch (taskType) {
-                case "pre_defense":
-                    PreDefense preDefense = preDefenseService.findById(taskId);
-                    return convertPreDefenseToDto(preDefense);
-                case "during_defense":
-                    DuringDefense duringDefense = duringDefenseService.findById(taskId);
-                    return convertDuringDefenseToDto(duringDefense);
-                case "post_defense":
-                    PostDefense postDefense = postDefenseService.findById(taskId);
-                    return convertPostDefenseToDto(postDefense);
-                default:
-                    throw new BadRequestException("不支持的任务类型: " + taskType);
-            }
+            PreDefense preDefense = preDefenseService.findById(taskId);
+            return convertPreDefenseToDto(preDefense);
         } catch (Exception e) {
             log.error("获取任务详情失败: taskType={}, taskId={}, error={}", taskType, taskId, e.getMessage());
             throw new BadRequestException("获取任务详情失败");
@@ -156,18 +123,11 @@ public class TaskProgressServiceImpl implements TaskProgressService {
             // 按任务类型统计
             Map<String, Integer> typeStats = new HashMap<>();
             typeStats.put("pre_defense", preDefenseService.queryAll(new PreDefenseQueryCriteria()).size());
-            typeStats.put("during_defense", duringDefenseService.queryAll(new DuringDefenseQueryCriteria()).size());
-            typeStats.put("post_defense", postDefenseService.queryAll(new PostDefenseQueryCriteria()).size());
 
             // 按状态统计
             Map<String, Integer> statusStats = new HashMap<>();
-            Arrays.asList("pending", "running", "success", "failed").forEach(status -> {
-                int count = 0;
-                count += preDefenseService.findByStatus(status).size();
-                count += duringDefenseService.findByStatus(status).size();
-                count += postDefenseService.findByStatus(status).size();
-                statusStats.put(status, count);
-            });
+            Arrays.asList("pending", "running", "success", "failed", "canceled").forEach(
+                    status -> statusStats.put(status, preDefenseService.findByStatus(status).size()));
 
             // 运行中任务统计
             int runningCount = statusStats.get("running");
@@ -186,6 +146,25 @@ public class TaskProgressServiceImpl implements TaskProgressService {
     }
 
     @Override
+    public Map<String, Object> getExecutorStatus() {
+        ThreadPoolExecutor executor = taskExecutor.getThreadPoolExecutor();
+        Map<String, Object> status = new LinkedHashMap<>();
+        status.put("poolSize", executor.getPoolSize());
+        status.put("activeCount", executor.getActiveCount());
+        status.put("corePoolSize", executor.getCorePoolSize());
+        status.put("maxPoolSize", executor.getMaximumPoolSize());
+        status.put("queueSize", executor.getQueue().size());
+        status.put("queueRemainingCapacity", executor.getQueue().remainingCapacity());
+        status.put("queueCapacity", executor.getQueue().size() + executor.getQueue().remainingCapacity());
+        status.put("completedTaskCount", executor.getCompletedTaskCount());
+        status.put("taskCount", executor.getTaskCount());
+        status.put("saturated", executor.getActiveCount() >= executor.getMaximumPoolSize()
+                && executor.getQueue().remainingCapacity() == 0);
+        status.put("acceptingTasks", !executor.isShutdown() && !executor.isTerminated());
+        return status;
+    }
+
+    @Override
     public Map<String, Object> getBatchTaskProgress(List<Map<String, Object>> taskInfos) {
         Map<String, Object> progressMap = new HashMap<>();
 
@@ -196,17 +175,10 @@ public class TaskProgressServiceImpl implements TaskProgressService {
                 String key = taskType + "_" + taskId;
 
                 Integer progress = null;
-                switch (taskType) {
-                    case "pre_defense":
-                        progress = preDefenseService.getTaskProgress(taskId);
-                        break;
-                    case "during_defense":
-                        progress = duringDefenseService.getTaskProgress(taskId);
-                        break;
-                    case "post_defense":
-                        progress = postDefenseService.getTaskProgress(taskId);
-                        break;
+                if (!"pre_defense".equals(taskType)) {
+                    throw new BadRequestException("当前平台仅支持 LDD 训练前清洗任务");
                 }
+                progress = preDefenseService.getTaskProgress(taskId);
                 progressMap.put(key, progress != null ? progress : -1);
 
             } catch (Exception e) {
@@ -257,71 +229,6 @@ public class TaskProgressServiceImpl implements TaskProgressService {
         return dto;
     }
 
-    @Override
-    public TaskProgressDto convertDuringDefenseToDto(DuringDefense duringDefense) {
-        TaskProgressDto dto = new TaskProgressDto();
-
-        // 基础信息
-        dto.setTaskId(duringDefense.getTaskId());
-        dto.setTaskName(duringDefense.getTaskName());
-        dto.setDescription(duringDefense.getDescription());
-        dto.setTaskType("during_defense");
-        dto.setStatus(duringDefense.getStatus());
-        dto.setProgress(duringDefense.getProgress());
-        dto.setStartTime(duringDefense.getStartTime());
-        dto.setEndTime(duringDefense.getEndTime());
-        dto.setCreateTime(duringDefense.getCreateTime());
-        dto.setCreateBy(duringDefense.getCreateBy());
-
-        // 训练中防御特有字段
-        dto.setDatasetId(duringDefense.getDatasetId());
-        dto.setInputModelId(duringDefense.getInputModelId());
-        dto.setOutputModelId(duringDefense.getOutputModelId());
-
-        // 公共字段
-        dto.setAlgorithmId(duringDefense.getAlgorithmId());
-        dto.setHyperId(duringDefense.getHyperId());
-        dto.setCustomParams(duringDefense.getCustomParams());
-
-        // 设置关联信息的名称（用于显示）
-        setRelatedNames(dto);
-
-        return dto;
-    }
-
-    @Override
-    public TaskProgressDto convertPostDefenseToDto(PostDefense postDefense) {
-        TaskProgressDto dto = new TaskProgressDto();
-
-        // 基础信息
-        dto.setTaskId(postDefense.getTaskId());
-        dto.setTaskName(postDefense.getTaskName());
-        dto.setDescription(postDefense.getDescription());
-        dto.setTaskType("post_defense");
-        dto.setStatus(postDefense.getStatus());
-        dto.setProgress(postDefense.getProgress());
-        dto.setStartTime(postDefense.getStartTime());
-        dto.setEndTime(postDefense.getEndTime());
-        dto.setCreateTime(postDefense.getCreateTime());
-        dto.setCreateBy(postDefense.getCreateBy());
-
-        // 训练后防御特有字段
-        dto.setInputModelId(postDefense.getInputModelId());
-        dto.setTestDatasetId(postDefense.getTestDatasetId());
-        dto.setOutputModelId(postDefense.getOutputModelId());
-        dto.setDefenseResult(postDefense.getDefenseResult());
-
-        // 公共字段
-        dto.setAlgorithmId(postDefense.getAlgorithmId());
-        dto.setHyperId(postDefense.getHyperId());
-        dto.setCustomParams(postDefense.getCustomParams());
-
-        // 设置关联信息的名称（用于显示）
-        setRelatedNames(dto);
-
-        return dto;
-    }
-
     /**
      * 设置关联信息的名称（用于前端显示）
      */
@@ -350,6 +257,12 @@ public class TaskProgressServiceImpl implements TaskProgressService {
 
         } catch (Exception e) {
             log.warn("设置关联信息名称失败: {}", e.getMessage());
+        }
+    }
+
+    private void ensurePreDefenseTaskType(String taskType) {
+        if (!ObjectUtil.isEmpty(taskType) && !"pre_defense".equals(taskType)) {
+            throw new BadRequestException("当前任务中心仅支持 LDD 训练前清洗任务");
         }
     }
 }

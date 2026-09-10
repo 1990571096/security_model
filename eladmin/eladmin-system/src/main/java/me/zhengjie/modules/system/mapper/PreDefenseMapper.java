@@ -10,6 +10,7 @@ import org.apache.ibatis.annotations.Param;
 
 import java.util.List;
 import java.util.Map;
+import java.time.LocalDateTime;
 
 /**
  * 训练前防御任务 Mapper
@@ -77,22 +78,79 @@ public interface PreDefenseMapper extends BaseMapper<PreDefense> {
     List<PreDefense> findByCreateBy(@Param("createBy") String createBy);
 
     /**
-     * 更新任务状态
-     * @param taskId 任务ID
-     * @param status 新状态
-     * @param progress 进度
+     * 统计仍被任务引用的数据集数量。
      */
-    void updateStatus(@Param("taskId") Long taskId, @Param("status") String status, @Param("progress") Integer progress);
+    long countByDatasetId(@Param("datasetId") Long datasetId);
 
     /**
-     * 更新任务结果
-     * @param taskId 任务ID
-     * @param outputDatasetId 输出数据集ID
-     * @param cleaningResult 清洗结果JSON
+     * 统计仍被任务引用的算法数量。
      */
-    void updateResult(@Param("taskId") Long taskId,
-                      @Param("outputDatasetId") Long outputDatasetId,
-                      @Param("cleaningResult") String cleaningResult);
+    long countByAlgorithmId(@Param("algorithmId") Long algorithmId);
+
+    /**
+     * 统计仍被任务引用的超参数模板数量。
+     */
+    long countByHyperId(@Param("hyperId") Long hyperId);
+
+    /**
+     * 原子领取待执行任务，防止重复点击或并发请求启动多个执行器。
+     */
+    int claimForExecution(@Param("taskId") Long taskId,
+                          @Param("runId") String runId,
+                          @Param("attempt") Integer attempt,
+                          @Param("startTime") LocalDateTime startTime,
+                          @Param("executionSnapshot") String executionSnapshot);
+
+    /**
+     * 仅允许当前运行令牌更新执行进度。
+     */
+    int updateRunningProgress(@Param("taskId") Long taskId,
+                              @Param("runId") String runId,
+                              @Param("progress") Integer progress);
+
+    /**
+     * 仅允许当前运行令牌写入执行结果。
+     */
+    int updateResultForRun(@Param("taskId") Long taskId,
+                           @Param("runId") String runId,
+                           @Param("outputDatasetId") Long outputDatasetId,
+                           @Param("cleaningResult") String cleaningResult);
+
+    /**
+     * 仅允许当前运行令牌结束任务。
+     */
+    int finishForRun(@Param("taskId") Long taskId,
+                     @Param("runId") String runId,
+                     @Param("status") String status,
+                     @Param("progress") Integer progress,
+                     @Param("endTime") LocalDateTime endTime);
+
+    /**
+     * Atomically cancel the current running attempt.
+     */
+    int cancelForRun(@Param("taskId") Long taskId,
+                     @Param("runId") String runId,
+                     @Param("cleaningResult") String cleaningResult,
+                     @Param("endTime") LocalDateTime endTime);
+
+    /**
+     * 外部执行器尚未启动时，将当前运行任务收敛为失败。
+     */
+    int failBeforeExecution(@Param("taskId") Long taskId,
+                            @Param("runId") String runId,
+                            @Param("attempt") Integer attempt,
+                            @Param("failureResult") String failureResult,
+                            @Param("endTime") LocalDateTime endTime);
+
+    /**
+     * 将应用重启后遗留的运行中任务收敛为失败。
+     *
+     * <p>更新条件包含当前运行标识，避免多实例或并发重试时误伤新执行。</p>
+     */
+    int failOrphanedForRun(@Param("taskId") Long taskId,
+                           @Param("runId") String runId,
+                           @Param("cleaningResult") String cleaningResult,
+                           @Param("endTime") LocalDateTime endTime);
 
     /**
      * 将失败任务恢复为待启动状态，同时清除上一次运行结果。

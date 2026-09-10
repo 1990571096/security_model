@@ -5,6 +5,22 @@
       <eHeader :permission="permission" />
       <crudOperation :permission="permission" />
     </div>
+    <section class="task-overview" aria-label="LDD 任务运行概览">
+      <div
+        v-for="item in overviewItems"
+        :key="item.key"
+        class="overview-item"
+        :class="'overview-' + item.key"
+      >
+        <div class="overview-icon">
+          <i :class="item.icon" />
+        </div>
+        <div>
+          <div class="overview-label">{{ item.label }}</div>
+          <div class="overview-value">{{ taskStatistics[item.key] || 0 }}</div>
+        </div>
+      </div>
+    </section>
     <!--表格渲染-->
     <el-table ref="table" v-loading="crud.loading" :data="crud.data" style="width: 100%;" @selection-change="crud.selectionChangeHandler" @row-dblclick="handleRowDoubleClick">
       <el-table-column type="selection" width="55" />
@@ -63,8 +79,7 @@
               type="warning"
               icon="el-icon-view"
               @click="showTaskDetail(scope.row)"
-            >
-            </el-button>
+            />
             <!-- 启动按钮 - 绿色方框 -->
             <el-button
               v-if="scope.row.status === 'pending' && checkPer(['admin','pre_defense:start'])"
@@ -72,8 +87,15 @@
               type="success"
               icon="el-icon-video-play"
               @click="startTask(scope.row)"
-            >
-            </el-button>
+            />
+            <el-button
+              v-if="scope.row.status === 'running' && checkPer(['admin','pre_defense:start'])"
+              size="mini"
+              type="danger"
+              icon="el-icon-close"
+              title="取消任务"
+              @click="cancelRunningTask(scope.row)"
+            />
             <!-- 标准编辑与删除按钮 -->
             <udOperation
               :data="scope.row"
@@ -95,7 +117,7 @@
       :dataset-cache="datasetCache"
       :algorithm-cache="algorithmCache"
       :template-cache="templateCache"
-      @refresh="crud.refresh"
+      @refresh="refreshTaskData"
     />
 
     <!-- 批量启动按钮 -->
@@ -121,7 +143,7 @@ import taskDetailDialog from './taskDetailDialog'
 import { getAlgorithmsByStage } from '@/api/system/algorithm'
 import { getAllDataset } from '@/api/system/dataset'
 import { getAllHyper } from '@/api/system/hyper'
-import { startTask, startBatchTasks } from '@/api/system/preDefense'
+import { startTask, startBatchTasks, cancelTask as cancelPreDefenseTask, getTaskStatistics } from '@/api/system/preDefense'
 import CRUD, { presenter } from '@crud/crud'
 import crudOperation from '@crud/CRUD.operation'
 import pagination from '@crud/Pagination'
@@ -151,19 +173,79 @@ export default {
       // 缓存数据
       datasetCache: {},
       algorithmCache: {},
-      templateCache: {}
+      templateCache: {},
+      statisticsTimer: null,
+      taskStatistics: {
+        totalCount: 0,
+        pendingCount: 0,
+        runningCount: 0,
+        successCount: 0,
+        failedCount: 0,
+        canceledCount: 0
+      }
     }
   },
   computed: {
     // 计算等待中的任务数量
     pendingTasksCount() {
       return this.crud.selections.filter(item => item.status === 'pending').length
+    },
+    overviewItems() {
+      return [
+        { key: 'totalCount', label: '全部任务', icon: 'el-icon-s-data' },
+        { key: 'pendingCount', label: '待执行', icon: 'el-icon-time' },
+        { key: 'runningCount', label: '运行中', icon: 'el-icon-loading' },
+        { key: 'successCount', label: '执行成功', icon: 'el-icon-circle-check' },
+        { key: 'failedCount', label: '执行失败', icon: 'el-icon-circle-close' },
+        { key: 'canceledCount', label: '已取消', icon: 'el-icon-remove-outline' }
+      ]
     }
   },
   created() {
     this.loadAllCacheData()
+    this.loadTaskStatistics()
+  },
+  mounted() {
+    this.startStatisticsMonitoring()
+  },
+  destroyed() {
+    this.stopStatisticsMonitoring()
   },
   methods: {
+    [CRUD.HOOK.afterRefresh]() {
+      this.loadTaskStatistics()
+    },
+    refreshTaskData() {
+      this.crud.refresh()
+      this.loadTaskStatistics()
+    },
+    loadTaskStatistics() {
+      getTaskStatistics().then(response => {
+        const result = response.data || response || {}
+        this.taskStatistics = {
+          totalCount: Number(result.totalCount) || 0,
+          pendingCount: Number(result.pendingCount) || 0,
+          runningCount: Number(result.runningCount) || 0,
+          successCount: Number(result.successCount) || 0,
+          failedCount: Number(result.failedCount) || 0,
+          canceledCount: Number(result.canceledCount) || 0
+        }
+      }).catch(err => {
+        console.error('加载任务统计失败:', err)
+      })
+    },
+    startStatisticsMonitoring() {
+      this.stopStatisticsMonitoring()
+      this.statisticsTimer = setInterval(() => {
+        this.loadTaskStatistics()
+      }, 10000)
+    },
+    stopStatisticsMonitoring() {
+      if (this.statisticsTimer) {
+        clearInterval(this.statisticsTimer)
+        this.statisticsTimer = null
+      }
+    },
     // 显示任务详情
     showTaskDetail(task) {
       this.selectedTaskForDetail = task
@@ -182,10 +264,27 @@ export default {
       }).then(() => {
         startTask(task.taskId).then(() => {
           this.$message.success('任务启动成功')
-          this.crud.refresh()
+          this.refreshTaskData()
         }).catch(() => {
           this.$message.error('任务启动失败')
         })
+      })
+    },
+    // 取消运行中的任务
+    cancelRunningTask(task) {
+      this.$confirm('取消后将终止当前执行，并保留本次取消记录。确定继续吗？', '取消任务', {
+        confirmButtonText: '确定取消',
+        cancelButtonText: '暂不取消',
+        type: 'warning'
+      }).then(() => {
+        return cancelPreDefenseTask(task.taskId)
+      }).then(() => {
+        this.$message.success('任务已取消')
+        this.refreshTaskData()
+      }).catch(err => {
+        if (err !== 'cancel' && err !== 'close') {
+          this.$message.error('取消任务失败')
+        }
       })
     },
     // 批量启动任务
@@ -209,7 +308,7 @@ export default {
           if (result.failureCount > 0) {
             this.$message.warning(`${result.failureCount} 个任务启动失败`)
           }
-          this.crud.refresh()
+          this.refreshTaskData()
         }).catch(() => {
           this.$message.error('批量启动失败')
         })
@@ -306,7 +405,8 @@ export default {
         'pending': 'info',
         'running': 'warning',
         'success': 'success',
-        'failed': 'danger'
+        'failed': 'danger',
+        'canceled': 'info'
       }
       return statusMap[status] || 'info'
     },
@@ -316,7 +416,8 @@ export default {
         'pending': '等待中',
         'running': '运行中',
         'success': '成功',
-        'failed': '失败'
+        'failed': '失败',
+        'canceled': '已取消'
       }
       return statusMap[status] || status
     }
@@ -325,6 +426,59 @@ export default {
 </script>
 
 <style scoped>
+.task-overview {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(120px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.overview-item {
+  min-height: 76px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #ebeef5;
+  border-left: 3px solid #909399;
+  background: #ffffff;
+  border-radius: 4px;
+}
+
+.overview-icon {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #606266;
+  background: #f5f7fa;
+  border-radius: 50%;
+  font-size: 17px;
+}
+
+.overview-label {
+  color: #909399;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.overview-value {
+  color: #303133;
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 28px;
+}
+
+.overview-runningCount { border-left-color: #e6a23c; }
+.overview-runningCount .overview-icon { color: #e6a23c; background: #fdf6ec; }
+.overview-successCount { border-left-color: #67c23a; }
+.overview-successCount .overview-icon { color: #67c23a; background: #f0f9eb; }
+.overview-failedCount { border-left-color: #f56c6c; }
+.overview-failedCount .overview-icon { color: #f56c6c; background: #fef0f0; }
+.overview-canceledCount { border-left-color: #909399; }
+.overview-canceledCount .overview-icon { color: #909399; background: #f4f4f5; }
+
 .operation-buttons {
   display: flex;
   justify-content: center;
@@ -357,5 +511,17 @@ export default {
 }
 ::v-deep .el-progress-bar__inner {
   transition: width 0.6s ease;
+}
+
+@media screen and (max-width: 1200px) {
+  .task-overview {
+    grid-template-columns: repeat(3, minmax(120px, 1fr));
+  }
+}
+
+@media screen and (max-width: 768px) {
+  .task-overview {
+    grid-template-columns: repeat(2, minmax(120px, 1fr));
+  }
 }
 </style>

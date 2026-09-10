@@ -87,20 +87,11 @@ public interface PreDefenseService extends IService<PreDefense> {
     void retryTask(Long taskId);
 
     /**
-     * 更新任务状态
-     * @param taskId 任务ID
-     * @param status 任务状态
-     * @param progress 进度
+     * Cancel a running cleaning task.
+     *
+     * @param taskId task ID
      */
-    void updateTaskStatus(Long taskId, String status, Integer progress);
-
-    /**
-     * 更新任务结果
-     * @param taskId 任务ID
-     * @param outputDatasetId 输出数据集ID
-     * @param cleaningResult 清洗结果JSON
-     */
-    void updateTaskResult(Long taskId, Long outputDatasetId, String cleaningResult);
+    void cancelTask(Long taskId);
 
     /**
      * 获取任务进度
@@ -171,5 +162,14 @@ public interface PreDefenseService extends IService<PreDefense> {
      * @return 日志文件及其内容
      */
     Map<String, Object> getExecutionLogs(Long taskId);
+
+    /**
+     * 按文件游标增量获取任务执行日志。
+     *
+     * @param taskId 任务ID
+     * @param offsets 各日志文件已经读取到的字节偏移量
+     * @return 日志文件增量内容及下一次游标
+     */
+    Map<String, Object> getExecutionLogs(Long taskId, Map<String, Long> offsets);
 
 }

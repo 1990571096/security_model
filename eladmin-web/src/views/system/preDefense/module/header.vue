@@ -68,7 +68,8 @@ export default {
         { value: 'pending', label: '等待中' },
         { value: 'running', label: '运行中' },
         { value: 'success', label: '成功' },
-        { value: 'failed', label: '失败' }
+        { value: 'failed', label: '失败' },
+        { value: 'canceled', label: '已取消' }
       ],
       algorithmOptions: []
     }

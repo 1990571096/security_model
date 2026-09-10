@@ -17,6 +17,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
@@ -52,20 +53,29 @@ public class CleanSubsetExportServiceImpl implements CleanSubsetExportService {
         Files.createDirectories(exportDir);
         Path zipPath = exportDir.resolve("clean-subset-ratio-" + context.ratio + ".zip");
         Path metadataPath = exportDir.resolve("clean-subset-ratio-" + context.ratio + ".metadata.json");
-        if (Files.isRegularFile(zipPath) && Files.size(zipPath) > 0) {
+        if (Files.isRegularFile(zipPath) && Files.size(zipPath) > 0
+                && Files.isRegularFile(metadataPath)) {
             return zipPath;
         }
+        Files.deleteIfExists(zipPath);
+        Files.deleteIfExists(metadataPath);
         if (!StringUtils.hasText(pythonScript)) {
             throw new BadRequestException("Python 算法执行器未配置，无法导出清洗数据集");
         }
+        Path temporaryZipPath = exportDir.resolve(
+                "clean-subset-ratio-" + context.ratio + ".zip.part");
+        Path temporaryMetadataPath = exportDir.resolve(
+                "clean-subset-ratio-" + context.ratio + ".metadata.json.part");
+        Files.deleteIfExists(temporaryZipPath);
+        Files.deleteIfExists(temporaryMetadataPath);
         List<String> command = Arrays.asList(
                 pythonExecutable, pythonScript,
                 "--export-clean-subset",
                 "--selection-file", context.selectionFile.toString(),
                 "--dataset-root", context.datasetRoot.toString(),
                 "--dataset", "cifar10",
-                "--output", zipPath.toString(),
-                "--metadata", metadataPath.toString()
+                "--output", temporaryZipPath.toString(),
+                "--metadata", temporaryMetadataPath.toString()
         );
         log.info("导出任务 {} 的 LDD 干净数据子集，隔离比例 {}%", task.getTaskId(), context.ratio);
         ProcessBuilder processBuilder = new ProcessBuilder(command);
@@ -79,13 +89,22 @@ public class CleanSubsetExportServiceImpl implements CleanSubsetExportService {
                 process.destroyForcibly();
                 throw new BadRequestException("导出清洗数据集超时");
             }
-            if (process.exitValue() != 0 || !Files.isRegularFile(zipPath)) {
+            if (process.exitValue() != 0
+                    || !Files.isRegularFile(temporaryZipPath)
+                    || Files.size(temporaryZipPath) <= 0) {
                 throw new BadRequestException("导出清洗数据集失败，请查看任务产物日志");
+            }
+            Files.move(temporaryZipPath, zipPath, StandardCopyOption.REPLACE_EXISTING);
+            if (Files.isRegularFile(temporaryMetadataPath)) {
+                Files.move(temporaryMetadataPath, metadataPath, StandardCopyOption.REPLACE_EXISTING);
             }
             return zipPath;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new BadRequestException("导出清洗数据集被中断");
+        } finally {
+            Files.deleteIfExists(temporaryZipPath);
+            Files.deleteIfExists(temporaryMetadataPath);
         }
     }
 
@@ -150,26 +169,47 @@ public class CleanSubsetExportServiceImpl implements CleanSubsetExportService {
         return new ExportContext(artifactRoot, datasetRoot, selectionFile, ratioFromPath(selectionFile));
     }
 
-    private Path safeDirectory(String value, String message) {
+    Path safeDirectory(String value, String message) {
         if (!StringUtils.hasText(value)) {
             throw new BadRequestException(message);
         }
-        Path path = Paths.get(value).toAbsolutePath().normalize();
-        if (!Files.isDirectory(path)) {
+        try {
+            Path path = Paths.get(value).toAbsolutePath().normalize();
+            if (!Files.isDirectory(path)) {
+                throw new BadRequestException(message);
+            }
+            return path.toRealPath();
+        } catch (BadRequestException e) {
+            throw e;
+        } catch (IOException | RuntimeException e) {
             throw new BadRequestException(message);
         }
-        return path;
     }
 
-    private List<Path> selectionFiles(JSONArray rawFiles, Path artifactRoot) {
+    List<Path> selectionFiles(JSONArray rawFiles, Path artifactRoot) {
         List<Path> files = new ArrayList<>();
         if (rawFiles == null) {
             return files;
         }
+        Path realArtifactRoot;
+        try {
+            realArtifactRoot = artifactRoot.toRealPath();
+        } catch (IOException e) {
+            return files;
+        }
         for (Object raw : rawFiles) {
-            Path path = Paths.get(String.valueOf(raw)).toAbsolutePath().normalize();
-            if (path.startsWith(artifactRoot) && Files.isRegularFile(path) && SELECTION_RATIO.matcher(path.getFileName().toString()).matches()) {
-                files.add(path);
+            try {
+                Path path = Paths.get(String.valueOf(raw)).toAbsolutePath().normalize();
+                if (!Files.isRegularFile(path)
+                        || !SELECTION_RATIO.matcher(path.getFileName().toString()).matches()) {
+                    continue;
+                }
+                Path realPath = path.toRealPath();
+                if (realPath.startsWith(realArtifactRoot)) {
+                    files.add(realPath);
+                }
+            } catch (IOException | RuntimeException ignored) {
+                // Ignore malformed or unavailable external artifact references.
             }
         }
         files.sort(Comparator.comparingInt(this::ratioFromPath));

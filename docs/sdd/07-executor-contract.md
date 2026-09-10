@@ -17,7 +17,8 @@ The request is a validated execution snapshot containing:
 Each task launch persists this request together with its dataset, algorithm, hyperparameter
 template and task custom parameters in `sys_pre_defense.execution_snapshot`. The field is
 an append-only attempt list: changing a resource after launch never changes the historical
-experiment record.
+experiment record. The active `run_id` and `attempt` are also stored in
+`current_run_id` and `current_attempt`.
 
 ## Reason
 
@@ -42,10 +43,22 @@ Required result keys:
 - `finished_at`
 - `artifacts`
 
+Python/PyTorch executors should additionally write a `runtime` object containing the
+actual interpreter and machine-learning environment used by the attempt, such as
+Python, PyTorch, NumPy, CUDA and GPU information. This is separate from the Java-side
+launch snapshot: the launch snapshot records what the platform intended to run, while
+`runtime` records what the external process actually loaded.
+
 Failure result keys:
 
 - `error_code`
 - `failure_reason`
+
+The backend treats the result envelope as untrusted external-process output. Before persisting
+the result, it verifies `executor`, `stage`, `run_id`, `attempt`, `message`, timestamps and
+the `artifacts` object. A failed result must additionally provide a non-empty `error_code` and
+`failure_reason`; malformed or mismatched output is converted into a platform failure result
+instead of being shown as a successful LDD execution.
 
 ## Retry Contract
 
@@ -59,6 +72,23 @@ The MVP mock executor also writes a `task` snapshot into result JSON for protoco
 Each launch receives a UUID `run_id` and a monotonically increasing `attempt` value.
 The Python executor stores request/result/log files below an attempt-specific directory,
 so retrying a task cannot overwrite the previous attempt's runtime files.
+
+The task claim is an atomic `pending -> running` update. Every progress, result and finish
+callback includes the `task_id` and `run_id`, and the database update additionally requires
+`status = 'running'` and the same `current_run_id`. A late callback from an older timed-out
+or retried attempt therefore updates zero rows and is ignored instead of overwriting the
+current run.
+
+The external executor is dispatched after the surrounding transaction commits. This keeps
+the persisted task claim and immutable snapshot ahead of process startup.
+
+## Cancel Contract
+
+Only a `running` task can be canceled. The service uses `task_id + current_run_id + status=running`
+as the cancellation condition and atomically writes the terminal `canceled` result first. The
+external process is then terminated after transaction commit. The executor remembers the canceled
+`run_id`; progress, result and finish callbacks require the same `run_id` and `status=running`, so
+late callbacks update zero rows and are discarded.
 
 ## Extension Rule
 

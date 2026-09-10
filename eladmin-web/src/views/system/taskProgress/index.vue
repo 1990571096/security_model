@@ -41,6 +41,7 @@
                 <el-option label="运行中" value="running" />
                 <el-option label="成功" value="success" />
                 <el-option label="失败" value="failed" />
+                <el-option label="已取消" value="canceled" />
               </el-select>
             </el-form-item>
             <el-form-item>
@@ -51,11 +52,42 @@
         </div>
       </div>
 
+      <div class="executor-status-bar">
+        <div class="executor-status-title">
+          <i class="el-icon-s-operation"></i>
+          <span>任务执行池</span>
+          <el-tag
+            size="mini"
+            :type="executorStatus && executorStatus.acceptingTasks ? 'success' : 'danger'"
+          >
+            {{ executorStatus && executorStatus.acceptingTasks ? '可接收任务' : '已停止接收' }}
+          </el-tag>
+        </div>
+        <div v-if="executorStatus" class="executor-status-items">
+          <span>
+            活跃线程
+            <strong>{{ executorStatus.activeCount || 0 }}/{{ executorStatus.maxPoolSize || 0 }}</strong>
+          </span>
+          <span>
+            排队任务
+            <strong>{{ executorStatus.queueSize || 0 }}/{{ executorStatus.queueCapacity || 0 }}</strong>
+          </span>
+          <span>
+            已完成
+            <strong>{{ executorStatus.completedTaskCount || 0 }}</strong>
+          </span>
+          <el-tag size="mini" :type="executorStatus.saturated ? 'danger' : 'info'">
+            {{ executorStatus.saturated ? '执行池已饱和' : '运行正常' }}
+          </el-tag>
+        </div>
+        <span v-else class="executor-status-placeholder">正在获取执行池状态...</span>
+      </div>
+
       <!--表格渲染-->
       <el-table
         ref="table"
         v-loading="loading"
-        :data="taskList"
+        :data="pagedTaskList"
         style="width: 100%;"
         @row-dblclick="handleRowDoubleClick"
         :header-cell-style="{background:'#fafafa',color:'#606266'}"
@@ -169,7 +201,7 @@
       </div>
 
       <!-- 无数据提示 -->
-      <div v-if="!loading && taskList.length === 0" class="no-data">
+      <div v-if="!loading && pagedTaskList.length === 0" class="no-data">
         <i class="el-icon-info" style="font-size: 48px; color: #C0C4CC;"></i>
         <p style="color: #909399; margin-top: 10px;">暂无任务数据</p>
       </div>
@@ -192,7 +224,7 @@
 
 <script>
 import SystemMonitor from './module/systemMonitor'
-import { getAllTasks } from '@/api/system/taskProgress'
+import { getAllTasks, getExecutorStatus } from '@/api/system/taskProgress'
 import { getAllDataset } from '@/api/system/dataset'
 import { getAllAlgorithm } from '@/api/system/algorithm'
 import { getAllHyper } from '@/api/system/hyper'
@@ -207,7 +239,8 @@ export default {
   data() {
     return {
       loading: false,
-      taskList: [],
+      allTaskList: [],
+      executorStatus: null,
       total: 0,
       currentPage: 1,
       pageSize: 20,
@@ -215,7 +248,7 @@ export default {
       query: {
         blurry: '',
         taskType: 'pre_defense',
-        status: 'running'
+        status: ''
       },
       detailDialogVisible: false,
       selectedTask: null,
@@ -223,24 +256,43 @@ export default {
       // 缓存数据
       datasetCache: {},
       algorithmCache: {},
-      templateCache: {}
+      templateCache: {},
+      pollTimer: null
+    }
+  },
+  computed: {
+    pagedTaskList() {
+      const start = (this.currentPage - 1) * this.pageSize
+      return this.allTaskList.slice(start, start + this.pageSize)
     }
   },
   created() {
     this.loadAllCacheData()
     this.loadData()
+    this.loadExecutorStatus()
+    this.startPolling()
+  },
+  beforeDestroy() {
+    if (this.pollTimer) {
+      clearInterval(this.pollTimer)
+      this.pollTimer = null
+    }
   },
   methods: {
     // 加载任务数据
     loadData() {
       this.loading = true
       getAllTasks(this.query.status, this.query.taskType, this.query.blurry).then(res => {
-        this.taskList = res || []
-        this.total = this.taskList.length
+        this.allTaskList = Array.isArray(res) ? res : []
+        this.total = this.allTaskList.length
+        const maxPage = Math.max(1, Math.ceil(this.total / this.pageSize))
+        if (this.currentPage > maxPage) {
+          this.currentPage = maxPage
+        }
       }).catch(error => {
         console.error('获取任务数据失败:', error)
         this.$message.error('获取任务数据失败')
-        this.taskList = []
+        this.allTaskList = []
         this.total = 0
       }).finally(() => {
         this.loading = false
@@ -250,7 +302,17 @@ export default {
     // 刷新数据
     refreshData() {
       this.loadData()
+      this.loadExecutorStatus()
       this.$message.success('数据刷新成功')
+    },
+
+    loadExecutorStatus() {
+      getExecutorStatus().then(response => {
+        this.executorStatus = response && response.data ? response.data : response
+      }).catch(error => {
+        console.error('获取执行池状态失败:', error)
+        this.executorStatus = null
+      })
     },
 
     // 切换搜索面板
@@ -263,8 +325,9 @@ export default {
       this.query = {
         blurry: '',
         taskType: 'pre_defense',
-        status: 'running'
+        status: ''
       }
+      this.currentPage = 1
       this.loadData()
     },
 
@@ -272,13 +335,11 @@ export default {
     handleSizeChange(val) {
       this.pageSize = val
       this.currentPage = 1
-      this.loadData()
     },
 
     // 当前页变化
     handleCurrentChange(val) {
       this.currentPage = val
-      this.loadData()
     },
 
     // 显示任务详情
@@ -423,7 +484,8 @@ export default {
         'pending': 'info',
         'running': 'warning',
         'success': 'success',
-        'failed': 'danger'
+        'failed': 'danger',
+        'canceled': 'info'
       }
       return statusMap[status] || 'info'
     },
@@ -434,9 +496,20 @@ export default {
         'pending': '等待中',
         'running': '运行中',
         'success': '成功',
-        'failed': '失败'
+        'failed': '失败',
+        'canceled': '已取消'
       }
       return statusMap[status] || status
+    },
+
+    startPolling() {
+      this.pollTimer = setInterval(() => {
+        if (this.query.status === '' || this.query.status === 'pending'
+          || this.query.status === 'running') {
+          this.loadData()
+        }
+        this.loadExecutorStatus()
+      }, 5000)
     },
 
     // 格式化时间
@@ -510,6 +583,41 @@ export default {
 
 .head-container {
   margin-bottom: 20px;
+}
+
+.executor-status-bar {
+  min-height: 36px;
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border: 1px solid #EBEEF5;
+  background: #FAFAFA;
+  color: #606266;
+  font-size: 12px;
+}
+
+.executor-status-title,
+.executor-status-items {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.executor-status-title i {
+  color: #409EFF;
+  font-size: 14px;
+}
+
+.executor-status-items strong {
+  color: #303133;
+  font-weight: 600;
+  margin-left: 4px;
+}
+
+.executor-status-placeholder {
+  color: #909399;
 }
 
 .crud-opts {

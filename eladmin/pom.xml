@@ -32,6 +32,7 @@
         <fastjson2.version>2.0.54</fastjson2.version>
         <druid.version>1.2.19</druid.version>
         <commons-pool2.version>2.11.1</commons-pool2.version>
+        <security-model.skip-tests>true</security-model.skip-tests>
     </properties>
 
     <dependencies>
@@ -231,7 +232,7 @@
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
                 <configuration>
-                    <skip>true</skip>
+                    <skip>${security-model.skip-tests}</skip>
                 </configuration>
             </plugin>
 

@@ -16,9 +16,11 @@ import lombok.extern.slf4j.Slf4j;
 import me.zhengjie.annotation.Log;
 import me.zhengjie.exception.BadRequestException;
 import me.zhengjie.modules.system.domain.PreDefense;
+import me.zhengjie.modules.system.domain.CleanSubsetExportTask;
 import me.zhengjie.modules.system.domain.dto.PreDefenseQueryCriteria;
 import me.zhengjie.modules.system.service.AlgorithmService;
 import me.zhengjie.modules.system.service.CleanSubsetExportService;
+import me.zhengjie.modules.system.service.CleanSubsetExportTaskService;
 import me.zhengjie.modules.system.service.DatasetService;
 import me.zhengjie.modules.system.service.HyperService;
 import me.zhengjie.modules.system.service.PreDefenseService;
@@ -57,6 +59,7 @@ public class PreDefenseController {
 
     private final PreDefenseService preDefenseService;
     private final CleanSubsetExportService cleanSubsetExportService;
+    private final CleanSubsetExportTaskService cleanSubsetExportTaskService;
     private final DatasetService datasetService;
     private final AlgorithmService algorithmService;
     private final HyperService hyperService;
@@ -134,36 +137,21 @@ public class PreDefenseController {
         return new ResponseEntity<>("任务已重新启动", HttpStatus.OK);
     }
 
+    @Log("取消训练前防御任务")
+    @ApiOperation("取消运行中的训练前防御任务")
+    @PostMapping("/cancel/{taskId}")
+    @PreAuthorize("@el.check('pre_defense:start')")
+    public ResponseEntity<Object> cancelPreDefenseTask(@PathVariable Long taskId) {
+        preDefenseService.cancelTask(taskId);
+        return new ResponseEntity<>("任务已取消", HttpStatus.OK);
+    }
+
     @ApiOperation("获取任务进度")
     @GetMapping("/progress/{taskId}")
     @PreAuthorize("@el.check('pre_defense:list')")
     public ResponseEntity<Object> getTaskProgress(@PathVariable Long taskId) {
         Integer progress = preDefenseService.getTaskProgress(taskId);
         return new ResponseEntity<>(progress, HttpStatus.OK);
-    }
-
-    @Log("更新任务状态")
-    @ApiOperation("更新任务状态")
-    @PutMapping("/status")
-    @PreAuthorize("@el.check('pre_defense:edit')")
-    public ResponseEntity<Object> updateTaskStatus(
-            @RequestParam Long taskId,
-            @RequestParam String status,
-            @RequestParam(required = false, defaultValue = "0") Integer progress) {
-        preDefenseService.updateTaskStatus(taskId, status, progress);
-        return new ResponseEntity<>(HttpStatus.OK);
-    }
-
-    @Log("更新任务结果")
-    @ApiOperation("更新任务结果")
-    @PutMapping("/result")
-    @PreAuthorize("@el.check('pre_defense:edit')")
-    public ResponseEntity<Object> updateTaskResult(
-            @RequestParam Long taskId,
-            @RequestParam(required = false) Long outputDatasetId,
-            @RequestParam(required = false) String cleaningResult) {
-        preDefenseService.updateTaskResult(taskId, outputDatasetId, cleaningResult);
-        return new ResponseEntity<>(HttpStatus.OK);
     }
 
     @ApiOperation("获取清洗结果详情")
@@ -189,19 +177,7 @@ public class PreDefenseController {
     @GetMapping("/cleaning-statistics")
     @PreAuthorize("@el.check('pre_defense:list')")
     public ResponseEntity<Object> getCleaningStatistics() {
-        java.util.Map<String, Object> stats = new java.util.HashMap<>();
-
-        // 按状态统计清洗任务数量
-        stats.put("pendingCount", preDefenseService.findByStatus("pending").size());
-        stats.put("runningCount", preDefenseService.findByStatus("running").size());
-        stats.put("successCount", preDefenseService.findByStatus("success").size());
-        stats.put("failedCount", preDefenseService.findByStatus("failed").size());
-
-        // 总任务数
-        PreDefenseQueryCriteria criteria = new PreDefenseQueryCriteria();
-        stats.put("totalCount", preDefenseService.queryAll(criteria).size());
-
-        return new ResponseEntity<>(stats, HttpStatus.OK);
+        return new ResponseEntity<>(buildTaskOverviewStatistics(), HttpStatus.OK);
     }
 
     @ApiOperation("获取清洗效果统计")
@@ -234,6 +210,52 @@ public class PreDefenseController {
                 .body(new FileSystemResource(zipFile));
     }
 
+    @Log("提交清洗数据集导出任务")
+    @ApiOperation("异步提交清洗数据集导出任务")
+    @PostMapping("/cleaned-dataset/exports/{taskId}")
+    @PreAuthorize("@el.check('pre_defense:list')")
+    public ResponseEntity<CleanSubsetExportTask> submitCleanedDatasetExport(
+            @PathVariable Long taskId,
+            @RequestParam(required = false) Integer isolationRatio) {
+        PreDefense task = preDefenseService.findById(taskId);
+        CleanSubsetExportTask exportTask = cleanSubsetExportTaskService.submit(task, isolationRatio);
+        return new ResponseEntity<>(exportTask, HttpStatus.ACCEPTED);
+    }
+
+    @ApiOperation("查询清洗数据集导出任务")
+    @GetMapping("/cleaned-dataset/exports/{exportId}")
+    @PreAuthorize("@el.check('pre_defense:list')")
+    public ResponseEntity<CleanSubsetExportTask> getCleanedDatasetExport(
+            @PathVariable Long exportId) {
+        return new ResponseEntity<>(
+                cleanSubsetExportTaskService.findById(exportId), HttpStatus.OK);
+    }
+
+    @ApiOperation("查询任务的清洗数据集导出记录")
+    @GetMapping("/cleaned-dataset/exports/task/{taskId}")
+    @PreAuthorize("@el.check('pre_defense:list')")
+    public ResponseEntity<List<CleanSubsetExportTask>> getCleanedDatasetExportsByTask(
+            @PathVariable Long taskId) {
+        preDefenseService.findById(taskId);
+        return new ResponseEntity<>(
+                cleanSubsetExportTaskService.findByTaskId(taskId), HttpStatus.OK);
+    }
+
+    @ApiOperation("下载异步生成的清洗数据集")
+    @GetMapping("/cleaned-dataset/exports/{exportId}/download")
+    @PreAuthorize("@el.check('pre_defense:list')")
+    public ResponseEntity<Resource> downloadAsyncCleanedDataset(
+            @PathVariable Long exportId) throws IOException {
+        CleanSubsetExportTask exportTask = cleanSubsetExportTaskService.findById(exportId);
+        Path zipFile = cleanSubsetExportTaskService.resolveDownloadFile(exportId);
+        String fileName = cleanSubsetExportTaskService.buildDownloadFileName(exportTask);
+        return ResponseEntity.ok()
+                .contentType(MediaType.parseMediaType("application/zip"))
+                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + fileName + "\"")
+                .contentLength(Files.size(zipFile))
+                .body(new FileSystemResource(zipFile));
+    }
+
     @ApiOperation("预览真实清洗任务结果图")
     @GetMapping("/artifact-preview/{taskId}")
     @PreAuthorize("@el.check('pre_defense:list')")
@@ -253,6 +275,12 @@ public class PreDefenseController {
 
         Path artifactRoot = Paths.get(artifacts.getString("path")).toAbsolutePath().normalize();
         Path target = Paths.get(artifactPath).toAbsolutePath().normalize();
+        try {
+            artifactRoot = artifactRoot.toRealPath();
+            target = target.toRealPath();
+        } catch (IOException e) {
+            throw new BadRequestException("请求的产物文件不可访问");
+        }
         if (!target.startsWith(artifactRoot) || !Files.isRegularFile(target)
                 || !target.getFileName().toString().toLowerCase().endsWith(".png")) {
             throw new BadRequestException("请求的产物文件不可访问");
@@ -283,6 +311,7 @@ public class PreDefenseController {
         report.put("executionSnapshot", parseJsonOrNull(task.getExecutionSnapshot()));
         report.put("cleaningResult", parseJsonOrNull(task.getCleaningResult()));
         report.put("cleanDatasetDownload", cleanSubsetExportService.describe(task));
+        report.put("cleanDatasetExports", cleanSubsetExportTaskService.findByTaskId(taskId));
         report.put("reportGeneratedAt", java.time.LocalDateTime.now().toString());
 
         return new ResponseEntity<>(report, HttpStatus.OK);
@@ -291,8 +320,38 @@ public class PreDefenseController {
     @ApiOperation("获取任务执行日志")
     @GetMapping("/logs/{taskId}")
     @PreAuthorize("@el.check('pre_defense:list')")
-    public ResponseEntity<Object> getExecutionLogs(@PathVariable Long taskId) {
-        return new ResponseEntity<>(preDefenseService.getExecutionLogs(taskId), HttpStatus.OK);
+    public ResponseEntity<Object> getExecutionLogs(
+            @PathVariable Long taskId,
+            @RequestParam(required = false) String offsets) {
+        return new ResponseEntity<>(
+                preDefenseService.getExecutionLogs(taskId, parseLogOffsets(offsets)),
+                HttpStatus.OK);
+    }
+
+    private Map<String, Long> parseLogOffsets(String rawOffsets) {
+        Map<String, Long> offsets = new LinkedHashMap<>();
+        if (ObjectUtil.isEmpty(rawOffsets)) {
+            return offsets;
+        }
+        try {
+            JSONObject json = JSON.parseObject(rawOffsets);
+            for (String key : json.keySet()) {
+                Object value = json.get(key);
+                if (value == null) {
+                    continue;
+                }
+                long offset = value instanceof Number
+                        ? ((Number) value).longValue()
+                        : Long.parseLong(value.toString());
+                if (offset < 0) {
+                    throw new NumberFormatException("negative offset");
+                }
+                offsets.put(key, offset);
+            }
+            return offsets;
+        } catch (Exception e) {
+            throw new BadRequestException("日志游标格式无效");
+        }
     }
 
     private Object parseJsonOrNull(String raw) {
@@ -381,18 +440,22 @@ public class PreDefenseController {
     @GetMapping("/statistics")
     @PreAuthorize("@el.check('pre_defense:list')")
     public ResponseEntity<Object> getTaskStatistics() {
-        java.util.Map<String, Object> stats = new java.util.HashMap<>();
-        
-        // 按状态统计任务数量
-        stats.put("pendingCount", preDefenseService.findByStatus("pending").size());
-        stats.put("runningCount", preDefenseService.findByStatus("running").size());
-        stats.put("successCount", preDefenseService.findByStatus("success").size());
-        stats.put("failedCount", preDefenseService.findByStatus("failed").size());
-        
-        // 总任务数
-        PreDefenseQueryCriteria criteria = new PreDefenseQueryCriteria();
-        stats.put("totalCount", preDefenseService.queryAll(criteria).size());
-        
-        return new ResponseEntity<>(stats, HttpStatus.OK);
+        return new ResponseEntity<>(buildTaskOverviewStatistics(), HttpStatus.OK);
+    }
+
+    private Map<String, Object> buildTaskOverviewStatistics() {
+        Map<String, Object> raw = preDefenseService.getCleaningEffectStatistics();
+        Map<String, Object> stats = new LinkedHashMap<>();
+        stats.put("pendingCount", numberValue(raw.get("pending_tasks")));
+        stats.put("runningCount", numberValue(raw.get("running_tasks")));
+        stats.put("successCount", numberValue(raw.get("success_tasks")));
+        stats.put("failedCount", numberValue(raw.get("failed_tasks")));
+        stats.put("canceledCount", numberValue(raw.get("canceled_tasks")));
+        stats.put("totalCount", numberValue(raw.get("total_tasks")));
+        return stats;
+    }
+
+    private long numberValue(Object value) {
+        return value instanceof Number ? ((Number) value).longValue() : 0L;
     }
 }

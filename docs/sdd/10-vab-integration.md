@@ -78,7 +78,8 @@ The result JSON follows `07-executor-contract.md` and contains:
 oracle metric and must not be described as an unlabeled production-data metric.
 
 The task-detail view renders effective configuration, purity by isolation ratio, selected
-sample counts, and task-local log/index artifact paths whenever a VaB result is present.
+sample counts, task-local log/index artifact paths and the actual Python/PyTorch/CUDA
+runtime whenever a VaB result is present.
 
 ## Cleaned Dataset Export
 

@@ -36,26 +36,27 @@ public class MockDefenseTaskExecutor implements DefenseTaskExecutor {
         Long taskId = request.getTaskId();
         String startedAt = LocalDateTime.now().toString();
         try {
-            updatePreProgress(taskId, 20);
+            updatePreProgress(request, 20);
             sleep();
-            updatePreProgress(taskId, 45);
+            updatePreProgress(request, 45);
             sleep();
-            updatePreProgress(taskId, 75);
+            updatePreProgress(request, 75);
             sleep();
 
             Map<String, Object> result = buildPreDefenseResult(request, startedAt);
 
-            preDefenseMapper.updateResult(taskId, null, JSON.toJSONString(result));
-            finishPreTask(taskId, "success", 100);
+            preDefenseMapper.updateResultForRun(
+                    taskId, request.getRunId(), null, JSON.toJSONString(result));
+            finishPreTask(request, "success", 100);
             log.info("Mock pre-defense task {} completed", taskId);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            recordPreFailure(taskId, startedAt, "TASK_INTERRUPTED", "任务被中断");
-            finishPreTask(taskId, "failed", 0);
+            recordPreFailure(request, startedAt, "TASK_INTERRUPTED", "任务被中断");
+            finishPreTask(request, "failed", 0);
             log.warn("Mock pre-defense task {} interrupted", taskId);
         } catch (Exception e) {
-            recordPreFailure(taskId, startedAt, "EXECUTION_ERROR", e.getMessage());
-            finishPreTask(taskId, "failed", 0);
+            recordPreFailure(request, startedAt, "EXECUTION_ERROR", e.getMessage());
+            finishPreTask(request, "failed", 0);
             log.error("Mock pre-defense task {} failed", taskId, e);
         }
     }
@@ -92,23 +93,17 @@ public class MockDefenseTaskExecutor implements DefenseTaskExecutor {
         }
     }
 
-    private void updatePreProgress(Long taskId, Integer progress) {
-        preDefenseMapper.updateStatus(taskId, "running", progress);
+    private void updatePreProgress(DefenseTaskRequest request, Integer progress) {
+        preDefenseMapper.updateRunningProgress(request.getTaskId(), request.getRunId(), progress);
     }
 
     private void updateDuringProgress(Long taskId, Integer progress) {
         duringDefenseMapper.updateStatus(taskId, "running", progress);
     }
 
-    private void finishPreTask(Long taskId, String status, Integer progress) {
-        PreDefense task = preDefenseMapper.selectById(taskId);
-        if (task == null) {
-            return;
-        }
-        task.setStatus(status);
-        task.setProgress(progress);
-        task.setEndTime(LocalDateTime.now());
-        preDefenseMapper.updateById(task);
+    private void finishPreTask(DefenseTaskRequest request, String status, Integer progress) {
+        preDefenseMapper.finishForRun(
+                request.getTaskId(), request.getRunId(), status, progress, LocalDateTime.now());
     }
 
     private void finishDuringTask(Long taskId, String status, Integer progress) {
@@ -122,8 +117,9 @@ public class MockDefenseTaskExecutor implements DefenseTaskExecutor {
         duringDefenseMapper.updateById(task);
     }
 
-    private void recordPreFailure(Long taskId, String startedAt, String errorCode, String failureReason) {
-        preDefenseMapper.updateResult(taskId, null, JSON.toJSONString(buildFailureResult(
+    private void recordPreFailure(DefenseTaskRequest request, String startedAt, String errorCode, String failureReason) {
+        preDefenseMapper.updateResultForRun(request.getTaskId(), request.getRunId(), null,
+                JSON.toJSONString(buildFailureResult(
                 "mock", "pre_defense", startedAt, errorCode, failureReason, "dataset")));
     }
 

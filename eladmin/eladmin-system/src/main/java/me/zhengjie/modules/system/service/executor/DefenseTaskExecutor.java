@@ -27,4 +27,11 @@ public interface DefenseTaskExecutor {
      * @param request validated during-defense execution context
      */
     void runDuringDefense(DefenseTaskRequest request);
+
+    /**
+     * Request cancellation of a running pre-defense execution.
+     */
+    default boolean cancelPreDefense(Long taskId, String runId) {
+        return false;
+    }
 }

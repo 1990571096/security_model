@@ -73,8 +73,19 @@ rsa:
 
 security-model:
   executor:
+    task-pool:
+      # 独立承载 LDD 与清洗子集导出任务，避免使用 Web 请求线程执行长任务。
+      core-size: ${SECURITY_MODEL_TASK_CORE_POOL_SIZE:2}
+      max-size: ${SECURITY_MODEL_TASK_MAX_POOL_SIZE:4}
+      keep-alive-seconds: ${SECURITY_MODEL_TASK_KEEP_ALIVE_SECONDS:60}
+      queue-capacity: ${SECURITY_MODEL_TASK_QUEUE_CAPACITY:20}
+      wait-for-tasks-on-shutdown: ${SECURITY_MODEL_TASK_WAIT_ON_SHUTDOWN:true}
+      await-termination-seconds: ${SECURITY_MODEL_TASK_AWAIT_TERMINATION_SECONDS:30}
     python:
       executable: ${PYTHON_EXECUTABLE:python}
       script: ${SECURITY_MODEL_PYTHON_SCRIPT:}
       workspace: ${SECURITY_MODEL_EXECUTOR_WORKSPACE:${java.io.tmpdir}/security-model-executor}
       timeout-seconds: ${SECURITY_MODEL_EXECUTOR_TIMEOUT_SECONDS:3600}
+      fingerprint-content: ${SECURITY_MODEL_FINGERPRINT_CONTENT:true}
+      fingerprint-max-bytes: ${SECURITY_MODEL_FINGERPRINT_MAX_BYTES:1073741824}
+      recover-stale-running-tasks: ${SECURITY_MODEL_RECOVER_STALE_RUNNING_TASKS:true}

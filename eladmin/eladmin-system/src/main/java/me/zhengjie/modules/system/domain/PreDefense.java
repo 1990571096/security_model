@@ -41,7 +41,7 @@ public class PreDefense extends BaseEntity implements Serializable {
 
     @NotBlank
     @TableField("status")
-    @ApiModelProperty(value = "任务状态: pending-等待中, running-运行中, success-成功, failed-失败")
+    @ApiModelProperty(value = "任务状态: pending-等待中, running-运行中, success-成功, failed-失败, canceled-已取消")
     private String status = "pending";
 
     @NotNull
@@ -85,6 +85,14 @@ public class PreDefense extends BaseEntity implements Serializable {
     @TableField("execution_snapshot")
     @ApiModelProperty(value = "执行参数快照(JSON格式): 每次启动时冻结的资源与参数")
     private String executionSnapshot;
+
+    @TableField("current_run_id")
+    @ApiModelProperty(value = "当前执行运行标识")
+    private String currentRunId;
+
+    @TableField("current_attempt")
+    @ApiModelProperty(value = "当前执行尝试次数")
+    private Integer currentAttempt;
 
     @Override
     public boolean equals(Object o) {

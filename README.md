@@ -7,8 +7,12 @@
 - 管理数据集、算法和 LDD 超参数模板。
 - 创建并启动 LDD 训练前数据清洗任务，记录清洗结果。
 - 查看失败任务并重试，保留每次启动的实验参数快照。
+- 通过运行标识隔离重试过程，避免旧执行器回调覆盖新任务结果。
+- 保存数据集、算法和运行环境指纹，支持核对历史实验使用的资源版本。
+- 在算法结果中记录实际 Python、PyTorch、NumPy、CUDA 和 GPU 运行环境，并在实验报告中展示。
 - 查看 LDD 实验报告，并按保留索引导出清洗后的 CIFAR-10 子集。
 - 通过统一执行器接口为后续真实算法接入预留边界。
+- 观测有界任务执行池的线程、队列和饱和状态，并在队列满载时将任务收敛为可重试失败。
 - 按 SDD 文档驱动方式推进重构，降低返工风险。
 
 ## 技术栈
@@ -58,13 +62,29 @@ VaB 项目中的 `LDD.py`，并将配置、结构化结果和任务产物渲染�
 ```sql
 SOURCE sql/eladmin.sql;
 SOURCE sql/security_model_mvp_seed.sql;
+SOURCE sql/security_model_execution_snapshot.sql;
+SOURCE sql/security_model_task_run_context.sql;
+SOURCE sql/security_model_clean_subset_export.sql;
 ```
 
 已有开发库只需补充 MVP 数据：
 
 ```sql
 SOURCE sql/security_model_mvp_seed.sql;
+SOURCE sql/security_model_execution_snapshot.sql;
+SOURCE sql/security_model_task_run_context.sql;
+SOURCE sql/security_model_clean_subset_export.sql;
 ```
+
+三个 migration 脚本均可重复执行。`execution_snapshot` 保存每次启动时冻结的资源和参数，
+`current_run_id` 与 `current_attempt` 用于校验异步执行器回调是否属于当前运行；
+`sys_pre_defense_export` 保存异步清洗子集导出任务及其进度、产物和失败原因。
+
+启动快照默认对可访问的数据集文件计算 SHA-256，并记录文件真实路径、大小和修改时间；
+可通过 `SECURITY_MODEL_FINGERPRINT_CONTENT=false` 关闭内容摘要，或通过
+`SECURITY_MODEL_FINGERPRINT_MAX_BYTES` 设置参与摘要计算的文件大小上限。
+LDD 结果还会记录 Python 适配器版本、解释器版本、PyTorch/NumPy 版本、CUDA 可用性及 GPU
+型号，用于区分“启动时配置快照”和“算法实际运行环境”。
 
 ## 启动后端
 
@@ -113,6 +133,16 @@ npm run build:prod
 
 旧 Vue CLI/Webpack 在 Node 17+ 环境下需要 `--openssl-legacy-provider`。构建时出现 asset size 或 Browserslist 过期提示属于当前旧前端栈的已知警告，不阻塞 MVP 联调。
 
+后端定向测试默认被原项目配置跳过，需要显式打开：
+
+```powershell
+cd F:\Study\postgraduate\毕业论文\security_model\eladmin
+mvn -pl eladmin-system -am test "-Denforcer.skip=true" "-Dsecurity-model.skip-tests=false" "-Dtest=CleanSubsetExportTaskServiceImplTest,PreDefenseControllerTest,LddConfigurationPolicyTest,PreDefenseTaskStatePolicyTest,ExecutionFingerprintServiceTest,CleanSubsetExportServiceImplTest,AfterCommitTaskDispatcherTest" "-Dsurefire.failIfNoSpecifiedTests=false"
+```
+
+当前核心服务、控制器、策略、快照、导出幂等和队列拒绝测试共 23 项；普通 Maven 流程仍保持跳过测试，
+以兼容原项目的默认打包行为。
+
 ## SDD 文档
 
 重构迭代以 `docs/sdd` 为准：
@@ -126,12 +156,24 @@ npm run build:prod
 - `docs/sdd/09-project-status.md`：项目整体目标、当前进度、已完成能力和后续待办。
 - `docs/sdd/10-vab-integration.md`：VaB 训练前防御算法适配、参数和产物约定。
 - `docs/sdd/11-platform-implementation.md`：当前平台实现、业务流程和实现思路。
+- `docs/sdd/12-resume-project-narrative.md`：简历项目描述与面试讲解提纲。
 
 ## 当前限制
 
 - 当前真实运行和答辩展示只覆盖 LDD 训练前数据清洗。
 - 训练中、训练后和其他对比算法暂不接入主流程。
 - 前端和后端仍保留部分 ELADMIN 历史模块与技术债，后续按 SDD 逐步裁剪和迁移。
+- 清洗子集导出已改为异步任务，支持进度查询、失败重试和应用重启恢复；旧同步下载接口仅用于兼容。
+- 任务详情已支持 stdout/stderr 按 offset 增量轮询，任务中心已展示有界执行池状态；SSE/WebSocket 日志流、运行资源配额和后续模型训练衔接仍为后续优化项。
+
+## 可用于简历的工程亮点
+
+- 采用 `DefenseTaskExecutor` 统一执行器边界，将 Java 任务编排与 Python/PyTorch 算法运行环境解耦。
+- 采用任务状态机和数据库条件更新实现并发启动保护，使用 `run_id`、`attempt` 和任务专属目录隔离重试。
+- 采用启动时不可变参数快照，支持资源、配置、结果产物和实验报告的可追溯记录。
+- 通过资源内容摘要和服务层引用保护，避免数据集、算法或超参数模板被删除后破坏历史实验。
+- 对外部算法产物执行任务目录 containment 校验，并限制日志读取和 PNG 预览范围。
+- 通过异步导出任务按 LDD 保留样本索引重建 CIFAR-10 子集，形成从算法结果到可下载数据资产的业务闭环。
 
 ## 原始项目来源
 

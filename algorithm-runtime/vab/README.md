@@ -20,7 +20,8 @@ single-task LDD script, and writes the standard result JSON consumed by
 The original VaB scripts iterate over fixed experimental settings. The adapter changes
 only the generated task copy. It limits a platform task to one dataset, one trigger
 type, and one poisoned-data proportion; it also stores logs and selected sample
-indices in the task artifact directory.
+indices in the task artifact directory. The result JSON also records the concrete
+Python, PyTorch, NumPy, CUDA and GPU runtime used by that attempt.
 
 The adapter is intentionally limited to LDD in this iteration. Future algorithms must
 reuse the pre-defense request/result contract and be explicitly allow-listed after their

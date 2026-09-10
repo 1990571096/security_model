@@ -42,6 +42,26 @@ public class AsyncExecutor implements AsyncConfigurer {
 
     public static int queueCapacity;
 
+    private final AtomicInteger asyncThreadNumber = new AtomicInteger(1);
+
+    @Value("${security-model.executor.task-pool.core-size:2}")
+    private int taskCorePoolSize;
+
+    @Value("${security-model.executor.task-pool.max-size:4}")
+    private int taskMaxPoolSize;
+
+    @Value("${security-model.executor.task-pool.keep-alive-seconds:60}")
+    private int taskKeepAliveSeconds;
+
+    @Value("${security-model.executor.task-pool.queue-capacity:20}")
+    private int taskQueueCapacity;
+
+    @Value("${security-model.executor.task-pool.wait-for-tasks-on-shutdown:true}")
+    private boolean taskWaitForTasksOnShutdown;
+
+    @Value("${security-model.executor.task-pool.await-termination-seconds:30}")
+    private int taskAwaitTerminationSeconds;
+
     @Value("${task.pool.core-pool-size}")
     public void setCorePoolSize(int corePoolSize) {
         AsyncExecutor.corePoolSize = corePoolSize;
@@ -69,7 +89,7 @@ public class AsyncExecutor implements AsyncConfigurer {
     @Override
     public Executor getAsyncExecutor() {
         // 自定义工厂
-        ThreadFactory factory = r -> new Thread(r, "el-async-" + new AtomicInteger(1).getAndIncrement());
+        ThreadFactory factory = r -> new Thread(r, "el-async-" + asyncThreadNumber.getAndIncrement());
         // 自定义线程池
         return new ThreadPoolExecutor(corePoolSize, maxPoolSize, keepAliveSeconds,
                 TimeUnit.SECONDS, new ArrayBlockingQueue<>(queueCapacity), factory,
@@ -84,12 +104,16 @@ public class AsyncExecutor implements AsyncConfigurer {
     @Bean("taskAsync")
     public ThreadPoolTaskExecutor taskAsync() {
         ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
-        executor.setCorePoolSize(2);
-        executor.setMaxPoolSize(4);
-        executor.setQueueCapacity(20);
-        executor.setKeepAliveSeconds(60);
+        executor.setCorePoolSize(taskCorePoolSize);
+        executor.setMaxPoolSize(taskMaxPoolSize);
+        executor.setQueueCapacity(taskQueueCapacity);
+        executor.setKeepAliveSeconds(taskKeepAliveSeconds);
         executor.setThreadNamePrefix("el-task-");
-        executor.setRejectedExecutionHandler(new ThreadPoolExecutor.CallerRunsPolicy());
+        // Long-running Python jobs must never fall back to the HTTP request
+        // thread when the bounded task pool is full.
+        executor.setRejectedExecutionHandler(new ThreadPoolExecutor.AbortPolicy());
+        executor.setWaitForTasksToCompleteOnShutdown(taskWaitForTasksOnShutdown);
+        executor.setAwaitTerminationSeconds(taskAwaitTerminationSeconds);
         return executor;
     }
 }

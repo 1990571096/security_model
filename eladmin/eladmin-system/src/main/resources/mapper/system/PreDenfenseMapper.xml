@@ -18,6 +18,8 @@
         <result column="output_dataset_id" property="outputDatasetId"/>
         <result column="cleaning_result" property="cleaningResult"/>
         <result column="execution_snapshot" property="executionSnapshot"/>
+        <result column="current_run_id" property="currentRunId"/>
+        <result column="current_attempt" property="currentAttempt"/>
         <result column="create_by" property="createBy"/>
         <result column="update_by" property="updateBy"/>
         <result column="create_time" property="createTime"/>
@@ -28,7 +30,8 @@
     <sql id="Base_Column_List">
         task_id, task_name, description, status, dataset_id, algorithm_id, hyper_id,
     custom_params, start_time, end_time, progress, output_dataset_id,
-    cleaning_result, execution_snapshot, create_by, update_by, create_time, update_time
+    cleaning_result, execution_snapshot, current_run_id, current_attempt,
+    create_by, update_by, create_time, update_time
     </sql>
 
     <!-- 查询条件 -->
@@ -118,23 +121,23 @@
         order by task_id desc
     </select>
 
-    <!-- 更新任务状态 -->
-    <update id="updateStatus">
-        update sys_pre_defense
-        set status = #{status},
-            progress = #{progress},
-            update_time = now()
-        where task_id = #{taskId}
-    </update>
+    <select id="countByDatasetId" resultType="long">
+        select count(*)
+        from sys_pre_defense
+        where dataset_id = #{datasetId}
+    </select>
 
-    <!-- 更新任务结果 - 修改为与Controller接口保持一致 -->
-    <update id="updateResult">
-        update sys_pre_defense
-        set output_dataset_id = #{outputDatasetId},
-            cleaning_result = #{cleaningResult},
-            update_time = now()
-        where task_id = #{taskId}
-    </update>
+    <select id="countByAlgorithmId" resultType="long">
+        select count(*)
+        from sys_pre_defense
+        where algorithm_id = #{algorithmId}
+    </select>
+
+    <select id="countByHyperId" resultType="long">
+        select count(*)
+        from sys_pre_defense
+        where hyper_id = #{hyperId}
+    </select>
 
     <update id="resetForRetry">
         update sys_pre_defense
@@ -144,19 +147,97 @@
             end_time = null,
             output_dataset_id = null,
             cleaning_result = null,
+            current_run_id = null,
+            current_attempt = null,
             update_time = now()
         where task_id = #{taskId}
           and status = 'failed'
     </update>
 
-    <!-- 新增：根据数据集ID和算法ID查询（用于统计） -->
-    <select id="findByDatasetId" resultMap="BaseResultMap">
-        select
-        <include refid="Base_Column_List"/>
-        from sys_pre_defense
-        where dataset_id = #{datasetId}
-        order by task_id desc
-    </select>
+    <update id="claimForExecution">
+        update sys_pre_defense
+        set status = 'running',
+            progress = 1,
+            start_time = #{startTime},
+            end_time = null,
+            output_dataset_id = null,
+            cleaning_result = null,
+            execution_snapshot = #{executionSnapshot},
+            current_run_id = #{runId},
+            current_attempt = #{attempt},
+            update_time = now()
+        where task_id = #{taskId}
+          and status = 'pending'
+    </update>
+
+    <update id="updateRunningProgress">
+        update sys_pre_defense
+        set progress = #{progress},
+            update_time = now()
+        where task_id = #{taskId}
+          and current_run_id = #{runId}
+          and status = 'running'
+    </update>
+
+    <update id="updateResultForRun">
+        update sys_pre_defense
+        set output_dataset_id = #{outputDatasetId},
+            cleaning_result = #{cleaningResult},
+            update_time = now()
+        where task_id = #{taskId}
+          and current_run_id = #{runId}
+          and status = 'running'
+    </update>
+
+    <update id="finishForRun">
+        update sys_pre_defense
+        set status = #{status},
+            progress = #{progress},
+            end_time = #{endTime},
+            update_time = now()
+        where task_id = #{taskId}
+          and current_run_id = #{runId}
+          and status = 'running'
+    </update>
+
+    <update id="cancelForRun">
+        update sys_pre_defense
+        set status = 'canceled',
+            cleaning_result = #{cleaningResult},
+            end_time = #{endTime},
+            update_time = now()
+        where task_id = #{taskId}
+          and current_run_id = #{runId}
+          and status = 'running'
+    </update>
+
+    <update id="failBeforeExecution">
+        update sys_pre_defense
+        set status = 'failed',
+            progress = 0,
+            cleaning_result = #{failureResult},
+            end_time = #{endTime},
+            update_time = now()
+        where task_id = #{taskId}
+          and current_run_id = #{runId}
+          and current_attempt = #{attempt}
+          and status = 'running'
+    </update>
+
+    <update id="failOrphanedForRun">
+        update sys_pre_defense
+        set status = 'failed',
+            progress = 0,
+            cleaning_result = #{cleaningResult},
+            end_time = #{endTime},
+            update_time = now()
+        where task_id = #{taskId}
+          and status = 'running'
+          and (
+              current_run_id = #{runId}
+              or (current_run_id is null and #{runId} is null)
+          )
+    </update>
 
     <!-- 新增：获取清洗效果统计 -->
     <select id="getCleaningEffectStatistics" resultType="java.util.HashMap">
@@ -164,6 +245,7 @@
             COUNT(*) as total_tasks,
             COUNT(CASE WHEN status = 'success' THEN 1 END) as success_tasks,
             COUNT(CASE WHEN status = 'failed' THEN 1 END) as failed_tasks,
+            COUNT(CASE WHEN status = 'canceled' THEN 1 END) as canceled_tasks,
             COUNT(CASE WHEN status = 'running' THEN 1 END) as running_tasks,
             COUNT(CASE WHEN status = 'pending' THEN 1 END) as pending_tasks,
             AVG(CASE WHEN status = 'success' THEN progress END) as avg_progress,

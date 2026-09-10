@@ -144,7 +144,7 @@
                 :key="artifactPath"
                 class="artifact-path"
               >
-                {{ artifactPath }}
+                {{ displayArtifactPath(artifactPath) }}
               </code>
             </div>
             <div v-if="vabResult.effective_config" class="vab-result-row">
@@ -161,8 +161,12 @@
             </div>
           </el-card>
         </el-descriptions-item>
-        <el-descriptions-item v-if="cleaningResultData" label="执行日志" :span="2">
-          <el-card class="parameter-card execution-log-card" v-loading="logsLoading">
+        <el-descriptions-item
+          v-if="taskData.status === 'running' || cleaningResultData || executionLogs.length"
+          label="执行日志"
+          :span="2"
+        >
+          <el-card v-loading="logsLoading" class="parameter-card execution-log-card">
             <el-empty
               v-if="!logsLoading && !executionLogs.length"
               :description="logsMessage || '暂无可读取的执行日志'"
@@ -171,8 +175,8 @@
             <el-tabs v-else v-model="activeLogName" type="border-card">
               <el-tab-pane
                 v-for="(item, index) in executionLogs"
-                :key="item.path"
-                :label="item.name"
+                :key="item.relativePath || item.name || item.path"
+                :label="item.relativePath || item.name"
                 :name="String(index)"
               >
                 <div class="log-meta">
@@ -214,6 +218,15 @@
           @click="startTask"
         >
           启动任务
+        </el-button>
+        <el-button
+          v-if="taskData.status === 'running'"
+          type="danger"
+          size="small"
+          icon="el-icon-close"
+          @click="cancelTask"
+        >
+          取消任务
         </el-button>
         <el-button
           v-if="taskData.status === 'success' && isVabResult"
@@ -347,7 +360,7 @@
 </template>
 
 <script>
-import { startTask, retryTask, getTaskProgress, downloadCleanedDataset, previewTaskArtifact, getExecutionLogs } from '@/api/system/preDefense'
+import { startTask, retryTask, cancelTask as cancelPreDefenseTask, getPreDefense, previewTaskArtifact, getExecutionLogs } from '@/api/system/preDefense'
 import { getParameterSchema } from '@/api/system/hyper'
 import { get as getDataset } from '@/api/system/datasetDetail'
 import { getHyper } from '@/api/system/hyper'
@@ -387,6 +400,9 @@ export default {
       vabImageUrls: [],
       reportVisible: false,
       executionLogs: [],
+      logOffsets: {},
+      executionLogTaskId: null,
+      executionLogAttempt: null,
       logsLoading: false,
       logsMessage: '',
       activeLogName: '0'
@@ -532,7 +548,7 @@ export default {
       if (val && this.taskData) {
         this.initTaskData()
       } else {
-        this.stopProgressMonitoring()
+        this.stopProgressMonitoring(false)
       }
     },
     taskData: {
@@ -554,8 +570,18 @@ export default {
   methods: {
     // 初始化任务数据
     initTaskData() {
+      const attemptChanged = this.executionLogTaskId === this.taskData.taskId &&
+        this.executionLogAttempt !== null &&
+        this.taskData.currentAttempt !== null &&
+        this.executionLogAttempt !== this.taskData.currentAttempt
+      if (this.executionLogTaskId !== this.taskData.taskId || attemptChanged) {
+        this.resetExecutionLogs()
+      }
+
       if (this.taskData.status === 'running') {
         this.startProgressMonitoring()
+      } else {
+        this.stopProgressMonitoring(false)
       }
 
       if (this.taskData.status === 'success' && this.hasValidStats) {
@@ -600,21 +626,68 @@ export default {
       this.vabImageUrls = []
     },
 
-    loadExecutionLogs() {
+    resetExecutionLogs() {
       this.executionLogs = []
+      this.logOffsets = {}
+      this.executionLogTaskId = this.taskData ? this.taskData.taskId : null
+      this.executionLogAttempt = this.taskData ? this.taskData.currentAttempt : null
       this.logsMessage = ''
       this.activeLogName = '0'
-      if (!this.taskData || !this.taskData.taskId || !this.cleaningResultData) return
+    },
+
+    loadExecutionLogs() {
+      if (!this.taskData || !this.taskData.taskId) return
+      if (this.executionLogTaskId !== this.taskData.taskId) {
+        this.resetExecutionLogs()
+      }
+
+      const offsets = Object.assign({}, this.logOffsets)
       this.logsLoading = true
-      getExecutionLogs(this.taskData.taskId).then(response => {
+      getExecutionLogs(this.taskData.taskId, offsets).then(response => {
         const result = response.data || response
-        this.executionLogs = result.logs || []
+        const logs = result.logs || []
+        logs.forEach(item => {
+          const key = item.relativePath || item.name || item.path
+          const existingIndex = this.executionLogs.findIndex(log => {
+            return (log.relativePath || log.name || log.path) === key
+          })
+          const previous = existingIndex >= 0 ? this.executionLogs[existingIndex] : null
+          const startOffset = Number(item.startOffset)
+          const shouldReplace = !previous ||
+            item.reset === true ||
+            (Number.isFinite(startOffset) && startOffset === 0 &&
+              this.logOffsets[key] === undefined)
+          const merged = shouldReplace
+            ? Object.assign({}, item)
+            : Object.assign({}, previous, item, {
+              content: (previous.content || '') + (item.content || '')
+            })
+
+          if (existingIndex >= 0) {
+            this.$set(this.executionLogs, existingIndex, merged)
+          } else {
+            this.executionLogs.push(merged)
+          }
+
+          if (item.offset !== undefined && item.offset !== null) {
+            this.$set(this.logOffsets, key, Number(item.offset))
+          }
+        })
         this.logsMessage = result.message || ''
       }).catch(() => {
         this.logsMessage = '执行日志暂时无法读取'
       }).finally(() => {
         this.logsLoading = false
       })
+    },
+
+    displayArtifactPath(path) {
+      if (!path) return '-'
+      const root = this.vabArtifactRoot
+      if (root && path.indexOf(root) === 0) {
+        return path.slice(root.length).replace(/^[\\/]+/, '')
+      }
+      return path.split(/[\\/]/).pop()
     },
 
     // 主动加载数据集名称
@@ -674,6 +747,7 @@ export default {
         type: 'warning'
       }).then(() => {
         retryTask(this.taskData.taskId).then(() => {
+          this.resetExecutionLogs()
           this.$message.success('任务已重新启动')
           this.taskData.status = 'running'
           this.taskData.progress = 1
@@ -682,6 +756,27 @@ export default {
         }).catch(err => {
           this.$message.error('任务重试失败：' + (err.message || '未知错误'))
         })
+      })
+    },
+
+    // 取消运行中的任务
+    cancelTask() {
+      if (!this.taskData) return
+      this.$confirm('取消后将终止当前执行，并保留本次取消记录。确定继续吗？', '取消任务', {
+        confirmButtonText: '确定取消',
+        cancelButtonText: '暂不取消',
+        type: 'warning'
+      }).then(() => {
+        return cancelPreDefenseTask(this.taskData.taskId)
+      }).then(() => {
+        this.stopProgressMonitoring(false)
+        this.taskData.status = 'canceled'
+        this.$message.success('任务已取消')
+        this.$emit('refresh')
+      }).catch(err => {
+        if (err !== 'cancel' && err !== 'close') {
+          this.$message.error('取消任务失败')
+        }
       })
     },
 
@@ -712,34 +807,53 @@ export default {
     startProgressMonitoring() {
       if (!this.taskData) return
 
+      this.stopProgressMonitoring(false)
       this.currentProgress = this.taskData.progress || 10
+      this.pollTaskStatus()
       this.progressTimer = setInterval(() => {
-        if (this.currentProgress < 90) {
-          this.currentProgress += Math.random() * 10
+        this.pollTaskStatus()
+      }, 3000)
+    },
+
+    // 轮询完整任务对象，确保失败和取消状态也能及时停止监控。
+    pollTaskStatus() {
+      if (!this.taskData || !this.taskData.taskId) return
+      getPreDefense(this.taskData.taskId).then(response => {
+        const latest = response.data || response
+        if (!latest || latest.taskId !== this.taskData.taskId) return
+
+        if (this.executionLogAttempt !== null &&
+          this.executionLogAttempt !== latest.currentAttempt) {
+          this.executionLogs = []
+          this.logOffsets = {}
+          this.activeLogName = '0'
         }
-        // 实际获取进度
-        getTaskProgress(this.taskData.taskId).then(response => {
-          const progress = response.data || response
-          if (typeof progress === 'number') {
-            this.currentProgress = progress
-            if (progress >= 100) {
-              this.stopProgressMonitoring()
-              this.$emit('refresh')
-            }
+        this.executionLogAttempt = latest.currentAttempt
+        Object.assign(this.taskData, latest)
+        this.currentProgress = latest.progress || 0
+        this.loadExecutionLogs()
+        if (latest.status !== 'running') {
+          this.stopProgressMonitoring(false)
+          this.loadVabImages()
+          if (latest.status === 'success' && this.hasValidStats) {
+            this.$nextTick(() => this.initChart())
           }
-        }).catch(err => {
-          console.error('获取进度失败:', err)
-        })
-      }, 10000)
+          this.$emit('refresh')
+        }
+      }).catch(err => {
+        console.error('获取任务状态失败:', err)
+      })
     },
 
     // 停止进度监控
-    stopProgressMonitoring() {
+    stopProgressMonitoring(resetProgress = true) {
       if (this.progressTimer) {
         clearInterval(this.progressTimer)
         this.progressTimer = null
       }
-      this.currentProgress = 0
+      if (resetProgress) {
+        this.currentProgress = 0
+      }
     },
 
     // 加载模板配置
@@ -904,7 +1018,8 @@ export default {
         'pending': 'info',
         'running': 'warning',
         'success': 'success',
-        'failed': 'danger'
+        'failed': 'danger',
+        'canceled': 'info'
       }
       return statusMap[status] || 'info'
     },
@@ -915,7 +1030,8 @@ export default {
         'pending': '等待中',
         'running': '运行中',
         'success': '成功',
-        'failed': '失败'
+        'failed': '失败',
+        'canceled': '已取消'
       }
       return statusMap[status] || status
     }

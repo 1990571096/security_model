@@ -11,6 +11,7 @@ import me.zhengjie.exception.EntityExistException;
 import me.zhengjie.modules.system.domain.Dataset;
 import me.zhengjie.modules.system.domain.dto.DatasetQueryCriteria;
 import me.zhengjie.modules.system.mapper.DatasetMapper;
+import me.zhengjie.modules.system.mapper.PreDefenseMapper;
 import me.zhengjie.modules.system.service.DatasetService;
 import me.zhengjie.utils.FileUtil;
 import me.zhengjie.utils.PageResult;
@@ -36,6 +37,7 @@ import java.util.*;
 public class DatasetServiceImpl extends ServiceImpl<DatasetMapper, Dataset> implements DatasetService {
 
     private final DatasetMapper datasetMapper;
+    private final PreDefenseMapper preDefenseMapper;
 
     @Override
     public Dataset findById(Long datasetId) {
@@ -374,10 +376,11 @@ public class DatasetServiceImpl extends ServiceImpl<DatasetMapper, Dataset> impl
                 throw new BadRequestException("数据集【" + dataset.getDatasetName() + "】正在解析中，无法删除");
             }
 
-            // TODO: 检查数据集是否被任务使用
-            // if (isDatasetInUse(datasetId)) {
-            //     throw new BadRequestException("数据集【" + dataset.getDatasetName() + "】正在被任务使用，无法删除");
-            // }
+            long taskCount = preDefenseMapper.countByDatasetId(datasetId);
+            if (taskCount > 0) {
+                throw new BadRequestException("数据集【" + dataset.getDatasetName()
+                        + "】已被 " + taskCount + " 个训练前任务引用，无法删除");
+            }
 
             // 清理数据集文件
             cleanupDatasetFile(dataset);

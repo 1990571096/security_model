@@ -8,6 +8,7 @@ import io
 import json
 import os
 import pickle
+import platform
 import re
 import struct
 import subprocess
@@ -49,9 +50,50 @@ ALGORITHM_ALIASES = {
     "vab://ldd": "vab://pre-defense/ldd",
 }
 
+ADAPTER_VERSION = "1.1.0"
+
 
 def utc_now():
     return datetime.now(timezone.utc).isoformat()
+
+
+def collect_runtime_snapshot():
+    """Capture the actual Python ML runtime used by this attempt."""
+    runtime = {
+        "adapterVersion": ADAPTER_VERSION,
+        "pythonVersion": platform.python_version(),
+        "pythonImplementation": platform.python_implementation(),
+        "pythonExecutable": sys.executable,
+        "platform": platform.platform(),
+        "pythonPath": list(sys.path),
+    }
+    try:
+        import numpy as np
+
+        runtime["numpyVersion"] = np.__version__
+    except Exception as exc:
+        runtime["numpyVersion"] = None
+        runtime["numpyError"] = exc.__class__.__name__
+
+    try:
+        import torch
+
+        runtime["torchVersion"] = torch.__version__
+        runtime["cudaVersion"] = getattr(torch.version, "cuda", None)
+        runtime["cudaAvailable"] = bool(torch.cuda.is_available())
+        runtime["cudaDeviceCount"] = int(torch.cuda.device_count())
+        runtime["cudaDevices"] = [
+            torch.cuda.get_device_name(index)
+            for index in range(runtime["cudaDeviceCount"])
+        ]
+    except Exception as exc:
+        runtime["torchVersion"] = None
+        runtime["cudaVersion"] = None
+        runtime["cudaAvailable"] = False
+        runtime["cudaDeviceCount"] = 0
+        runtime["cudaDevices"] = []
+        runtime["torchError"] = exc.__class__.__name__
+    return runtime
 
 
 def load_json_object(raw, field_name):
@@ -81,6 +123,7 @@ def build_config(request, spec):
     hyper = request.get("hyperParameter") or {}
     config = load_json_object(algorithm.get("configJson"), "algorithm.configJson")
     config.update(load_json_object(hyper.get("configJson"), "hyperParameter.configJson"))
+    config.update(load_json_object(request.get("customParams"), "request.customParams"))
 
     missing = [key for key in ("dataset", "trigger_type", "poisoned_portion") if key not in config]
     if missing:
@@ -399,6 +442,7 @@ def build_result(status, message, started_at, **extra):
         "started_at": started_at,
         "finished_at": utc_now(),
         "artifacts": {},
+        "runtime": collect_runtime_snapshot(),
     }
     result.update(extra)
     return result

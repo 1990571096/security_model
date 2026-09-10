@@ -11,6 +11,7 @@ import me.zhengjie.exception.EntityExistException;
 import me.zhengjie.modules.system.domain.Hyper;
 import me.zhengjie.modules.system.domain.dto.HyperQueryCriteria;
 import me.zhengjie.modules.system.mapper.HyperMapper;
+import me.zhengjie.modules.system.mapper.PreDefenseMapper;
 import me.zhengjie.modules.system.service.HyperService;
 import me.zhengjie.utils.FileUtil;
 import me.zhengjie.utils.PageResult;
@@ -34,6 +35,7 @@ import java.util.*;
 public class HyperServiceImpl extends ServiceImpl<HyperMapper, Hyper> implements HyperService {
 
     private final HyperMapper hyperMapper;
+    private final PreDefenseMapper preDefenseMapper;
 
     @Override
     public Hyper findById(Long templateId) {
@@ -121,10 +123,11 @@ public class HyperServiceImpl extends ServiceImpl<HyperMapper, Hyper> implements
                 }
             }
             
-            // TODO: 检查模板是否被任务使用
-            // if (isTemplateInUse(templateId)) {
-            //     throw new BadRequestException("模板【" + hyper.getTemplateName() + "】正在被任务使用，无法删除");
-            // }
+            long taskCount = preDefenseMapper.countByHyperId(templateId);
+            if (taskCount > 0) {
+                throw new BadRequestException("超参数模板【" + hyper.getTemplateName()
+                        + "】已被 " + taskCount + " 个训练前任务引用，无法删除");
+            }
         }
 
         hyperMapper.deleteBatchIds(templateIds);

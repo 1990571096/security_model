@@ -11,6 +11,7 @@ import me.zhengjie.exception.EntityExistException;
 import me.zhengjie.modules.system.domain.Algorithm;
 import me.zhengjie.modules.system.domain.dto.AlgorithmQueryCriteria;
 import me.zhengjie.modules.system.mapper.AlgorithmMapper;
+import me.zhengjie.modules.system.mapper.PreDefenseMapper;
 import me.zhengjie.modules.system.service.AlgorithmService;
 import me.zhengjie.utils.FileUtil;
 import me.zhengjie.utils.PageResult;
@@ -34,6 +35,7 @@ import java.util.*;
 public class AlgorithmServiceImpl extends ServiceImpl<AlgorithmMapper, Algorithm> implements AlgorithmService {
 
     private final AlgorithmMapper algorithmMapper;
+    private final PreDefenseMapper preDefenseMapper;
 
     @Override
     public Algorithm findById(Long algorithmId) {
@@ -101,10 +103,11 @@ public class AlgorithmServiceImpl extends ServiceImpl<AlgorithmMapper, Algorithm
                 throw new BadRequestException("只能删除自己创建的算法【" + algorithm.getAlgorithmName() + "】");
             }
             
-            // TODO: 检查算法是否被任务使用
-            // if (isAlgorithmInUse(algorithmId)) {
-            //     throw new BadRequestException("算法【" + algorithm.getAlgorithmName() + "】正在被任务使用，无法删除");
-            // }
+            long taskCount = preDefenseMapper.countByAlgorithmId(algorithmId);
+            if (taskCount > 0) {
+                throw new BadRequestException("算法【" + algorithm.getAlgorithmName()
+                        + "】已被 " + taskCount + " 个训练前任务引用，无法删除");
+            }
         }
 
         algorithmMapper.deleteBatchIds(algorithmIds);

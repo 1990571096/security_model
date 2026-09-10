@@ -39,8 +39,18 @@ export function getTaskDetail(taskType, taskId) {
  * 获取任务统计信息
  */
 export function getTaskStatistics() {
+    return request({
+        url: 'api/task-progress/statistics',
+        method: 'get'
+    })
+}
+
+/**
+ * 获取任务执行线程池状态
+ */
+export function getExecutorStatus() {
   return request({
-    url: 'api/task-progress/statistics',
+    url: 'api/task-progress/executor-status',
     method: 'get'
   })
 }
@@ -240,6 +250,7 @@ export default {
   getAllTasks,
   getTaskDetail,
   getTaskStatistics,
+  getExecutorStatus,
   getBatchTaskProgress,
   refreshTaskStatus,
   navigateToTaskDetail,

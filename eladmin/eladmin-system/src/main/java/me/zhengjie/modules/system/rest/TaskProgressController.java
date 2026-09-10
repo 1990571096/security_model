@@ -65,6 +65,13 @@ public class TaskProgressController {
         return new ResponseEntity<>(statistics, HttpStatus.OK);
     }
 
+    @ApiOperation("获取任务执行线程池状态")
+    @GetMapping("/executor-status")
+    @PreAuthorize("@el.check('task_progress:list')")
+    public ResponseEntity<Map<String, Object>> getExecutorStatus() {
+        return new ResponseEntity<>(taskProgressService.getExecutorStatus(), HttpStatus.OK);
+    }
+
     @ApiOperation("批量获取任务进度")
     @PostMapping("/progress/batch")
     @PreAuthorize("@el.check('task_progress:list')")

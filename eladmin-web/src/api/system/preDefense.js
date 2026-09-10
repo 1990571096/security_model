@@ -57,23 +57,6 @@ export function getTaskProgress(taskId) {
   })
 }
 
-export function updateTaskStatus(taskId, status, progress = 0) {
-  return request({
-    url: 'api/pre-defense/status',
-    method: 'put',
-    params: { taskId, status, progress }
-  })
-}
-
-// 修改：参数与后端Controller保持一致
-export function updateTaskResult(taskId, outputDatasetId, cleaningResult) {
-  return request({
-    url: 'api/pre-defense/result',
-    method: 'put',
-    params: { taskId, outputDatasetId, cleaningResult }
-  })
-}
-
 export function getTasksByStatus(status) {
   return request({
     url: `api/pre-defense/status/${status}`,
@@ -153,9 +136,46 @@ export function downloadCleanedDataset(taskId, isolationRatio) {
   })
 }
 
+export function submitCleanedDatasetExport(taskId, isolationRatio) {
+  return request({
+    url: `api/pre-defense/cleaned-dataset/exports/${taskId}`,
+    method: 'post',
+    params: { isolationRatio }
+  })
+}
+
+export function getCleanedDatasetExport(exportId) {
+  return request({
+    url: `api/pre-defense/cleaned-dataset/exports/${exportId}`,
+    method: 'get'
+  })
+}
+
+export function getCleanedDatasetExports(taskId) {
+  return request({
+    url: `api/pre-defense/cleaned-dataset/exports/task/${taskId}`,
+    method: 'get'
+  })
+}
+
+export function downloadCleanedDatasetExport(exportId) {
+  return request({
+    url: `api/pre-defense/cleaned-dataset/exports/${exportId}/download`,
+    method: 'get',
+    responseType: 'blob'
+  })
+}
+
 export function retryTask(taskId) {
   return request({
     url: `api/pre-defense/retry/${taskId}`,
+    method: 'post'
+  })
+}
+
+export function cancelTask(taskId) {
+  return request({
+    url: `api/pre-defense/cancel/${taskId}`,
     method: 'post'
   })
 }
@@ -168,10 +188,13 @@ export function getCleaningReport(taskId) {
   })
 }
 
-export function getExecutionLogs(taskId) {
+export function getExecutionLogs(taskId, offsets = {}) {
   return request({
     url: `api/pre-defense/logs/${taskId}`,
-    method: 'get'
+    method: 'get',
+    params: {
+      offsets: JSON.stringify(offsets || {})
+    }
   })
 }
 
