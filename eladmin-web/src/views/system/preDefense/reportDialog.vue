@@ -48,6 +48,7 @@
           <el-descriptions :column="3" border size="small">
             <el-descriptions-item label="适配器版本">{{ runtime.adapterVersion || '-' }}</el-descriptions-item>
             <el-descriptions-item label="Python">{{ runtime.pythonVersion || '-' }}</el-descriptions-item>
+            <el-descriptions-item label="Python 实现">{{ runtime.pythonImplementation || '-' }}</el-descriptions-item>
             <el-descriptions-item label="解释器">{{ runtime.pythonExecutable || '-' }}</el-descriptions-item>
             <el-descriptions-item label="PyTorch">{{ runtime.torchVersion || '-' }}</el-descriptions-item>
             <el-descriptions-item label="NumPy">{{ runtime.numpyVersion || '-' }}</el-descriptions-item>
@@ -55,6 +56,16 @@
             <el-descriptions-item label="GPU 数量">{{ runtime.cudaDeviceCount === undefined ? '-' : runtime.cudaDeviceCount }}</el-descriptions-item>
             <el-descriptions-item label="GPU 型号" :span="2">{{ gpuNames }}</el-descriptions-item>
           </el-descriptions>
+          <el-table v-if="dependencyRows.length" class="dependency-table" :data="dependencyRows" border size="small">
+            <el-table-column prop="name" label="依赖包" width="180" />
+            <el-table-column prop="module" label="导入模块" width="180" />
+            <el-table-column label="实际版本" width="180">
+              <template slot-scope="{ row }">
+                <el-tag size="mini" :type="row.available ? 'success' : 'info'">{{ row.version || '未安装' }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="error" label="状态说明" show-overflow-tooltip />
+          </el-table>
         </template>
 
         <template v-if="isLdd">
@@ -109,6 +120,10 @@ export default {
     metrics() { return this.result.metrics || {} },
     runtime() { return this.result.runtime || {} },
     runtimeAvailable() { return Object.keys(this.runtime).length > 0 },
+    dependencyRows() {
+      const manifest = this.runtime.dependencyManifest || {}
+      return Array.isArray(manifest.packages) ? manifest.packages : []
+    },
     gpuNames() {
       const devices = this.runtime.cudaDevices
       return Array.isArray(devices) && devices.length ? devices.join(', ') : '未记录'
@@ -248,5 +263,6 @@ export default {
 .json-preview { max-height: 240px; margin: 0; overflow: auto; white-space: pre-wrap; }
 .report-note { color: #909399; font-size: 12px; }
 .download-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.dependency-table { margin-top: 12px; }
 .demo-notice, .failure-notice { margin-top: 10px; }
 </style>

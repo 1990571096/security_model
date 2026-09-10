@@ -21,7 +21,7 @@ The original VaB scripts iterate over fixed experimental settings. The adapter c
 only the generated task copy. It limits a platform task to one dataset, one trigger
 type, and one poisoned-data proportion; it also stores logs and selected sample
 indices in the task artifact directory. The result JSON also records the concrete
-Python, PyTorch, NumPy, CUDA and GPU runtime used by that attempt.
+Python, PyTorch, NumPy, CUDA, GPU and key dependency versions used by that attempt.
 
 The adapter is intentionally limited to LDD in this iteration. Future algorithms must
 reuse the pre-defense request/result contract and be explicitly allow-listed after their
@@ -69,6 +69,9 @@ python algorithm-runtime\vab\algorithm_entry.py `
 - `clean_purity` is an evaluation metric based on VaB's known poisoned indices. It is
   appropriate for controlled experiments, not unlabeled production data.
 - A runtime lock serializes VaB tasks because the legacy scripts share the local GPU.
+- Each task result contains a small dependency manifest for the runtime packages used
+  by VaB. It improves experiment traceability but does not replace a pinned deployment
+  lock file.
 - LDD completed one local engineering verification run with CIFAR-10, SIG, batch size
   128, and 5 epochs. Its output is an implementation verification artifact, not a
   paper experiment conclusion.

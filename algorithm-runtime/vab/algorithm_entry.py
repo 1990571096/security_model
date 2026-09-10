@@ -52,9 +52,58 @@ ALGORITHM_ALIASES = {
 
 ADAPTER_VERSION = "1.1.0"
 
+DEPENDENCY_SPECS = (
+    ("numpy", "numpy"),
+    ("torch", "torch"),
+    ("scipy", "scipy"),
+    ("scikit-learn", "sklearn"),
+    ("Pillow", "PIL"),
+    ("opencv-python", "cv2"),
+    ("h5py", "h5py"),
+)
+
 
 def utc_now():
     return datetime.now(timezone.utc).isoformat()
+
+
+def collect_dependency_manifest():
+    """Record versions of packages used by the VaB runtime."""
+    try:
+        from importlib import metadata as metadata_module
+    except ImportError:
+        try:
+            import importlib_metadata as metadata_module
+        except ImportError:
+            return {
+                "source": "importlib.metadata",
+                "available": False,
+                "error": "metadata_module_unavailable",
+                "packages": [],
+            }
+
+    packages = []
+    for distribution_name, module_name in DEPENDENCY_SPECS:
+        package = {
+            "name": distribution_name,
+            "module": module_name,
+            "available": False,
+        }
+        try:
+            package["version"] = metadata_module.version(distribution_name)
+            package["available"] = True
+        except metadata_module.PackageNotFoundError:
+            package["version"] = None
+            package["error"] = "not_installed"
+        except Exception as exc:
+            package["version"] = None
+            package["error"] = exc.__class__.__name__
+        packages.append(package)
+    return {
+        "source": "importlib.metadata",
+        "available": True,
+        "packages": packages,
+    }
 
 
 def collect_runtime_snapshot():
@@ -66,6 +115,7 @@ def collect_runtime_snapshot():
         "pythonExecutable": sys.executable,
         "platform": platform.platform(),
         "pythonPath": list(sys.path),
+        "dependencyManifest": collect_dependency_manifest(),
     }
     try:
         import numpy as np

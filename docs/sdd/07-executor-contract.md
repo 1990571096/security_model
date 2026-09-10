@@ -45,7 +45,7 @@ Required result keys:
 
 Python/PyTorch executors should additionally write a `runtime` object containing the
 actual interpreter and machine-learning environment used by the attempt, such as
-Python, PyTorch, NumPy, CUDA and GPU information. This is separate from the Java-side
+Python, PyTorch, NumPy, CUDA, GPU and key dependency versions. This is separate from the Java-side
 launch snapshot: the launch snapshot records what the platform intended to run, while
 `runtime` records what the external process actually loaded.
 

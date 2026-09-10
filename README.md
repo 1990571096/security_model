@@ -83,8 +83,8 @@ SOURCE sql/security_model_clean_subset_export.sql;
 启动快照默认对可访问的数据集文件计算 SHA-256，并记录文件真实路径、大小和修改时间；
 可通过 `SECURITY_MODEL_FINGERPRINT_CONTENT=false` 关闭内容摘要，或通过
 `SECURITY_MODEL_FINGERPRINT_MAX_BYTES` 设置参与摘要计算的文件大小上限。
-LDD 结果还会记录 Python 适配器版本、解释器版本、PyTorch/NumPy 版本、CUDA 可用性及 GPU
-型号，用于区分“启动时配置快照”和“算法实际运行环境”。
+LDD 结果还会记录 Python 适配器版本、解释器版本、PyTorch/NumPy 版本、CUDA 可用性、GPU
+型号和关键 Python 依赖版本，用于区分“启动时配置快照”和“算法实际运行环境”。
 
 ## 启动后端
 
@@ -140,7 +140,7 @@ cd F:\Study\postgraduate\毕业论文\security_model\eladmin
 mvn -pl eladmin-system -am test "-Denforcer.skip=true" "-Dsecurity-model.skip-tests=false" "-Dtest=CleanSubsetExportTaskServiceImplTest,PreDefenseControllerTest,LddConfigurationPolicyTest,PreDefenseTaskStatePolicyTest,ExecutionFingerprintServiceTest,CleanSubsetExportServiceImplTest,AfterCommitTaskDispatcherTest" "-Dsurefire.failIfNoSpecifiedTests=false"
 ```
 
-当前核心服务、控制器、策略、快照、导出幂等和队列拒绝测试共 23 项；普通 Maven 流程仍保持跳过测试，
+当前核心服务、控制器、策略、快照、导出幂等和队列拒绝测试共 24 项；普通 Maven 流程仍保持跳过测试，
 以兼容原项目的默认打包行为。
 
 ## SDD 文档
