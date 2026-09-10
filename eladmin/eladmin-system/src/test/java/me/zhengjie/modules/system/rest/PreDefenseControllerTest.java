@@ -21,8 +21,10 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
@@ -132,6 +134,41 @@ class PreDefenseControllerTest {
         assertThrows(
                 BadRequestException.class,
                 () -> controller.startBatchTasks(Collections.emptySet()));
+
+        verifyNoInteractions(preDefenseService);
+    }
+
+    @Test
+    void rejectsUnsupportedTaskStatus() {
+        assertThrows(
+                BadRequestException.class,
+                () -> controller.getTasksByStatus("unknown"));
+
+        verifyNoInteractions(preDefenseService);
+    }
+
+    @Test
+    void rejectsOversizedBatchStartRequest() {
+        Set<Long> taskIds = new HashSet<>();
+        for (long taskId = 1; taskId <= 101; taskId++) {
+            taskIds.add(taskId);
+        }
+
+        assertThrows(
+                BadRequestException.class,
+                () -> controller.startBatchTasks(taskIds));
+
+        verifyNoInteractions(preDefenseService);
+    }
+
+    @Test
+    void rejectsNullTaskIdInBatchRequest() {
+        Set<Long> taskIds = new HashSet<>();
+        taskIds.add(null);
+
+        assertThrows(
+                BadRequestException.class,
+                () -> controller.getBatchTaskProgress(taskIds));
 
         verifyNoInteractions(preDefenseService);
     }

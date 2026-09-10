@@ -24,6 +24,7 @@ import me.zhengjie.modules.system.service.CleanSubsetExportTaskService;
 import me.zhengjie.modules.system.service.DatasetService;
 import me.zhengjie.modules.system.service.HyperService;
 import me.zhengjie.modules.system.service.PreDefenseService;
+import me.zhengjie.modules.system.service.policy.PreDefenseTaskStatePolicy;
 import me.zhengjie.utils.PageResult;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpHeaders;
@@ -43,6 +44,7 @@ import java.nio.file.Paths;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 
 /**
@@ -57,6 +59,7 @@ import java.util.Set;
 @RequiredArgsConstructor
 public class PreDefenseController {
 
+    private static final int MAX_BATCH_TASKS = 100;
     private final PreDefenseService preDefenseService;
     private final CleanSubsetExportService cleanSubsetExportService;
     private final CleanSubsetExportTaskService cleanSubsetExportTaskService;
@@ -369,6 +372,9 @@ public class PreDefenseController {
     @GetMapping("/status/{status}")
     @PreAuthorize("@el.check('pre_defense:list')")
     public ResponseEntity<Object> getTasksByStatus(@PathVariable String status) {
+        if (!PreDefenseTaskStatePolicy.isSupportedStatus(status)) {
+            throw new BadRequestException("不支持的任务状态: " + status);
+        }
         return new ResponseEntity<>(preDefenseService.findByStatus(status), HttpStatus.OK);
     }
 
@@ -387,9 +393,7 @@ public class PreDefenseController {
     @PostMapping("/progress/batch")
     @PreAuthorize("@el.check('pre_defense:list')")
     public ResponseEntity<Object> getBatchTaskProgress(@RequestBody Set<Long> taskIds) {
-        if (taskIds == null || taskIds.isEmpty()) {
-            throw new BadRequestException("任务ID列表不能为空");
-        }
+        validateBatchTaskIds(taskIds);
         
         java.util.Map<Long, Integer> progressMap = new java.util.HashMap<>();
         for (Long taskId : taskIds) {
@@ -410,9 +414,7 @@ public class PreDefenseController {
     @PostMapping("/start/batch")
     @PreAuthorize("@el.check('pre_defense:start')")
     public ResponseEntity<Object> startBatchTasks(@RequestBody Set<Long> taskIds) {
-        if (taskIds == null || taskIds.isEmpty()) {
-            throw new BadRequestException("任务ID列表不能为空");
-        }
+        validateBatchTaskIds(taskIds);
         
         java.util.Map<String, Object> result = new java.util.HashMap<>();
         java.util.List<Long> successIds = new java.util.ArrayList<>();
@@ -457,5 +459,17 @@ public class PreDefenseController {
 
     private long numberValue(Object value) {
         return value instanceof Number ? ((Number) value).longValue() : 0L;
+    }
+
+    private void validateBatchTaskIds(Set<Long> taskIds) {
+        if (taskIds == null || taskIds.isEmpty()) {
+            throw new BadRequestException("任务ID列表不能为空");
+        }
+        if (taskIds.size() > MAX_BATCH_TASKS) {
+            throw new BadRequestException("单次最多处理 " + MAX_BATCH_TASKS + " 个任务");
+        }
+        if (taskIds.stream().anyMatch(Objects::isNull)) {
+            throw new BadRequestException("任务ID列表不能包含空值");
+        }
     }
 }

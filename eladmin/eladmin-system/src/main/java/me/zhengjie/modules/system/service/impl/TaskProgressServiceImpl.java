@@ -13,6 +13,7 @@ import me.zhengjie.modules.system.service.*;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.stereotype.Service;
+import me.zhengjie.modules.system.service.policy.PreDefenseTaskStatePolicy;
 
 import java.util.*;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -76,6 +77,10 @@ public class TaskProgressServiceImpl implements TaskProgressService {
     @Override
     public List<TaskProgressDto> getAllTasks(String status, String taskType, String blurry) {
         ensurePreDefenseTaskType(taskType);
+        if (status != null && !status.trim().isEmpty()
+                && !PreDefenseTaskStatePolicy.isSupportedStatus(status)) {
+            throw new BadRequestException("不支持的任务状态: " + status);
+        }
         List<TaskProgressDto> allTasks = new ArrayList<>();
 
         try {
