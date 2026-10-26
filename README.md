@@ -1,6 +1,6 @@
 # 面向数据清洗的安全模型训练系统
 
-本项目由早期网络安全竞赛项目重构而来，目标是形成一个面向数据清洗与安全模型训练的可视化平台。当前版本先保留 ELADMIN 既有工程基础，完成 LDD 训练前数据清洗、结果报告和清洗子集导出的可视化闭环；后续再扩展其他安全算法和安全模型训练能力。
+本项目由早期网络安全竞赛项目重构而来，目标是形成一个面向数据清洗与安全模型训练的可视化平台。当前已完成 Spring Boot 3 + Vue 3 全量迁移后的 LDD 训练前数据清洗、结果报告和清洗子集导出闭环，并补齐训练前、训练中、训练后三大防御体系的可视化演示页面；旧 ELADMIN 工程仅作为业务回归和回滚基线保留。
 
 ## 当前定位
 
@@ -11,20 +11,23 @@
 - 保存数据集、算法和运行环境指纹，支持核对历史实验使用的资源版本。
 - 在算法结果中记录实际 Python、PyTorch、NumPy、CUDA 和 GPU 运行环境，并在实验报告中展示。
 - 查看 LDD 实验报告，并按保留索引导出清洗后的 CIFAR-10 子集。
+- 查看任务创建、编辑、启动、重试、取消和清洗子集导出的操作审计记录。
 - 通过统一执行器接口为后续真实算法接入预留边界。
+- 浏览训练前、训练中、训练后三大防御阶段及算法目录；当前只有 LDD 进入真实任务执行链路，其他算法卡片不创建任务。
 - 观测有界任务执行池的线程、队列和饱和状态，并在队列满载时将任务收敛为可重试失败。
 - 通过单机运行任务总数、单用户运行任务数和执行池接收状态进行任务准入，并记录每次尝试的配额快照。
 - 按 SDD 文档驱动方式推进重构，降低返工风险。
 
 ## 技术栈
 
-当前 MVP 为了减少重构风险，继续复用原项目技术栈：
+当前平台运行版本采用稳定、成熟的目标技术栈：
 
-- 后端：Spring Boot 2.7.18、Spring Security、JWT、MyBatis-Plus、MySQL、Redis。
-- 前端：Vue 2.7、Vue CLI、Element UI。
+- 后端：Java 17、Spring Boot 3.5、Spring Security 6、JWT、MyBatis-Plus。
+- 前端：Vue 3、Vite、Element Plus、Pinia、Vue Router 4。
+- 数据与运行：MySQL 是事实数据源；Redis 用于资源目录缓存；Python、PyTorch 执行 LDD；RabbitMQ/Kafka 尚未接入。
 - 构建：Maven、npm。
 
-目标技术栈已在 SDD 中记录，后续稳定迁移方向为 Spring Boot 3、Vue 3 等成熟主流技术栈。
+旧版 Spring Boot 2.7 + Vue 2 工程保留在 `eladmin/` 和 `eladmin-web/`，不再作为迁移版运行入口。
 
 ## 项目结构
 
@@ -34,12 +37,21 @@
 ├── eladmin/                   # 后端工程
 │   └── eladmin-system/        # 后端启动模块与安全训练业务模块
 ├── eladmin-web/               # 前端工程
+├── migration-backend/         # Spring Boot 3 / Java 17 运行后端
+├── migration-frontend/        # Vue 3 / Vite 运行前端
 └── sql/                       # 数据库初始化与 MVP seed 脚本
 ```
 
+平台前端通过 `8014` 访问，后端通过 `8100` 访问。认证、资源、LDD 任务、任务进度、
+实验报告、日志和清洗子集导出均由新 Spring Boot 3 后端原生处理。新前端已经提供工作台、
+数据集资源、算法资源、LDD 任务中心和三大防御阶段页面；
+任务中心已接入 LDD 任务创建、启动、任务详情、实验报告摘要、执行日志和按保留索引
+导出清洗子集。训练中和训练后防御页面仅用于展示后续扩展结构，未接入真实执行。报告中的
+完整运行环境、指标图表和产物 PNG 预览已经接入。
+
 ## 算法执行范围
 
-当前平台只展示、只允许启动 LDD（训练前防御）。历史 mock baseline 仅保留在旧代码和数据库结构中，用于兼容迁移，不属于当前演示功能。
+当前平台只允许启动 LDD（训练前防御）。历史 mock baseline 仅保留在旧代码和数据库结构中，用于兼容迁移，不属于当前可执行算法范围。
 
 当前真实接入的算法为 LDD。平台通过
 `PythonDefenseTaskExecutor` 和 `algorithm-runtime/vab/algorithm_entry.py` 调用外部
@@ -50,15 +62,18 @@ VaB 项目中的 `LDD.py`，并将配置、结构化结果和任务产物渲染�
 
 ## 本地环境
 
-推荐使用本机 MySQL 和 Redis：
+迁移版使用 MySQL 保存资源、任务、报告和执行快照。资源目录缓存使用 Redis，默认连接
+`localhost:6379`；缓存异常时查询回源 MySQL，因此 Redis 不可用不会改变事实数据源。
+RabbitMQ/Kafka 尚未接入，任务仍由事务提交后的有界 JVM 线程池调度。Redis 连接地址和超时
+可通过 `REDIS_HOST`、`REDIS_PORT`、`REDIS_PASSWORD`、`REDIS_CONNECT_TIMEOUT` 和
+`REDIS_COMMAND_TIMEOUT` 覆盖。
 
 - MySQL：`localhost:3306`
 - 数据库：`eladmin`
 - 用户名：`root`
 - 密码：通过 `DB_PWD` 环境变量配置，不在仓库中保存真实密码。
-- Redis：默认本地服务，后端开发环境使用 Redis DB `1`
-- JWT、RSA 私钥和用户初始密码通过 `JWT_BASE64_SECRET`、`RSA_PRIVATE_KEY`、
-  `SECURITY_MODEL_DEFAULT_USER_PASSWORD` 环境变量配置。
+- JWT 密钥必须通过 `SECURITY_MODEL_JWT_SECRET` 提供，至少 32 字节；未设置或长度不足时
+  后端会拒绝启动。生产环境应使用安全的外部密钥管理设施。
 
 首次初始化数据库：
 
@@ -68,6 +83,7 @@ SOURCE sql/security_model_mvp_seed.sql;
 SOURCE sql/security_model_execution_snapshot.sql;
 SOURCE sql/security_model_task_run_context.sql;
 SOURCE sql/security_model_clean_subset_export.sql;
+SOURCE sql/security_model_operation_audit.sql;
 ```
 
 已有开发库只需补充 MVP 数据：
@@ -77,11 +93,13 @@ SOURCE sql/security_model_mvp_seed.sql;
 SOURCE sql/security_model_execution_snapshot.sql;
 SOURCE sql/security_model_task_run_context.sql;
 SOURCE sql/security_model_clean_subset_export.sql;
+SOURCE sql/security_model_operation_audit.sql;
 ```
 
-三个 migration 脚本均可重复执行。`execution_snapshot` 保存每次启动时冻结的资源和参数，
+列出的 migration 脚本可重复执行。`execution_snapshot` 保存每次启动时冻结的资源和参数，
 `current_run_id` 与 `current_attempt` 用于校验异步执行器回调是否属于当前运行；
 `sys_pre_defense_export` 保存异步清洗子集导出任务及其进度、产物和失败原因。
+`security_operation_audit` 保存任务命令和清洗子集导出的操作人、状态变化与请求快照。
 
 启动快照默认对可访问的数据集文件计算 SHA-256，并记录文件真实路径、大小和修改时间；
 可通过 `SECURITY_MODEL_FINGERPRINT_CONTENT=false` 关闭内容摘要，或通过
@@ -89,62 +107,70 @@ SOURCE sql/security_model_clean_subset_export.sql;
 LDD 结果还会记录 Python 适配器版本、解释器版本、PyTorch/NumPy 版本、CUDA 可用性、GPU
 型号和关键 Python 依赖版本，用于区分“启动时配置快照”和“算法实际运行环境”。
 
-## 启动后端
+## 启动迁移版后端
 
 ```powershell
-cd F:\Study\postgraduate\毕业论文\security_model\eladmin
-mvn -pl eladmin-system -am spring-boot:run -Denforcer.skip=true
+cd F:\Study\postgraduate\毕业论文\security_model\migration-backend
+mvn spring-boot:run
 ```
 
 默认后端地址：
 
-- API 服务：`http://localhost:8000`
-- 接口文档：`http://localhost:8000/doc.html`
+- API 服务：`http://localhost:8100`
+- 健康检查：`http://localhost:8100/actuator/health`
 
-## 启动前端
+## 启动迁移版前端
 
 ```powershell
-cd F:\Study\postgraduate\毕业论文\security_model\eladmin-web
-$env:NODE_OPTIONS='--openssl-legacy-provider'
+cd F:\Study\postgraduate\毕业论文\security_model\migration-frontend
+npm ci
 npm run dev -- --host 0.0.0.0
 ```
 
 默认前端地址：
 
-- `http://localhost:8014/`
+- 旧版：`http://localhost:8013/`
+- 迁移版：`http://localhost:8014/`
 
 默认登录账号：
 
 - `admin / <初始化时设置的密码>`
 
+登录使用迁移版后端验证码与 JWT。页面数据接口不可用时部分列表会回退到前端样例数据；
+样例数据不代表真实任务或实验结果。
+
 ## 验证命令
 
-后端编译：
+迁移版后端验证：
 
 ```powershell
-cd F:\Study\postgraduate\毕业论文\security_model\eladmin
-mvn -pl eladmin-system -am compile -Denforcer.skip=true
+cd F:\Study\postgraduate\毕业论文\security_model\migration-backend
+mvn -B verify
 ```
 
-前端构建：
+迁移版前端构建：
 
 ```powershell
-cd F:\Study\postgraduate\毕业论文\security_model\eladmin-web
-$env:NODE_OPTIONS='--openssl-legacy-provider'
-npm run build:prod
+cd F:\Study\postgraduate\毕业论文\security_model\migration-frontend
+npm ci
+npm run build
 ```
 
 旧 Vue CLI/Webpack 在 Node 17+ 环境下需要 `--openssl-legacy-provider`。构建时出现 asset size 或 Browserslist 过期提示属于当前旧前端栈的已知警告，不阻塞 MVP 联调。
 
-后端定向测试默认被原项目配置跳过，需要显式打开：
+迁移版后端通过 Maven `verify` 执行单元测试；使用 `-Pmysql-it` 可额外运行 MySQL 集成测试。
+集成测试覆盖并发原子领取、正常完成与恢复扫描的状态竞争，以及孤儿任务恢复边界，并只使用
+随机命名的临时 schema。GitHub Actions 工作流配置了 MySQL 8.4 服务和该集成测试；远端运行
+结果需以 Actions 记录为准。
+
+旧版 ELADMIN 后端的定向测试使用以下命令单独运行，不计入迁移版测试覆盖：
 
 ```powershell
 cd F:\Study\postgraduate\毕业论文\security_model\eladmin
 mvn -pl eladmin-system -am test "-Denforcer.skip=true" "-Dsecurity-model.skip-tests=false" "-Dtest=CleanSubsetExportTaskServiceImplTest,PreDefenseControllerTest,LddConfigurationPolicyTest,PreDefenseTaskStatePolicyTest,ExecutionFingerprintServiceTest,CleanSubsetExportServiceImplTest,AfterCommitTaskDispatcherTest" "-Dsurefire.failIfNoSpecifiedTests=false"
 ```
 
-当前核心服务、控制器、策略、快照、导出幂等、队列拒绝、批量接口边界、Python 进程控制和配额测试共 42 项；普通 Maven 流程仍保持跳过测试，
-以兼容原项目的默认打包行为。
+旧版定向测试的历史记录为 42 项通过；该记录不能代表迁移版测试数量或覆盖率。
 
 ## SDD 文档
 
@@ -157,17 +183,21 @@ mvn -pl eladmin-system -am test "-Denforcer.skip=true" "-Dsecurity-model.skip-te
 - `docs/sdd/07-executor-contract.md`：算法执行器契约。
 - `docs/sdd/08-local-runtime-notes.md`：本地运行环境记录。
 - `docs/sdd/09-project-status.md`：项目整体目标、当前进度、已完成能力和后续待办。
+- `docs/sdd/16-engineering-improvement-roadmap.md`：迁移后质量门禁、任务可靠性、缓存和消息队列的实施状态与后续条件。
 - `docs/sdd/10-vab-integration.md`：VaB 训练前防御算法适配、参数和产物约定。
 - `docs/sdd/11-platform-implementation.md`：当前平台实现、业务流程和实现思路。
 - `docs/sdd/12-resume-project-narrative.md`：简历项目描述与面试讲解提纲。
-- `docs/sdd/13-framework-migration-readiness.md`：Spring Boot 3、Java 17、Vue 3 迁移准备清单。
+- `docs/sdd/13-framework-migration-readiness.md`：Spring Boot 3、Java 17、Vue 3 迁移验收记录。
+- `docs/project-introduction-and-interview-guide.md`：完整项目介绍、业务流程、当前进度和面试讲解稿。
+- `docs/resume-project-entry.md`：简历项目简介和 4-5 条核心项目要点。
 
 ## 当前限制
 
 - 当前真实运行和答辩展示只覆盖 LDD 训练前数据清洗。
 - 训练中、训练后和其他对比算法暂不接入主流程。
-- 前端和后端仍保留部分 ELADMIN 历史模块与技术债，后续按 SDD 逐步裁剪和迁移。
-- 清洗子集导出已改为异步任务，支持进度查询、失败重试和应用重启恢复；旧同步下载接口仅用于兼容。
+- 新后端已经完成当前 LDD 展示范围内的认证、领域服务、数据访问和 JWT 迁移；旧工程仅作为回退基线。
+- 前端任务中心已接入真实任务接口，覆盖创建表单、启动、报告摘要、日志和清洗子集导出；数据集资源、算法资源和训练前、训练中、训练后防御演示页面已建立。
+- 清洗子集导出已改为异步任务，支持进度查询和失败重试；当前迁移版尚无导出任务启动恢复扫描。
 - 任务详情已支持 stdout/stderr 按 offset 增量轮询，任务中心已展示有界执行池和任务配额状态；SSE/WebSocket 日志流和后续模型训练衔接仍为后续优化项。
 
 ## 可用于简历的工程亮点

@@ -4,6 +4,18 @@ Date: 2026-07-11
 
 ## Redis
 
+The Spring Boot 3 migration backend uses Redis as an optional cache for resource catalog
+reads. MySQL remains the source of truth. Cache read, write, serialization, or eviction
+failures fall back to MySQL and do not fail resource operations. The cache uses a five-minute
+TTL and resource mutations evict affected entries after commit.
+
+Default connection settings are `localhost:6379`. Override them with `REDIS_HOST`,
+`REDIS_PORT`, `REDIS_PASSWORD`, `REDIS_CONNECT_TIMEOUT`, and `REDIS_COMMAND_TIMEOUT`.
+Redis is not required for the MySQL integration-test profile.
+
+The Redis Windows service may be present on the developer machine for both the legacy
+ELADMIN project and the migration backend.
+
 Redis has been registered as a Windows service named `Redis`.
 
 Current service binary:
@@ -33,17 +45,21 @@ PONG
 
 ## MySQL
 
-`application-dev.yml` now supports environment variable overrides:
+The migration backend's `application.yml` supports environment variable overrides:
 
 - `DB_HOST`
 - `DB_PORT`
 - `DB_NAME`
 - `DB_USER`
 - `DB_PWD`
-- `JWT_BASE64_SECRET`
-- `RSA_PRIVATE_KEY`
-- `SECURITY_MODEL_DEFAULT_USER_PASSWORD`
-- `DRUID_LOGIN_PASSWORD` (仅生产环境 Druid 监控)
+- `SERVER_PORT`
+- `REDIS_HOST`
+- `REDIS_PORT`
+- `REDIS_PASSWORD`
+- `REDIS_CONNECT_TIMEOUT`
+- `REDIS_COMMAND_TIMEOUT`
+- `SECURITY_MODEL_JWT_SECRET`
+- `SECURITY_MODEL_JWT_VALIDITY`
 
 Defaults remain compatible with the old local config:
 
@@ -55,7 +71,8 @@ DB_USER=root
 DB_PWD=<本机 MySQL 密码>
 ```
 
-JWT 签名密钥、RSA 私钥和用户初始密码必须通过环境变量提供，不能写入配置文件或提交到仓库。
+所有环境的 JWT 密钥都必须通过 `SECURITY_MODEL_JWT_SECRET` 提供且至少 32 字节；
+未设置或长度不足时后端拒绝启动。生产环境应使用安全的密钥管理设施，不要提交真实密钥。
 
 The current local MySQL service is reachable on `localhost:3306`. The MVP database is `eladmin`; the old `xm-qingge` database is not reused.
 
@@ -66,8 +83,13 @@ SOURCE sql/eladmin.sql;
 SOURCE sql/security_model_mvp_seed.sql;
 ```
 
-Current verified services:
+Legacy ELADMIN endpoints:
 
 - Backend: `http://localhost:8000`
 - Swagger/Knife4j: `http://localhost:8000/doc.html`
+- Frontend: `http://localhost:8013/`
+
+Migration backend and frontend endpoints:
+
+- Backend: `http://localhost:8100`
 - Frontend: `http://localhost:8014/`

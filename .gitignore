@@ -26,6 +26,10 @@ yarn-error.log*
 *.pem
 *.key
 
+# Local-only project tooling and generated documents
+/.claude/settings.local.json
+/tmp/
+
 # Local VaB execution artifacts. The VaB source and experimental assets are external.
 algorithm-runtime/vab/runs/
 algorithm-runtime/vab/artifacts/

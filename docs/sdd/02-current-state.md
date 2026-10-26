@@ -1,8 +1,11 @@
 # 当前状态分析
 
+> 本文记录的是旧 ELADMIN 工程的历史基线，不代表迁移版当前运行技术栈。迁移版现状以
+> [09-project-status.md](09-project-status.md) 和 [11-platform-implementation.md](11-platform-implementation.md) 为准。
+
 ## 技术栈
 
-- 后端：Spring Boot 2.7.18、Java 8、MyBatis-Plus、Spring Security/JWT、Redis、MySQL、Quartz。
+- 历史后端：Spring Boot 2.7.18、Java 8、MyBatis-Plus、Spring Security/JWT、Redis、MySQL、Quartz。
 - 前端：Vue 2.7、Vue CLI 3、Element UI、Vuex、Axios、ECharts。
 - 项目基座：ELADMIN 后台管理系统。
 
@@ -30,7 +33,7 @@
 ## 当前主要问题
 
 1. 领域模块仍挂在 `modules.system` 下，和用户、角色、菜单等后台系统管理模块混杂。
-2. 当前 LDD 执行器已实现，但仍是单机本地 Python 进程模式，尚未演进为独立 worker 或分布式调度。
+2. 迁移版 LDD 执行器是单机本地 Python 进程模式，尚未演进为独立 worker 或分布式调度。
 3. `PreDefense`、`DuringDefense`、`PostDefense` 三套任务模型重复字段较多，后续应抽象统一任务生命周期。
 4. LDD 任务的数据集、算法和超参数关联校验已实现；其他历史任务模块仍有待统一治理。
 5. 初始化 SQL 中存在与论文目标无关的数据样例，例如文本、表格、通用支付/运维表。

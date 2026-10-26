@@ -1,6 +1,6 @@
 # SDD 文档索引
 
-本文档集用于驱动“面向数据清洗的安全模型训练系统”的重构迭代。后续新增算法、裁剪模块、调整接口或数据库结构时，先更新对应 SDD，再实施代码改动。
+本文档集用于驱动“面向数据清洗的安全模型训练系统”的重构迭代。实现状态以 SDD 中的“已实现、部分实现、规划中”及验收证据为唯一事实口径；README、部署说明和面试材料不得高于代码、配置和测试可证明的范围。后续新增算法、裁剪模块、调整接口或数据库结构时，先更新对应 SDD，再实施代码改动。
 
 ## 文档清单
 
@@ -16,7 +16,11 @@
 - [10-vab-integration.md](10-vab-integration.md)：LDD 训练前防御算法的 VaB 适配、参数和产物约定。
 - [11-platform-implementation.md](11-platform-implementation.md)：当前平台实现、业务流程、LDD 执行链路和扩展思路。
 - [12-resume-project-narrative.md](12-resume-project-narrative.md)：简历项目描述与面试讲解提纲。
-- [13-framework-migration-readiness.md](13-framework-migration-readiness.md)：Spring Boot 3、Java 17、Vue 3 迁移准备清单。
+- [13-framework-migration-readiness.md](13-framework-migration-readiness.md)：Spring Boot 3、Java 17、Vue 3 迁移验收记录。
+- [14-framework-migration-plan.md](14-framework-migration-plan.md)：框架迁移实施路线、兼容策略和阶段验收标准。
+- [16-engineering-improvement-roadmap.md](16-engineering-improvement-roadmap.md)：迁移后质量门禁、可靠任务执行、Redis/MQ 引入条件和迭代验收项。
+- [../project-introduction-and-interview-guide.md](../project-introduction-and-interview-guide.md)：完整项目介绍、业务流程、当前进度和面试讲解稿。
+- [../resume-project-entry.md](../resume-project-entry.md)：简历项目简介和 4-5 条核心项目要点。
 
 ## 迭代原则
 

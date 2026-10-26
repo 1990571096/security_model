@@ -52,10 +52,24 @@ npm run build:prod
 
 当前前端仍基于 Vue 2 和 Vue CLI。构建中的 asset size 与 Browserslist 提示属于旧前端栈已知警告。
 
-2026-09-10 验证结果：后端定向测试 42 项、Python 适配器语法检查均通过。前端生产构建命令已执行，
+2026-09-10 旧 ELADMIN 验证记录：定向测试 42 项、Python 适配器语法检查均通过。该记录属于旧后端历史基线，不计入迁移版覆盖。前端生产构建命令已执行，
 但当前 Windows 环境对旧版 Vue CLI 的 `node_modules/.cache` 和构建输出目录写入返回 `EPERM`，
 因此本轮不能把前端构建记为通过；该问题属于本地依赖目录权限或文件占用，不是业务编译错误。
 本轮验证不启动真实 LDD 训练，也不产生新的论文实验结果。
+
+## 迁移版 MySQL 集成测试
+
+迁移版集成测试通过 `MYSQL_IT_HOST`、`MYSQL_IT_PORT`、`MYSQL_IT_USERNAME` 和
+`MYSQL_IT_PASSWORD` 连接 MySQL。测试创建唯一命名的 `security_model_it_*` 临时 schema，
+只在确认 schema 名称符合该前缀后删除本次创建的 schema，不连接或清理业务库。
+
+```powershell
+cd F:\Study\postgraduate\毕业论文\security_model
+mvn -B -f migration-backend/pom.xml verify -Pmysql-it
+```
+
+默认连接本机 `localhost:3306`，用户名 `root`。本机如使用非空密码，通过
+`MYSQL_IT_PASSWORD` 环境变量提供。普通迁移版 `mvn verify` 只执行单元测试，不依赖 MySQL。
 
 后端测试默认由原项目配置跳过，需要显式使用：
 
@@ -84,7 +98,7 @@ mvn -pl eladmin-system -am test "-Denforcer.skip=true" "-Dsecurity-model.skip-te
 9. 确认运行中的任务不能编辑，非法状态流转和超出 `0-100` 的进度会被拒绝。
 10. 确认每次启动或重试都有独立的 `run_id`、`attempt` 和执行目录，不会覆盖历史尝试产物。
 11. 对运行中的任务执行取消，确认任务先显示为 `canceled`，且迟到的进度或结果回调不会覆盖该状态。
-12. 重启应用，确认运行中的导出任务被收敛为可重试失败，等待中的导出任务会重新派发。
+12. 重启应用，确认遗留训练任务会收敛为可重试失败；导出任务当前没有启动恢复扫描，遗留 `pending` / `running` 记录不会自动重新派发或收敛。
 13. 并发提交相同任务和隔离比例时，确认数据库唯一键只保留一条导出记录且只调度一次执行。
 
 结果 JSON 至少包含：

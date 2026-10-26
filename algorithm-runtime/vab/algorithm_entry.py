@@ -224,6 +224,27 @@ class SingleTaskTransformer(ast.NodeTransformer):
     def __init__(self, spec):
         self.spec = spec
 
+    def visit_For(self, node):
+        node = self.generic_visit(node)
+        if attr_name(node.target) != "epoch":
+            return node
+        call = ast.Expr(
+            value=ast.Call(
+                func=ast.Name(id="platform_report_epoch", ctx=ast.Load()),
+                args=[
+                    ast.Name(id="epoch", ctx=ast.Load()),
+                    ast.Attribute(
+                        value=ast.Name(id="args", ctx=ast.Load()),
+                        attr="num_epochs",
+                        ctx=ast.Load(),
+                    ),
+                ],
+                keywords=[],
+            )
+        )
+        node.body.insert(0, call)
+        return node
+
     def visit_Assign(self, node):
         node = self.generic_visit(node)
         if len(node.targets) != 1:
@@ -366,19 +387,50 @@ class SingleTaskTransformer(ast.NodeTransformer):
         return node
 
 
-def make_task_script(source_path, vab_root, output_root, config, spec):
+def make_task_script(source_path, vab_root, output_root, config, spec, progress_path, run_id, attempt):
     try:
         source_tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
     except (OSError, SyntaxError) as exc:
         raise IntegrationError("unable to parse VaB source {}: {}".format(source_path, exc)) from exc
 
     source_tree = SingleTaskTransformer(spec).visit(source_tree)
-    prelude = ast.parse(
+    prelude_source = (
         "import sys as _platform_sys\n"
-        "_platform_sys.path.insert(0, {!r})\n"
-        "PLATFORM_OUTPUT_ROOT = {!r}\n"
-        "PLATFORM_CONFIG = {!r}\n".format(str(vab_root), str(output_root), config)
-    ).body
+        "_platform_sys.path.insert(0, __PLATFORM_VAB_ROOT__)\n"
+        "PLATFORM_OUTPUT_ROOT = __PLATFORM_OUTPUT_ROOT__\n"
+        "PLATFORM_CONFIG = __PLATFORM_CONFIG__\n"
+        "PLATFORM_PROGRESS_PATH = __PLATFORM_PROGRESS_PATH__\n"
+        "PLATFORM_RUN_ID = __PLATFORM_RUN_ID__\n"
+        "PLATFORM_ATTEMPT = __PLATFORM_ATTEMPT__\n"
+        "def platform_report_epoch(epoch, total):\n"
+        "    import json as _platform_json, os as _platform_os, tempfile as _platform_tempfile\n"
+        "    total = max(1, int(total) - 1)\n"
+        "    payload = {'run_id': PLATFORM_RUN_ID, 'attempt': PLATFORM_ATTEMPT, "
+        "'phase': 'training', 'phase_label': 'LDD 双网络训练', "
+        "'epoch': int(epoch), 'total_epochs': total, "
+        "'progress': min(85, 15 + int((max(0, int(epoch) - 1) / total) * 70)), "
+        "'message': '正在执行第 {}/{} 轮训练'.format(int(epoch), total)}\n"
+        "    payload['heartbeat_at'] = __import__('datetime').datetime.now("
+        "__import__('datetime').timezone.utc).isoformat()\n"
+        "    directory = _platform_os.path.dirname(PLATFORM_PROGRESS_PATH)\n"
+        "    descriptor, temporary = _platform_tempfile.mkstemp(dir=directory, "
+        "prefix='.progress-', suffix='.tmp')\n"
+        "    try:\n"
+        "        with _platform_os.fdopen(descriptor, 'w', encoding='utf-8') as handle:\n"
+        "            _platform_json.dump(payload, handle, ensure_ascii=False)\n"
+        "        _platform_os.replace(temporary, PLATFORM_PROGRESS_PATH)\n"
+        "    finally:\n"
+        "        if _platform_os.path.exists(temporary): _platform_os.unlink(temporary)\n"
+    )
+    # Do not call str.format on this source: the embedded helper contains
+    # dictionary literals and a format string of its own.
+    prelude_source = prelude_source.replace("__PLATFORM_VAB_ROOT__", repr(str(vab_root)))
+    prelude_source = prelude_source.replace("__PLATFORM_OUTPUT_ROOT__", repr(str(output_root)))
+    prelude_source = prelude_source.replace("__PLATFORM_CONFIG__", repr(config))
+    prelude_source = prelude_source.replace("__PLATFORM_PROGRESS_PATH__", repr(str(progress_path)))
+    prelude_source = prelude_source.replace("__PLATFORM_RUN_ID__", repr(run_id))
+    prelude_source = prelude_source.replace("__PLATFORM_ATTEMPT__", repr(attempt))
+    prelude = ast.parse(prelude_source).body
 
     insert_at = 0
     while (
@@ -498,15 +550,35 @@ def build_result(status, message, started_at, **extra):
     return result
 
 
+def write_progress(path, payload):
+    payload = dict(payload)
+    payload["heartbeat_at"] = utc_now()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(".{}-{}.tmp".format(path.name, os.getpid()))
+    temporary.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    os.replace(str(temporary), str(path))
+
+
 def run(args):
     started_at = utc_now()
     request_path = Path(args.request).resolve()
     result_path = Path(args.result).resolve()
+    progress_path = Path(args.progress_file).resolve() if args.progress_file else result_path.with_name("progress.json")
+    request = {}
 
     try:
+        write_progress(progress_path, {
+            "run_id": None, "attempt": None, "phase": "preparing",
+            "phase_label": "检查运行环境", "progress": 5, "message": "正在检查算法、数据集与 CUDA 环境",
+        })
         if args.stage != "pre_defense":
             raise IntegrationError("VaB adapter only supports stage=pre_defense")
         request = json.loads(request_path.read_text(encoding="utf-8"))
+        write_progress(progress_path, {
+            "run_id": request.get("runId"), "attempt": request.get("attempt"),
+            "phase": "preparing", "phase_label": "准备训练任务", "progress": 10,
+            "message": "运行环境检查完成，正在生成隔离任务脚本",
+        })
         algorithm_key = get_algorithm_key(request)
         if algorithm_key not in SUPPORTED_ALGORITHMS:
             raise IntegrationError("unsupported VaB implementation path: {}".format(algorithm_key))
@@ -520,7 +592,10 @@ def run(args):
         config = build_config(request, spec)
         preflight(vab_root, source_path, config)
         output_root.mkdir(parents=True, exist_ok=True)
-        generated_script = make_task_script(source_path, vab_root, output_root, config, spec)
+        generated_script = make_task_script(
+            source_path, vab_root, output_root, config, spec, progress_path,
+            request.get("runId"), request.get("attempt"),
+        )
 
         if args.validate_only:
             result = build_result(
@@ -543,13 +618,31 @@ def run(args):
             acquire_lock(lock_path)
             try:
                 execution_log = output_root / "execution.log"
-                with execution_log.open("w", encoding="utf-8") as log_file:
-                    completed = subprocess.run(
+                write_progress(progress_path, {
+                    "run_id": request.get("runId"), "attempt": request.get("attempt"),
+                    "phase": "training", "phase_label": "等待训练进程启动",
+                    "progress": 12, "message": "LDD 训练进程已提交",
+                })
+                with execution_log.open("w", encoding="utf-8", buffering=1) as log_file:
+                    child_environment = os.environ.copy()
+                    child_environment["PYTHONUNBUFFERED"] = "1"
+                    process = subprocess.Popen(
                         build_command(generated_script, config),
                         cwd=str(vab_root),
-                        check=False,
-                        stdout=log_file,
+                        env=child_environment,
+                        stdout=subprocess.PIPE,
                         stderr=subprocess.STDOUT,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        bufsize=1,
+                    )
+                    for line in process.stdout:
+                        log_file.write(line)
+                        print(line, end="", flush=True)
+                    completed = subprocess.CompletedProcess(
+                        args=process.args,
+                        returncode=process.wait(),
                     )
             finally:
                 if lock_path.exists():
@@ -590,6 +683,11 @@ def run(args):
                     ],
                 },
             )
+            write_progress(progress_path, {
+                "run_id": request.get("runId"), "attempt": request.get("attempt"),
+                "phase": "finalizing", "phase_label": "整理实验结果",
+                "progress": 90, "message": "训练完成，正在解析指标与实验产物",
+            })
     except Exception as exc:
         result = build_result(
             "failed",
@@ -601,6 +699,14 @@ def run(args):
             failure_reason=str(exc),
         )
 
+    if request:
+        write_progress(progress_path, {
+            "run_id": request.get("runId"), "attempt": request.get("attempt"),
+            "phase": "completed" if result["status"] == "success" else "failed",
+            "phase_label": "执行完成" if result["status"] == "success" else "执行失败",
+            "progress": 100 if result["status"] == "success" else 0,
+            "message": result.get("message") or result.get("failure_reason", "任务结束"),
+        })
     result_path.parent.mkdir(parents=True, exist_ok=True)
     result_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     return 0 if result["status"] == "success" else 1
@@ -735,6 +841,7 @@ def main():
     parser.add_argument("--stage")
     parser.add_argument("--request")
     parser.add_argument("--result")
+    parser.add_argument("--progress-file")
     parser.add_argument("--validate-only", action="store_true")
     parser.add_argument("--export-clean-subset", action="store_true")
     parser.add_argument("--selection-file")

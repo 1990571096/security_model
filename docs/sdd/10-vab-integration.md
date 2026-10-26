@@ -51,7 +51,15 @@ The adapter parses the source with Python AST and writes a generated task copy t
 2. Uses a task-scoped output directory.
 3. Writes selected sample indices for every legacy isolation ratio.
 4. Disables interactive Matplotlib display calls.
-5. Leaves the original VaB source untouched.
+5. Injects an epoch callback into the generated training loop.
+6. Leaves the original VaB source untouched.
+
+The generated script atomically writes a task-level `progress.json` at preparation,
+training, result-finalization, and terminal phases. The training-loop callback reports
+the current epoch and total effective epochs. The adapter also starts the generated
+script with `PYTHONUNBUFFERED=1` and forwards child stdout into both `execution.log`
+and the adapter stdout, so the backend's task-local `stdout.log` receives incremental
+training output while the process is running.
 
 ## Request Mapping
 
@@ -100,6 +108,8 @@ must be described as “the raw CIFAR-10 subset reconstructed from LDD retained 
 - VaB calls CUDA APIs directly, so a CUDA-capable GPU is required.
 - The adapter serializes VaB tasks with an exclusive runtime lock.
 - The Java executor timeout must match the selected dataset and epoch count.
+- `progress.json` is written beside `request.json` and `result.json` in the Java attempt
+  directory; it is a live diagnostic snapshot, not a completion result.
 - `security_model_vab_seed.sql` registers the developer-machine dataset root
   `VaB CIFAR-10 Runtime Root`. Production deployments must create an equivalent
   resource with their own local VaB dataset path.

@@ -12,9 +12,12 @@ Web UI
           -> Python Algorithm Runtime / External Training Service
 ```
 
-## 目标技术栈
+## 技术基线与目标扩展
 
-目标系统采用成熟、稳定、社区活跃的主流技术栈，避免继续深度绑定旧版 ELADMIN 技术基座。
+迁移版当前运行基线采用 Java 17、Spring Boot 3.5、Spring Security 6、MyBatis-Plus、
+MySQL、Redis、Vue 3、Vite、Element Plus 和 Pinia。旧 ELADMIN 目录仅作为回归/回滚基线。
+Redis 已用于可重建资源目录缓存；消息队列和独立 Worker 尚未进入运行链路，只有明确业务场景、
+失败语义和验收条件后才考虑引入。
 
 ### 后端
 
@@ -23,7 +26,8 @@ Web UI
 - 安全：Spring Security 6 + JWT。
 - ORM：MyBatis-Plus 3.5.x，适配 Spring Boot 3 与 Jakarta 命名空间。
 - 数据库：MySQL 8.x。
-- 缓存与任务状态：Redis 7.x。
+- 缓存：Redis 缓存数据集、算法和超参数资源目录及部分按 ID 查询结果，TTL 为 5 分钟；资源变更后失效，Redis 异常时回源 MySQL。MySQL 继续作为事实源。
+- 消息队列：暂不接入；跨进程任务调度需求明确后评估 MySQL Outbox + RabbitMQ。
 - API 文档：Knife4j / OpenAPI 3，优先选择 Spring Boot 3 兼容版本。
 - 构建：Maven 3.8+。
 
@@ -45,7 +49,7 @@ Web UI
 
 ### 迁移原则
 
-当前项目仍是 Spring Boot 2.7 + Vue 2。为减少返工，迁移顺序为：先裁剪无关模块并稳定安全训练领域模型，再迁移后端到 Spring Boot 3，最后迁移前端到 Vue 3 + Vite。禁止在领域边界未稳定前同时推进大规模框架升级和业务重构。
+框架迁移已完成当前 LDD 业务范围。后续迭代围绕质量门禁、任务可靠性、查询性能和可观测性推进；消息队列不以技术栈覆盖为目的提前引入。
 
 ## 目标领域包
 

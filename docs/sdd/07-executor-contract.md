@@ -1,6 +1,6 @@
 # Executor Contract
 
-Date: 2026-07-11
+Date: 2026-10-26
 
 ## Decision
 
@@ -67,7 +67,8 @@ progress, timestamps and output dataset reference, returns the task to `pending`
 starts it as a new attempt. The original failure result remains available only through the
 previous entry in the execution snapshot; retry does not overwrite prior launch parameters.
 
-The MVP mock executor also writes a `task` snapshot into result JSON for protocol debugging.
+The historical MVP mock executor wrote a `task` snapshot into result JSON for protocol
+debugging. It is not the active migration-backend runtime.
 
 Each launch receives a UUID `run_id` and a monotonically increasing `attempt` value.
 The Python executor stores request/result/log files below an attempt-specific directory,
@@ -81,6 +82,13 @@ current run.
 
 The external executor is dispatched after the surrounding transaction commits. This keeps
 the persisted task claim and immutable snapshot ahead of process startup.
+
+If the bounded executor rejects dispatch, the service writes a retryable `failed` result with
+`TASK_QUEUE_FULL`, guarded by the current `task_id`, `run_id`, `attempt` and `running` status.
+Migration-backend unit tests cover dispatch rejection and verify that retry appends a new attempt
+without changing the previous attempt snapshot. The `mysql-it` suite additionally verifies atomic
+claims, completion racing with recovery, and orphan-task recovery against an isolated MySQL schema.
+Remote CI results must be checked in GitHub Actions; a local pass does not establish remote status.
 
 ## Cancel Contract
 
@@ -96,9 +104,12 @@ Future real executors should implement `DefenseTaskExecutor` and treat `DefenseT
 
 ## Python Process Executor
 
-The default MVP runtime uses `MockDefenseTaskExecutor`.
+The active migration-backend runtime uses `PythonLddTaskExecutor` for the allow-listed
+VaB LDD algorithm. The executor is dispatched through the bounded `taskAsync` thread pool
+after the task-claim transaction commits. Other algorithm implementations are not enabled
+for real execution yet.
 
-Enable the local Python process executor only when an algorithm project is ready:
+Python execution is configured for the migration backend through:
 
 ```bash
 --spring.profiles.active=dev,python-executor
@@ -111,13 +122,27 @@ Configuration keys:
 - `security-model.executor.python.workspace`
 - `security-model.executor.python.timeout-seconds`
 
-The Python script is called as:
+The adapter script is called as:
 
 ```bash
-python algorithm_entry.py --stage pre_defense --request request.json --result result.json
+python algorithm_entry.py --stage pre_defense --request request.json \
+  --result result.json --progress-file progress.json
 ```
 
-The script should read `request.json`, run the algorithm, and write `result.json` using the result envelope defined above. If `result.json` is missing but the process exits with code `0`, the backend records a minimal successful envelope with the executor workspace as an artifact.
+The script should read `request.json`, run the algorithm, and write `result.json` using the
+result envelope defined above. During execution it atomically replaces `progress.json` with
+a small JSON snapshot containing `phase`, `phase_label`, `progress`, `message`,
+`heartbeat_at`, `run_id`, `attempt`, and, when available, `epoch` and `total_epochs`.
+The run identity is present in both adapter-level and epoch-level snapshots so stale
+attempts cannot update the active task. The Java executor polls this file while the adapter
+process is alive, persists the percentage to MySQL, and exposes
+the full snapshot through the task log endpoint. The frontend continues to poll that
+endpoint and therefore can show the active training stage and latest heartbeat before
+Python exits.
+
+The progress file is supplementary and never replaces `result.json` as the completion
+source of truth. If `result.json` is missing but the process exits with code `0`, the backend
+records a minimal successful envelope with the executor workspace as an artifact.
 
 ## Clean Subset Export Contract
 

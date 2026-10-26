@@ -1,0 +1,41 @@
+server:
+  port: ${SERVER_PORT:8100}
+
+spring:
+  application:
+    name: security-model-backend
+  profiles:
+    default: local
+  jackson:
+    time-zone: Asia/Shanghai
+    default-property-inclusion: non_null
+  datasource:
+    url: jdbc:mysql://${DB_HOST:localhost}:${DB_PORT:3306}/${DB_NAME:eladmin}?useUnicode=true&characterEncoding=utf-8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+    username: ${DB_USER:root}
+    password: ${DB_PWD:}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      connect-timeout: ${REDIS_CONNECT_TIMEOUT:300ms}
+      timeout: ${REDIS_COMMAND_TIMEOUT:500ms}
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      probes:
+        enabled: true
+
+security-model:
+  app:
+    version: 0.1.0-migration
+  auth:
+    jwt-secret: ${SECURITY_MODEL_JWT_SECRET:}
+    token-validity: ${SECURITY_MODEL_JWT_VALIDITY:PT8H}
+  legacy:
+    base-url: ${SECURITY_MODEL_LEGACY_BASE_URL:http://localhost:8000}

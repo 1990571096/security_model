@@ -1,0 +1,59 @@
+name: Migration Quality
+
+on:
+  push:
+    paths:
+      - "migration-backend/**"
+      - "migration-frontend/**"
+      - ".github/workflows/migration-quality.yml"
+  pull_request:
+    paths:
+      - "migration-backend/**"
+      - "migration-frontend/**"
+      - ".github/workflows/migration-quality.yml"
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: migration-test-password
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping --host=127.0.0.1 --password=migration-test-password"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+    env:
+      MYSQL_IT_HOST: 127.0.0.1
+      MYSQL_IT_PORT: 3306
+      MYSQL_IT_USERNAME: root
+      MYSQL_IT_PASSWORD: migration-test-password
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+      - name: Verify migration backend
+        run: mvn -B -f migration-backend/pom.xml verify -Pmysql-it
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: migration-frontend/package-lock.json
+      - name: Install dependencies
+        working-directory: migration-frontend
+        run: npm ci
+      - name: Build production bundle
+        working-directory: migration-frontend
+        run: npm run build

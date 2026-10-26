@@ -2,8 +2,7 @@ import JSEncrypt from 'jsencrypt/bin/jsencrypt.min'
 
 // 密钥对生成 http://web.chacuo.net/netrsakeypair
 
-const publicKey = 'MFwwDQYJKoZIhvcNAQEBBQADSwAwSAJBANL378k3RiZHWx5AfJqdH9xRNBmD9wGD\n' +
-  '2iRe41HdTNF8RUhNnHit5NpMNtGL0NPTSSpPjjI1kJfVorRvaQerUgkCAwEAAQ=='
+const publicKey = 'MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQCVfHM8ETn96h/AkBsAv9hMSPoJRaOcZ13XkRzJxKXzL13Hw3CxXKMx66CdCqIP6fiGAWe+v97+L56RCGuWBJk/YkGTjywk+LUaszujH1GfcGAvcLUWiwPrA8+J4RF0Fosyh072p9zmD6CTquer/+s3gV/+XczBiYRPoq4/1RCsWQIDAQAB'
 
 // 加密
 export function encrypt(txt) {
@@ -11,4 +10,3 @@ export function encrypt(txt) {
   encryptor.setPublicKey(publicKey) // 设置公钥
   return encryptor.encrypt(txt) // 对需要加密的数据进行加密
 }
-

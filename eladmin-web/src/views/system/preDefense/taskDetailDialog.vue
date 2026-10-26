@@ -205,7 +205,29 @@
           :status="currentProgress === 100 ? 'success' : null"
           :stroke-width="8"
         />
-        <p style="text-align: center; margin-top: 10px; color: #666;">正在执行清洗任务，请稍候...</p>
+        <div class="runtime-progress-panel">
+          <div class="runtime-progress-header">
+            <strong>{{ progressSnapshot.phase_label || '任务执行中' }}</strong>
+            <el-tag size="mini" :type="progressHeartbeatType">
+              {{ progressHeartbeatLabel }}
+            </el-tag>
+          </div>
+          <div class="runtime-progress-message">
+            {{ progressSnapshot.message || '正在执行清洗任务，请稍候...' }}
+          </div>
+          <div class="runtime-progress-meta">
+            <span v-if="progressSnapshot.epoch">
+              当前轮次：第 {{ progressSnapshot.epoch }} / {{ progressSnapshot.total_epochs || '-' }} 轮
+            </span>
+            <span v-if="progressSnapshot.heartbeat_at">
+              最近更新：{{ formatProgressTime(progressSnapshot.heartbeat_at) }}
+            </span>
+            <span v-else>正在等待训练进程上报进度</span>
+          </div>
+          <div v-if="progressHeartbeatStale" class="runtime-progress-hint">
+            最近一次进度更新时间较久，任务状态仍以后台执行结果为准。
+          </div>
+        </div>
       </div>
 
       <!-- 操作按钮区域 -->
@@ -405,7 +427,8 @@ export default {
       executionLogAttempt: null,
       logsLoading: false,
       logsMessage: '',
-      activeLogName: '0'
+      activeLogName: '0',
+      executionProgress: null
     }
   },
   computed: {
@@ -541,6 +564,27 @@ export default {
 
     vabPreviewUrls() {
       return this.vabImageUrls.map(image => image.url)
+    },
+
+    progressSnapshot() {
+      return this.executionProgress || {}
+    },
+
+    progressHeartbeatStale() {
+      const heartbeat = this.progressSnapshot.heartbeat_at
+      if (!heartbeat || !this.taskData || this.taskData.status !== 'running') return false
+      const timestamp = new Date(heartbeat).getTime()
+      return Number.isFinite(timestamp) && Date.now() - timestamp > 60000
+    },
+
+    progressHeartbeatLabel() {
+      if (this.progressHeartbeatStale) return '较久未更新'
+      if (this.progressSnapshot.heartbeat_at) return '进度正常更新'
+      return '等待进度'
+    },
+
+    progressHeartbeatType() {
+      return this.progressHeartbeatStale ? 'warning' : 'success'
     }
   },
   watch: {
@@ -633,6 +677,7 @@ export default {
       this.executionLogAttempt = this.taskData ? this.taskData.currentAttempt : null
       this.logsMessage = ''
       this.activeLogName = '0'
+      this.executionProgress = null
     },
 
     loadExecutionLogs() {
@@ -645,6 +690,13 @@ export default {
       this.logsLoading = true
       getExecutionLogs(this.taskData.taskId, offsets).then(response => {
         const result = response.data || response
+        if (result.progress) {
+          this.executionProgress = result.progress
+          if (this.taskData && this.taskData.status === 'running' &&
+            Number.isFinite(Number(result.progress.progress))) {
+            this.currentProgress = Math.max(0, Math.min(100, Number(result.progress.progress)))
+          }
+        }
         const logs = result.logs || []
         logs.forEach(item => {
           const key = item.relativePath || item.name || item.path
@@ -688,6 +740,13 @@ export default {
         return path.slice(root.length).replace(/^[\\/]+/, '')
       }
       return path.split(/[\\/]/).pop()
+    },
+
+    formatProgressTime(value) {
+      if (!value) return '-'
+      const date = new Date(value)
+      if (Number.isNaN(date.getTime())) return value
+      return date.toLocaleTimeString()
     },
 
     // 主动加载数据集名称
@@ -1124,6 +1183,47 @@ export default {
   word-break: break-word;
   font-size: 12px;
   line-height: 1.6;
+}
+
+.runtime-progress-panel {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: 1px solid #dfe6ec;
+  border-radius: 4px;
+  background: #f8fafc;
+}
+
+.runtime-progress-header,
+.runtime-progress-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.runtime-progress-header {
+  color: #303133;
+  font-size: 13px;
+}
+
+.runtime-progress-message {
+  margin-top: 8px;
+  color: #606266;
+  font-size: 13px;
+}
+
+.runtime-progress-meta {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  margin-top: 8px;
+  color: #909399;
+  font-size: 12px;
+}
+
+.runtime-progress-hint {
+  margin-top: 8px;
+  color: #e6a23c;
+  font-size: 12px;
 }
 
 .vab-result {
