@@ -104,8 +104,9 @@ mvn -B -f migration-backend/pom.xml verify -Pmysql-it
 
 > 第一切片：MySQL 单槽 GPU 租约（条件更新 + 续租 + fencing + 过期接管）、租约与任务领取同事务、启动恢复释放租约、导出台账重启收敛、导出超时进程树回收。
 > 第二切片：适配器陈旧锁接管（pid 存活判定 + token 校验接管/释放）、失败码 `GPU_LOCK_BUSY`/`GPU_OOM`/`CUDA_UNAVAILABLE` 细分、Java 无结果时 stderr 兜底归类。
-> 证据：Java 69 项单元测试 + 29 项 MySQL IT（`GpuLeaseMySqlIT` 5/5），适配器 Python 单测 11/11；**未跑真实 LDD，生产库未建表**。
-> 未完成：自动重试队列（D5）、日志与产物限额（attempt 目录/截断/保留期/SHA-256）、真实 6GB 显存实测。详见 `09` §5.3/§5.4、`05` ADR-014/ADR-015。
+> 第三切片：attempt 级日志截断（保留尾部 + 截断标记）、SHA-256 清单、保留期清理（默认关闭，仅删终态任务的非当前 attempt）。
+> 证据：Java 76 项单元测试 + 29 项 MySQL IT（`GpuLeaseMySqlIT` 5/5），适配器 Python 单测 11/11；**未跑真实 LDD，生产库未建表**。
+> 未完成：自动重试队列（D5）、真实 6GB 显存实测。详见 `09` §5.3–§5.5、`05` ADR-014/ADR-015/ADR-016。
 
 **配额**：`TaskExecutionQuotaPolicy.validateAndBuildSnapshot()` 的 JVM `synchronized` 只保护该方法内部、只在单实例生效，锁结束后才 `claimForExecution()`；设计 MySQL 资源槽位/计数行加锁，令配额检查与任务领取处于同一事务，或先明确单机单任务 GPU 并以数据库唯一活动租约实现。基于 RTX 2060 6GB / 内存 16GB 设保守默认并发，不以多用户数量作为 GPU 并发数；多实例不能依赖进程内锁。
 

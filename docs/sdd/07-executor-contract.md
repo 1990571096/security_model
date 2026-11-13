@@ -256,7 +256,24 @@ to `EXPORT_NOT_STARTED` / `EXPORT_INTERRUPTED`; it never marks a half-written ZI
 Selection files must resolve inside the task artifact root and match `selected_indices_(\d+).npy`;
 the export is idempotent per `(task_id, isolation_ratio)` via a unique key.
 
-## GPU Serialization (database lease first, adapter lock second)
+## Attempt Artifacts and Retention
+
+Each run writes into `<executor-workspace>/pre_defense-<taskId>/attempt-<n>/`. The directory is the
+artifact boundary: a retry increments `attempt` and never overwrites an earlier directory.
+
+After the child process ends (success, failure or cancel), `ExecutorArtifactPolicy`:
+
+- trims `stdout.log` / `stderr.log` to the last `security-model.executor.artifacts.max-log-bytes`
+  (default 20 MiB) and prefixes a truncation marker with the original byte count;
+- writes `manifest.json` listing every top-level file with `bytes` and `sha256`;
+- never changes the task outcome if trimming or hashing fails (warn only).
+
+`ExecutorArtifactRetentionJob` deletes an attempt directory only when all hold: retention is
+enabled (`retention-days > 0`), the task exists with status `success|failed|canceled`, the attempt
+is not `current_attempt`, the directory is older than the retention window, and the path stays
+inside the configured workspace. All other directories are left untouched.
+
+
 
 Concurrency is enforced by the MySQL single-slot lease (`sys_gpu_lease`, see ADR-014). The adapter
 lock at `VAB_ROOT/.security-model-vab.lock` remains as a second line of defence:
