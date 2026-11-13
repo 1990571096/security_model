@@ -19,6 +19,7 @@
 - [13-framework-migration-readiness.md](13-framework-migration-readiness.md)：Spring Boot 3、Java 17、Vue 3 迁移验收记录。
 - [14-framework-migration-plan.md](14-framework-migration-plan.md)：框架迁移实施路线、兼容策略和阶段验收标准。
 - [16-engineering-improvement-roadmap.md](16-engineering-improvement-roadmap.md)：迁移后质量门禁、可靠任务执行、Redis/MQ 引入条件和迭代验收项。
+- [17-agent-development-guide.md](17-agent-development-guide.md)：后续逐轮开发 Agent 的任务范围、依赖门槛、验收条件和交接模板（规划文档，非实现状态）。
 - [../project-introduction-and-interview-guide.md](../project-introduction-and-interview-guide.md)：完整项目介绍、业务流程、当前进度和面试讲解稿。
 - [../resume-project-entry.md](../resume-project-entry.md)：简历项目简介和 4-5 条核心项目要点。
 
