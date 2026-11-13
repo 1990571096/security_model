@@ -204,6 +204,7 @@ Vue 2 工程继续作为业务回归和回滚基线，不参与迁移版主流�
 - 集成测试执行情况（2026-11-13 本机实测，`MYSQL_IT_PASSWORD` 由本机环境提供）：`mvn -B -f migration-backend/pom.xml verify -Pmysql-it` → **57 项单元测试 + 17 项 MySQL 集成测试全部通过，BUILD SUCCESS**。分布：`MySqlTaskPersistenceIT` 5、`OwnershipMigrationScriptIT` 3、`OwnershipEndToEndIT` 6、`OwnershipEndToEndCrossReadIT` 3。每个 IT 都用随机 schema，结束后删除。
 - 迁移脚本实机执行（隔离库）发现并修复两处缺陷：① 脚本把 `@apply_backfill` 重置为 0，导致“审核后重跑”永远退化为只读段；② 匹配条件 `data_origin <> 'demo'` 遇到历史行 `data_origin IS NULL` 结果为 NULL，按用户名匹配一行都写不进。修复后 `OwnershipMigrationScriptIT` 3/3 通过（只读段不改行、`@demo_task_ids` 隔离、`@reject_task_ids` 撤回、未知作者保持 `unattributed`）。
 - **仍未完成**：生产库 `eladmin` 上的实际迁移执行与逐行核对记录。隔离库通过只证明脚本行为正确，不等于生产数据已迁移；`sql/security_model_ownership.sql` 不得表述为“已在生产验证”。
+- 真实库只读核对（2026-11-13）：`eladmin.sys_pre_defense` 实际 **9 行**、无 `owner_user_id` 列；3、4 号已被恢复线程收敛为 `failed`（结果非空），8–12 为真实跑批，其中 12 号作者 `system` 在 `sys_user` 中不存在。用 `eladmin` 副本演练确认：按 `@demo_task_ids='3,4'` 回填后 12 号会变 `unattributed`，普通账号看不到这条真实实验，需人工决定归属。详见 `18` §4.1。
 - MySQL 集成测试使用唯一随机 schema，验证并发领取仅一个成功、完成操作胜过已读取恢复快照、恢复只收敛孤儿 `running` 任务、owner 范围查询只返回本人行且 demo 行被排除；清理后断言 schema 已删除。
 - `.github/workflows/migration-quality.yml` 配置了迁移版 Maven `verify` 和 Vue 3 生产构建。工作流配置存在不代表远端 Actions 已成功，远端状态需以 GitHub Actions 记录为准。
 - `mysql-it` Maven profile 通过 Failsafe 启动 MySQL 集成测试；GitHub Actions 配置 MySQL 8.4 service。远端 Actions 尚未确认时，不将本地通过表述为远端通过。

@@ -96,6 +96,7 @@
 6. 回滚：三列均为新增且可为空，回滚只需 `DROP COLUMN`；回填脚本不改 `create_by`/`cleaning_result`/`status`，因此回滚不丢原始证据。迁移前对 `sys_pre_defense`、`sys_pre_defense_export` 做 `mysqldump` 备份，并在文档记录备份文件名。
 
 已核实的历史数据（种子 SQL 逐行确认，2026-11-13）：`sql/eladmin.sql` 的 `sys_pre_defense` 种子共 4 行，**全部没有 `execution_snapshot`**；1、2 号是 `admin` 名下的 `success` 行，`cleaning_result` 是模拟的 zscore/isolation 指标；3、4 号是 `test` 名下的 `running` 行，`cleaning_result` 为 NULL、`progress` 分别为 65/1、`end_time` 为 NULL、`current_run_id` 无值（该列在种子库中尚不存在），任务名分别是“MNIST数据预处理”（dataset 2）与“文本数据清洗任务”（dataset 3）。平台唯一的真实算法是 LDD 图像清洗，且这几行早于 VaB 适配器（2025-07/08），因此 3、4 号**不是真实 LDD 实验，应作为演示行隔离**。
+注意：以上是 `eladmin.sql` 种子文件的 4 行；当前真实库已演化为 9 行（3、4 被恢复线程改为 failed，新增 8–12 号真实跑批），逐行现状见 §4.1，不要拿种子文件当生产现状。
 
 风险：
 - 用户名复用会把旧实验错绑到新账号。`matched` 只证明“当时那个用户名现在仍属于这个账号”，不证明实验归属；所以第二段必须人工审阅逐行清单，必要时用 `@reject_task_ids` 撤回。
@@ -111,6 +112,31 @@
 | NULL 比较吞掉匹配 | 匹配条件 `t.data_origin <> 'demo'`，而历史行 `data_origin` 全为 NULL | `NULL <> 'demo'` 结果为 NULL，按用户名匹配一行都写不进，真实任务全部变 `unattributed` | 改为 `(t.data_origin IS NULL OR t.data_origin <> 'demo')` |
 
 仍未做：生产库 `eladmin` 上的实跑。隔离库证明的是脚本行为正确，不等于生产数据已迁移；生产执行仍须按 §10 记录备份、审核 ID、变量值与逐行核对。
+
+### 4.1 真实库现状（2026-11-13 只读核对 `eladmin`，未写入）
+
+`eladmin.sys_pre_defense` 实际有 **9 行**，且**尚无** `owner_user_id` 列（迁移未执行）。逐行事实：
+
+| task_id | 任务名 | status | create_by | 关键事实 |
+| --- | --- | --- | --- | --- |
+| 1 | CIFAR-10数据清洗任务 | success | admin | 2025-07 种子；结果是模拟 `sample_stats`（0.984 保留率） |
+| 2 | 中毒数据集清洗任务 | success | admin | 2025-07 种子；模拟结果（0.9519 保留率） |
+| 3 | MNIST数据预处理 | failed | test | 原种子 running；2026-09-10 被恢复线程写成 `failed`，结果文案为“应用重启后未能恢复原执行进程” |
+| 4 | 文本数据清洗任务 | failed | test | 同上，同一时间被恢复线程收敛 |
+| 8 | codex-pre-smoke-20260711205832 | success | admin | 2026-07 工程烟测，algorithm 7 |
+| 9 | smoke_iqr_20260711212417 | success | admin | 2026-07 工程烟测，algorithm 10 |
+| 10 | VaB LDD CUDA smoke 20260725001747 | failed | admin | 真实执行器失败（`PYTHON_EXECUTION_ERROR`） |
+| 11 | VaB LDD CUDA smoke retry | success | admin | 真实 LDD 执行成功，含 `clean_purity_percent_by_isolation_ratio` |
+| 12 | LDD CIFAR-10 SIG 5轮工程验证 | success | **system** | 真实 LDD 执行成功；`sys_user` 中**没有** `system` 账号 |
+
+账号现状：admin(1, 管理员, enabled)、test(2, **enabled=0**)、12(3, 非管理员, enabled=0)。
+
+两点必须写入迁移审核记录：
+- 3、4 号不再是“running 且无结果”。它们有恢复线程写入的失败结果，**用“无结果”判定 demo 的旧依据已失效**；是否仍按 demo 隔离只能由人确认。
+- 12 号是真实实验但作者 `system` 无对应账号，按规定会回填成 `unattributed` + `legacy`，**迁移后任何普通账号都看不到它**（包括 admin，除非开启跨用户读）。需要在回填前人工决定是否显式指定 owner，并在记录里写明理由。
+
+**副本演练（`mysqldump` 克隆 `eladmin` 到随机 schema，源库只读，演练后已 DROP）**：只读段加列加索引、9 行不动；回填段按 `@demo_task_ids='3,4'` 实跑结果为——1/2/8/9/10/11 → `owner_user_id=1 matched legacy`；3/4 → `demo + unattributed + owner NULL`；**12 → `unattributed legacy + owner NULL`**（即上文风险在真实数据上复现）。演练 schema 与导出文件已删除，生产库未做任何写入。
+
 
 ## 5. GPU 并发：事实、推荐与风险
 
