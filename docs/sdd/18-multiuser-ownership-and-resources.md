@@ -229,7 +229,7 @@
 | `GET /cleaned-dataset/exports/{exportId}`、`/task/{taskId}`、`/{exportId}/download` | 读=父任务可读；下载前二次校验 | `findReadable`、`resolveDownloadFile` |
 | `GET /api/audit/task/{id}` | 仅 owner（跨用户管理员例外） | 控制器先 `findRequired` |
 | `GET /api/task-progress`、`/page`、`/running`、`/{type}/{id}`、`/statistics` | 按 owner 过滤并排除 demo；`/statistics` 返回 `scope` | `TaskProgressQueryService` |
-| `GET /api/task-progress/executor-status` | 系统级汇总：线程池、全局运行数、配额上限；**不包含任务名、ID、路径、报告内容** | `TaskProgressController` |
+| `GET /api/task-progress/executor-status` | 系统级汇总：线程池、全局运行数、配额上限、`gpuSlot`（blocked/leased/idle/unknown、原因、隔离时间、最近探测时间、指引）；**不包含任务名、ID、路径、报告内容** | `TaskProgressController` |
 | `POST /api/task-progress/refresh` | 返回静态文本，无数据 | — |
 | `GET /api/dataset*`、`/api/algorithm*`、`/api/hyper*` | 共享资源读=认证；写=管理员 | `ResourceCommandService` |
 | `POST /api/dataset/{id}/validate` | 仅管理员 | `requireAdmin` |
@@ -253,7 +253,7 @@
 | 迁移脚本：只读段、决策表、显式 assign、reject、非法决策中止 | 隔离库 IT，真实执行 SQL | `OwnershipMigrationScriptIT` 6 项 | **已执行通过**（6/6，2026-11-13） |
 | GPU 单槽租约：并发唯一、过期接管、fencing、按 run 释放、隔离槽位 TTL 过期仍不可接管 | 隔离库 IT | `GpuLeaseMySqlIT` 6 项 | **已执行通过**（6/6，2026-11-13） |
 | 租约与领取同事务、续租失败收敛 | 单元（mock mapper/service） + 代码核对 | `GpuLeaseServiceTest` 4 项、`PreDefenseTaskCommandServiceTest` | 单元通过；**真实并发领取+租约的组合未单独跑真实 LDD** |
-| 导出 pending/running 重启收敛 | 代码核对 | `ExportRecoveryRunner` | 未写测试，**未验证** |
+| 导出 pending/running 重启收敛 | `ExportRecoveryRunnerTest` 2 项 + `MySqlTaskPersistenceIT` 真实库收敛 + `CleanSubsetExportExecutorTest` 半成品 ZIP/超时 | 已实现并验证 |
 | 账号状态不依赖 Redis/本地缓存 | 代码核对 | 过滤器只查 `sys_user`；Redis 仅缓存资源目录 | 通过（静态核对） |
 
 ## 10. 迁移执行记录模板（生产操作必须留档）

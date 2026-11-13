@@ -240,6 +240,8 @@ class OwnershipHttpContractTest {
                 taskMapper, resourceQueryService, currentUserService, guard);
         TaskExecutionQuotaPolicy quotaPolicy = mock(TaskExecutionQuotaPolicy.class);
         when(quotaPolicy.status()).thenReturn(Map.of("maxRunningTasks", 4));
+        var readinessGate = new com.securitymodel.application.task.SchedulingReadinessGate();
+        readinessGate.markReady();
         PreDefenseTaskCommandService commandService = new PreDefenseTaskCommandService(
                 taskMapper,
                 resourceQueryService,
@@ -252,11 +254,14 @@ class OwnershipHttpContractTest {
                 objectMapper,
                 mock(OperationAuditService.class),
                 currentUserService,
-                guard);
+                guard,
+                readinessGate);
         JwtAuthenticationFilter filter = new JwtAuthenticationFilter(tokenService, userMapper);
         return MockMvcBuilders.standaloneSetup(
                         new PreDefenseTaskController(commandService),
-                        new TaskProgressController(queryService, executor, quotaPolicy),
+                        new TaskProgressController(queryService, executor, quotaPolicy,
+                                mock(com.securitymodel.application.task.GpuLeaseService.class),
+                                mock(com.securitymodel.application.task.GpuLeaseBlockedProbe.class)),
                         new AuthController(userMapper, tokenService))
                 .addFilters(filter)
                 .setControllerAdvice(new ApiExceptionHandler())

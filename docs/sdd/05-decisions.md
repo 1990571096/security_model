@@ -236,7 +236,7 @@ Agent 采用外部大模型 API，本机不部署大模型。生成模型和 emb
 
 ## ADR-014：R2 第一切片——MySQL 单槽 GPU 租约、fencing 与导出重启收敛
 
-日期：2026-11-13；状态：**已实施并通过隔离库测试；未修改/未重跑真实 LDD，未在生产库执行建表**。
+日期：2026-11-13；状态：**已实施并通过隔离库测试；未修改/未重跑真实 LDD，未在生产库执行建表**。R2 收口后的进程/租约语义以 ADR-017 为准。
 
 背景：适配器 `VAB_ROOT/.security-model-vab.lock` 是 `O_CREAT|O_EXCL` 文件锁，`SIGKILL`／断电后残留会让所有后续 LDD 永久失败；`TaskExecutionQuotaPolicy` 的 `synchronized` 只覆盖方法体，锁释放后才 `claimForExecution()`，并发下可越过配额。单机单 GPU 场景不需要 MQ 或分布式调度，需要的是数据库层的唯一活动租约。
 
@@ -245,10 +245,10 @@ Agent 采用外部大模型 API，本机不部署大模型。生成模型和 emb
 1. **单槽表 `sys_gpu_lease`**：`slot_id` 主键（默认 `default-gpu-0`），记录 `lease_token`、`task_id`、`run_id`、`attempt`、`fencing_token`、`acquired_at`、`heartbeat_at`、`expires_at`、`released_at`。不按用户切分槽位——GPU 是设备级资源。
 2. **获取是单条条件 UPDATE**：`lease_token IS NULL OR expires_at < now` 时才允许覆盖，并 `fencing_token + 1`。获取与 `claimForExecution` 在**同一事务**：抢不到槽位抛 `GPU_BUSY` 并回滚任务领取；领取失败则回滚租约，不出现半占用。
 3. **租期与续租**：`lease-ttl-seconds=300`，`heartbeat-interval-ms=60000`；`GpuLeaseHeartbeat` 续租本 JVM 的活动租约。续租失败（租约已被接管）时取消本地 Python 进程并把任务标记为 `GPU_LEASE_LOST`，不静默继续占用 GPU。
-4. **释放**：执行器 `finally` 按 `lease_token` 释放（取消/超时/异常都走这条路）；启动恢复扫描按 `task_id + run_id` 释放（JVM 已死，token 不可知）。
+4. **释放必须带退出证据**：执行器 `finally` 先由 `ExecutorProcessGuard` 确认父进程、`descendants()` 与已记录子进程全部退出，才按 `lease_token` 释放；仍有存活则 `markBlocked("EXECUTOR_TREE_ALIVE")`，不再无条件释放。启动恢复扫描按 `task_id + run_id` 释放，且仅在 ADR-017 的 `EXITED/REAPED`（未来可证明的 `NOT_STARTED`）下执行。
 5. **Fencing**：每次获取令牌单调 +1；续租与释放都以 `lease_token` 为条件，旧 worker 既不能延长也不能释放新租约。任务状态更新继续用 `run_id + attempt` 条件更新，两套条件互不替代。租约 token 用 `@JsonIgnore` 排除在 `request.json` 与执行快照之外，快照只保留 `slotId`/`fencingToken`/`expiresAt` 供审计。
 6. **并发口径**：GPU 准入并发由数据库租约强制为 **1**；`max-running-tasks=4`、`max-running-tasks-per-user=2` 保留为“拒绝/排队”的业务上限，不再被当作 GPU 并发数。多用户不等于多 GPU 并发。
-7. **导出重启收敛**：`ExportRecoveryRunner` 在启动时把 `pending`/`running` 导出显式置为失败（`EXPORT_NOT_STARTED` / `EXPORT_INTERRUPTED`），不自动重派发——可能写到一半的 ZIP 不能标 success；用户通过既有失败详情重新提交。导出进程超时后先杀进程树再强杀，避免子进程继续写文件。
+7. **导出重启收敛**：`ExportRecoveryRunner` 在启动时把 `pending`/`running` 导出显式置为失败（`EXPORT_NOT_STARTED` / `EXPORT_INTERRUPTED`），不自动重派发——可能写到一半的 ZIP 不能标 success；用户通过既有失败详情重新提交。导出超时后由 `ExecutorProcessGuard` 终止并确认整棵进程树，未确认退出则报“导出超时且子进程未确认退出”，不把半成品标为成功。
 8. **第一轮不做**（第二轮已补，见 ADR-015）：适配器锁陈旧接管（pid + 启动时间）、`GPU_LOCK_BUSY/GPU_OOM/CUDA_UNAVAILABLE` 细分、自动重试队列、attempt 级产物限额。
 
 原因：文件锁和 JVM 锁都不能跨进程、不能抗硬杀；把“谁在用 GPU”落到 MySQL 的单一活动行，才能让两个请求、两个实例和重启后的回收都有同一事实源。
@@ -294,10 +294,10 @@ Agent 采用外部大模型 API，本机不部署大模型。生成模型和 emb
 决策：
 
 1. **attempt 目录不变**：`<workspace>/pre_defense-<taskId>/attempt-<n>/`，重试递增 attempt，旧 attempt 不覆盖。目录即产物边界，不再为每次执行新建随机目录。
-2. **日志截断**：`stdout.log`/`stderr.log` 超过 `security-model.executor.artifacts.max-log-bytes`（默认 20 MiB）时只保留尾部，并在文件头写入截断标记与原始字节数；截断发生在进程结束后、写清单前，不影响失败分类（分类先读原始 stderr）。
+2. **归档日志截断**：`stdout.log`/`stderr.log` 超过 `security-model.executor.artifacts.max-log-bytes`（默认 20 MiB）时只保留尾部，并在文件头写入截断标记与原始字节数；截断发生在进程结束后、写清单前，不影响失败分类（分类先读原始 stderr）。**该上限只约束归档文件大小，不限制进程运行期间的磁盘增长**，不能称为运行期硬上限；如需运行期限制必须另做流式限额。
 3. **SHA-256 清单**：每次执行结束在 attempt 目录写 `manifest.json`，列出该目录下每个文件的相对文件名、字节数与 SHA-256；清单本身不纳入列表。写清单或截断失败只记 warn，不改变任务成败。
 4. **保留期默认关闭**：`security-model.executor.artifacts.retention-days` 默认 `0`（不删除）。只有 `> 0` 时定时任务才工作。
-5. **删除条件必须同时满足**：目录名可解析为 `pre_defense-<id>/attempt-<n>`；任务存在且状态为 `success/failed/canceled`；`n != current_attempt`；目录最后修改时间早于保留期；删除前再次确认路径位于配置的 workspace 内。任一不满足即跳过。`running`/`pending` 任务、当前 attempt、未知任务目录一律不动。
+5. **删除条件必须同时满足**：目录名可解析为 `pre_defense-<id>/attempt-<n>`；任务存在且状态为 `success/failed/canceled`；`n != current_attempt`；目录最后修改时间早于保留期；删除前用 `toRealPath()` 解析并与 `workspace.toRealPath()` 比较，同时要求真实路径与 `toAbsolutePath().normalize()` 相等（拒绝符号链接/junction 与 `..` 越界）。任一不满足即 warn 并跳过。`running`/`pending` 任务、当前 attempt、未知任务目录一律不动。
 6. **不做文件大小硬上限以外的清理**：不自动删除单个大文件（如 `*.pth`），只按目录保留期整体清理；避免误删仍在被引用的产物。
 7. **配置缺失即保守**：未配置 workspace 时清理任务直接返回；配置错误不会删除工作目录之外的内容。
 
@@ -305,7 +305,7 @@ Agent 采用外部大模型 API，本机不部署大模型。生成模型和 emb
 
 影响／残余风险：
 
-- 单元测试 7 项（截断保留尾部、短日志不动、清单 3 文件且 SHA-256 长 64、终态任务删旧 attempt、运行中任务不删、关闭时不删、未知目录不删）；**未覆盖真实 LDD 产物**。
+- 单元测试 6 项（截断保留尾部、短日志不动、终态任务删旧 attempt、运行中任务不删、关闭时不删、未知目录不删）加 1 项 workspace 越界拒绝、1 项 junction 越界不删除（本机以 `mklink /J` 实跑通过）；**未覆盖真实 LDD 产物**。
 - 清单只覆盖顶层文件，不含子目录递归哈希；导出 ZIP 不在该目录内，走既有导出校验。
 - 保留期开启后，历史答辩演示所依赖的旧产物可能被清理，启用前需确认保留天数与备份。
 
@@ -317,12 +317,13 @@ Agent 采用外部大模型 API，本机不部署大模型。生成模型和 emb
 
 决策：
 
-1. **先写启动标记，再启动进程**：`PythonLddTaskExecutor` 在 `ProcessBuilder.start()` **之前**把 `process.json` 写成 `{"state":"starting"}`，写不成功就抛 `PROCESS_RECORD_FAILED` 并拒绝启动；启动成功后改写为 `{"state":"running","pid","command","started_at"}`。因此“没有记录”只可能表示“未启动”，而不是“可能已启动但没记上”。
-2. **适配器记录训练子进程**：`algorithm_entry.run` 在 `Popen` 之后写 `python-children.json`（`pids` + `updated_at`），训练结束在 `finally` 删除。恢复会同时核对父进程与已记录子进程，避免只等父进程退出就认为整棵树退出。
-3. **恢复探测结果必须五选一**：`NOT_STARTED`（无启动标记，证明未启动）、`EXITED`（身份正向匹配且进程与已记录子进程均已退出）、`REAPED`（存活且身份匹配，已杀掉整棵树并确认退出）、`KILL_FAILED`（杀掉后仍有存活）、`UNKNOWN`（身份或子进程无法确认）。
-4. **身份必须正向匹配**：只有 `startInstant` 与记录相等才允许杀进程；`startInstant` 缺失、不可解析或运行时读不到 → `UNKNOWN`，不杀、不释放。pid 被复用（启动时间不等）且无存活子进程 → `EXITED`。
-5. **租约释放只认“已确认退出”**：`NOT_STARTED/EXITED/REAPED` 才 `releaseByRun`；`KILL_FAILED/UNKNOWN` 调 `markBlocked` 把槽位置为隔离（`blocked_at` + `blocked_reason`），**租约 TTL 过期也不能被重新领取**——TTL 只证明心跳失联，不证明 GPU 空闲。
-6. **隔离槽位由探测任务解除**：`GpuLeaseBlockedProbe` 每 60 秒重探一次，只有得到 `NOT_STARTED/EXITED/REAPED` 才 `releaseByRun` 并清空 `blocked_at`；仍为 `KILL_FAILED/UNKNOWN` 时继续隔离并告警。人工解除必须显式执行（`releaseByRun` 或带条件的 SQL），不能靠时间流逝。
+1. **先写启动标记，再启动进程，写入原子化**：`PythonLddTaskExecutor` 在 `ProcessBuilder.start()` **之前**把 `process.json` 写成 `{"schema_version":2,"state":"starting"}`；写不成功抛 `PROCESS_RECORD_FAILED` 并拒绝启动。启动成功后改写为 `{"schema_version":2,"state":"running","pid","command","started_at"}`。两次写入都先写临时文件再 `ATOMIC_MOVE`（不支持时降级普通 move），避免半截 JSON。**“没有记录”不再等价于“未启动”**：旧版本、记录被删、启动后写记录失败都可能留下无记录但已运行的进程，因此无记录、`schema_version` 不是 2、JSON 损坏、`starting` 无 pid 一律 `UNKNOWN`。只有未来版本化协议能持久证明“未提交”时才允许 `NOT_STARTED`；R2 不再产生该枚举。
+2. **适配器记录训练子进程**：`algorithm_entry.run` 在 `Popen` 之后写 `python-children.json`（`pids` + `updated_at`），训练结束在 `finally` 删除。恢复与执行器回收同时核对父进程、`descendants()` 和已记录子进程，避免只等父进程退出就认为整棵树退出。
+3. **恢复探测结果必须五选一**：`NOT_STARTED`（仅未来可证明未提交时；R2 不产生）、`EXITED`（身份正向匹配且进程与已记录子进程均已退出）、`REAPED`（存活且身份匹配，已杀掉整棵树并确认退出）、`KILL_FAILED`（杀掉后仍有存活）、`UNKNOWN`（无记录/旧协议/损坏/身份或子进程无法确认）。
+4. **身份必须正向匹配**：只有 `startInstant` 与记录相等才允许杀进程；`startInstant` 缺失、不可解析、记录缺失或运行时读不到 → `UNKNOWN`，不杀、不释放。pid 被复用（启动时间不等）且无存活子进程 → `EXITED`；父进程已死但已记录子进程仍存活 → `UNKNOWN` 并保持隔离。
+5. **租约释放只认“已确认退出”**：`NOT_STARTED/EXITED/REAPED` 才 `releaseByRun`；`KILL_FAILED/UNKNOWN` 调 `markBlocked` 把槽位置为隔离（`blocked_at` + `blocked_reason`），**租约 TTL 过期也不能被重新领取**——TTL 只证明心跳失联，不证明 GPU 空闲。执行器 `finally` 不再无条件释放：`ExecutorProcessGuard.ensureGone` 确认整树退出才释放，否则 `markBlocked("EXECUTOR_TREE_ALIVE")`；中断、超时、导出超时同样先杀整树再收敛。
+6. **隔离槽位由探测任务解除，并对管理员可见**：`GpuLeaseBlockedProbe` 每 60 秒重探一次，只有得到 `NOT_STARTED/EXITED/REAPED` 才 `releaseByRun` 并清空 `blocked_at`；仍为 `KILL_FAILED/UNKNOWN` 时继续隔离并告警。`/api/task-progress/executor-status` 返回 `gpuSlot`（`blocked/leased/idle/unknown`、原因、隔离时间、最近探测时间、恢复指引），不包含 taskId、runId 或本机路径；前端任务中心展示该状态。人工解除必须显式执行（`releaseByRun` 或带条件的 SQL），不能靠时间流逝。
+7. **启动恢复完成前不接受新启动**：`SchedulingReadinessGate` 在 `TaskRecoveryRunner` 恢复循环结束后置 ready；`PreDefenseTaskCommandService.launchTask` 未就绪时返回 `SCHEDULING_NOT_READY`，只读接口不拦截。
 
 原因：GPU 独占是设备级事实，不能因为“数据库里任务已失败”就推断进程已退出；必须在释放槽位前取得进程已死的证据。
 
@@ -330,12 +331,14 @@ Agent 采用外部大模型 API，本机不部署大模型。生成模型和 emb
 
 - 隔离不会自动过期：`KILL_FAILED/UNKNOWN` 的槽位在人工确认前一直拒绝领取，新任务得到 `GPU_LEASE_BLOCKED`（与普通 `GPU_BUSY` 区分）。
 - `process.json` / `python-children.json` 只用于恢复判定，不对外提供下载，不写入 `result.json`。
-- 仍需承认：父进程退出、子进程未记录但实际存活的情形无法枚举，只能靠适配器持续维护 `python-children.json` 降低概率；该文件缺失并按 `EXITED` 处理时存在理论窗口。
-- 单元测试 6 项（未启动、启动标记无 pid、已退出、启动时间缺失不杀、身份匹配才杀、父死子活判 UNKNOWN）与恢复用例（杀不掉/身份未知时隔离、正常时释放）；**未在真实崩溃场景演练**。
+- 仍需承认：父进程退出、子进程未记录但实际存活的情形无法枚举，只能靠适配器持续维护 `python-children.json` 与执行器 `descendants()` 降低概率；两者都无法给出证据时保持 `UNKNOWN` 隔离，不自动放行。
+- 测试证据（2026-11-13）：`AttemptProcessRegistryTest` 11 项（无记录/旧协议/`starting` 无 pid/损坏/启动时间缺失/pid 复用/父死子活/身份匹配才杀/空 workspace 不回退/workspace 外拒绝准备）、`GpuLeaseBlockedProbeTest` 3 项、`PythonLddTaskExecutorProcessTest` 2 项（真实短 Python 父子进程的超时与取消）、`CleanSubsetExportExecutorTest` 1 项（半成品 ZIP + 超时）、`OrphanProcessCrashDrillTest` 1 项（独立 JVM 启动器被强杀后恢复整树）。**未跑真实 LDD**。
 
 ## ADR-018：调度意图与重启语义（R3 第一增量，已按外部评审修订、未实施）
 
 日期：2026-11-13；状态：**仅设计，代码未实施**。不得在状态文档中写成已实现。
+
+范围补充（2026-11-13）：本 ADR 对应 [20 号任务书](20-stage-execution-and-acceptance.md) 的 R3-A；其中“不做周期扫描/请求幂等”只限制第一实施批次，不表示整个 R3 排除这些能力。R3-B 再实施有界 pending 扫描和创建/启动/重试的请求幂等，实施前补充相应 ADR、接口与迁移细节；两批均验收后才能称 R3 完成。扫描只补偿确认未提交的意图，不自动重跑算法失败或派发不确定的任务。
 
 背景：当前 `launchTask` 在事务内完成租约 + 领取，事务提交后才派发执行；若 JVM 在提交成功、派发之前退出，任务停在 `running` 且没有任何执行证据，重启恢复只能统一置失败，无法判断“从未派发”还是“执行到一半”。
 
@@ -344,7 +347,7 @@ Agent 采用外部大模型 API，本机不部署大模型。生成模型和 emb
 1. **调度意图与领取同事务**：新增 `sys_task_dispatch_intent`（`task_id`、`run_id`、`attempt`、`status`（`pending`/`submitting`/`submitted`/`abandoned`）、`schema_version`、`request_json`、`created_at`、`updated_at`、`submitted_at`，唯一键 `(task_id, run_id, attempt)`）。`request_json` 只存白名单字段（数据集路径、超参、算法标识），排除凭据、租约 token、用户个人信息；不通过 API、日志或外部大模型暴露；重放前必须重新校验路径仍在受控目录、资源仍存在、账号状态有效、任务 `run_id/attempt` 未变，并复用数据集指纹确认内容未变。
 2. **派发用条件抢占，不靠唯一键**：调用方先 `UPDATE ... SET status='submitting' WHERE status='pending' AND task_id=? AND run_id=? AND attempt=?`，只有影响行数 = 1 的调用者可以提交执行器；其余调用者退出。宽松地把“先标 `submitted` 再提交”说成可靠投递是不成立的：标记成功后、执行器接手前崩溃，会把实际未执行的任务标成已提交。本增量只承诺**保守语义**——派发状态不确定时按失败收敛（`DISPATCH_UNCERTAIN`）并由用户重试，不承诺恰好执行一次。
 3. **单一恢复协调器**：不新增独立启动监听器；由现有恢复入口按顺序分类：先探测遗留进程并按 ADR-017 决定是否隔离槽位，再处理调度意图，最后统一收敛剩余 `running`。禁止“另一个监听器先失败、主恢复再发现 pending”的竞态。
-4. **意图状态收敛**：`pending` 且任务仍 `running`、`run_id/attempt` 匹配、槽位未隔离且条件抢占成功 → 重放一次；`submitting/submitted` → 视为派发不确定，任务置 `DISPATCH_UNCERTAIN` 失败、意图置 `abandoned`；`GPU_BUSY`/`GPU_LEASE_BLOCKED` → 不执行，任务按失败收敛（写清错误码）、意图置 `abandoned`，由用户手动重试；不做无限期 `running`。
+4. **意图状态收敛**：`pending` 且任务仍 `running`、`run_id/attempt` 匹配、槽位未隔离且条件抢占成功 → 重放一次；`submitting/submitted` → 视为派发不确定，任务置 `DISPATCH_UNCERTAIN` 失败、意图置 `abandoned`（不自动重放）；执行器拒绝、`GPU_BUSY`/`GPU_LEASE_BLOCKED`、身份/指纹/路径/账号失效 → 不执行，任务按失败收敛（写清错误码）、意图置 `abandoned`，由用户手动重试；不做无限期 `running`。
 5. **不做周期扫描**：第一增量只在启动时处理一次，不引入定时重派；周期扫描、幂等键与对外状态扩展留 R3 后续。对外仍只用 `pending/running/success/failed/canceled`，不改 API 与前端。
 
 验收计划：两个调用者并发处理同一意图只有一个抢占成功；模拟“事务提交后、抢占前”退出 → 重启后重放且只执行一次；`submitting/submitted` 意图不重放且任务有明确失败码；`GPU_BUSY`/`GPU_LEASE_BLOCKED` 有明确终态与 `abandoned`；统一恢复不会先把本应重放的 `pending` 任务置失败；请求重放重新校验失败（路径/账号/身份/指纹）时拒绝执行并给出失败码。以上均需真实 MySQL IT，未完成前不声称 R3 已交付。

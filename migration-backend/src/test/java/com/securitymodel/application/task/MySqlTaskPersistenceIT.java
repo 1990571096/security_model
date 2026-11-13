@@ -63,6 +63,9 @@ class MySqlTaskPersistenceIT {
     private PreDefenseTaskMapper taskMapper;
 
     @Autowired
+    private com.securitymodel.infrastructure.persistence.mapper.CleanSubsetExportTaskMapper exportMapper;
+
+    @Autowired
     private JdbcTemplate jdbc;
 
     @DynamicPropertySource
@@ -106,6 +109,28 @@ class MySqlTaskPersistenceIT {
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
                 """);
         jdbc.update("DELETE FROM sys_pre_defense");
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS sys_pre_defense_export (
+                  export_id BIGINT NOT NULL AUTO_INCREMENT,
+                  task_id BIGINT NOT NULL,
+                  isolation_ratio INT NOT NULL,
+                  status VARCHAR(20) NOT NULL DEFAULT 'pending',
+                  progress INT NOT NULL DEFAULT 0,
+                  file_path VARCHAR(1024) NULL,
+                  metadata_path VARCHAR(1024) NULL,
+                  error_code VARCHAR(64) NULL,
+                  failure_reason VARCHAR(1000) NULL,
+                  start_time DATETIME NULL,
+                  end_time DATETIME NULL,
+                  create_by VARCHAR(255) NULL,
+                  update_by VARCHAR(255) NULL,
+                  create_time DATETIME NULL,
+                  update_time DATETIME NULL,
+                  PRIMARY KEY (export_id),
+                  UNIQUE KEY uk_pre_defense_export_task_ratio (task_id, isolation_ratio)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                """);
+        jdbc.update("DELETE FROM sys_pre_defense_export");
     }
 
     @AfterAll
@@ -162,7 +187,8 @@ class MySqlTaskPersistenceIT {
         PreDefenseTaskMapper racingMapper = interceptRecoverySnapshot(
                 taskMapper, recoveryReadSnapshot, allowRecoveryUpdate, recoveryUpdateRows);
         TaskRecoveryRunner recoveryRunner = new TaskRecoveryRunner(racingMapper, mock(GpuLeaseService.class),
-                mock(com.securitymodel.infrastructure.executor.AttemptProcessRegistry.class));
+                mock(com.securitymodel.infrastructure.executor.AttemptProcessRegistry.class),
+                new SchedulingReadinessGate());
         ExecutorService worker = Executors.newSingleThreadExecutor();
         try {
             Future<?> recovery = worker.submit(recoveryRunner::recoverOrphanedTasks);
@@ -187,7 +213,8 @@ class MySqlTaskPersistenceIT {
         long orphanedId = insertTask("running", "orphan-run");
         long pendingId = insertTask("pending", null);
         TaskRecoveryRunner recoveryRunner = new TaskRecoveryRunner(taskMapper, mock(GpuLeaseService.class),
-                mock(com.securitymodel.infrastructure.executor.AttemptProcessRegistry.class));
+                mock(com.securitymodel.infrastructure.executor.AttemptProcessRegistry.class),
+                new SchedulingReadinessGate());
 
         recoveryRunner.recoverOrphanedTasks();
 
@@ -278,6 +305,25 @@ class MySqlTaskPersistenceIT {
                         throw exception.getCause();
                     }
                 });
+    }
+
+    @Test
+    void recoversPendingAndRunningExportsToExplicitDatabaseFailures() {
+        jdbc.update("INSERT INTO sys_pre_defense_export (task_id, isolation_ratio, status, progress) "
+                + "VALUES (90, 5, 'pending', 0), (91, 10, 'running', 40)");
+
+        new com.securitymodel.application.export.ExportRecoveryRunner(exportMapper,
+                mock(com.securitymodel.application.audit.OperationAuditService.class))
+                .recoverOrphanedExports();
+
+        assertEquals("failed", jdbc.queryForObject(
+                "SELECT status FROM sys_pre_defense_export WHERE task_id=90", String.class));
+        assertEquals("EXPORT_NOT_STARTED", jdbc.queryForObject(
+                "SELECT error_code FROM sys_pre_defense_export WHERE task_id=90", String.class));
+        assertEquals("failed", jdbc.queryForObject(
+                "SELECT status FROM sys_pre_defense_export WHERE task_id=91", String.class));
+        assertEquals("EXPORT_INTERRUPTED", jdbc.queryForObject(
+                "SELECT error_code FROM sys_pre_defense_export WHERE task_id=91", String.class));
     }
 
     private static void createIsolatedSchema() {

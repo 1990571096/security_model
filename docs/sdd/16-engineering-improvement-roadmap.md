@@ -2,6 +2,8 @@
 
 更新时间：2026-11-13（R0 记录）
 
+开发执行入口（2026-11-13 补充）：下文 I1–I4 与 R0/R1/R2 实施记录保留各次历史口径；后续阶段范围、默认决策、实施顺序和必选验收统一参见 [17-agent-development-guide.md](17-agent-development-guide.md) 与 [20-stage-execution-and-acceptance.md](20-stage-execution-and-acceptance.md)。新任务书不构成代码已实现或业务库操作授权。
+
 ## 目标
 
 以可验证的后端业务能力提升项目质量，而非为简历堆叠未使用的技术名词。SDD 是实现状态的事实来源；README、部署说明和面试材料应与实际代码、配置和测试证据一致。
@@ -143,6 +145,14 @@ mvn -B -f migration-backend/pom.xml verify
 - 验证：Java **85 项单元测试 + 30 项 MySQL IT** 全绿（新增 `ExecutorArtifactPolicyTest` 3 项、`ExecutorArtifactRetentionJobTest` 4 项、`AttemptProcessRegistryTest` 6 项、恢复与隔离用例）；适配器 `python -m unittest` **11 项**全绿。**未跑真实 CUDA/LDD**。
 - 隔离：遗留进程无法确认退出时置 `blocked_at`，TTL 过期仍拒绝领取（`GPU_LEASE_BLOCKED`），由 60s 探测确认退出后解除；不影响正常释放路径。
 - 未实现：自动重试队列（D5）、真实 LDD 显存实测；保留期默认关闭，需按磁盘情况显式开启。
+
+### R2 收口切片实施记录（2026-11-13）
+
+- 进程协议：`process.json` 改为 `schema_version=2`，`starting`/`running` 均原子写；无记录、旧协议、损坏、`starting` 无 pid、启动时间缺失一律 `UNKNOWN`，不再当作未启动。
+- 整树回收：新增 `ExecutorProcessGuard`，同时检查 root、`descendants()`、`python-children.json`；执行器 `finally`、训练超时/取消/中断、导出超时只有确认整树退出才释放租约，否则 `markBlocked("EXECUTOR_TREE_ALIVE")`。
+- 启动门与可见性：恢复完成前 `SCHEDULING_NOT_READY`；`executor-status` 返回 `gpuSlot` 的 blocked/leased/idle/unknown、原因、隔离时间、最近探测时间与指引；前端任务中心展示。
+- 边界：保留期删除前要求 `toRealPath()` 位于 workspace 且等于自身归一化路径；日志截断明确为“归档上限”，不限制运行期增长。
+- 验证：**104 项单元测试（0 跳过）+ 33 项 MySQL IT**，`OrphanProcessCrashDrillTest` 独立 JVM 演练通过；前端 `npm run build` 通过；未跑真实 LDD。
 
 ## 文档同步规则
 

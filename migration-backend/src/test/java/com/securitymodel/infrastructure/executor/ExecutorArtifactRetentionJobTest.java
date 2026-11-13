@@ -68,6 +68,67 @@ class ExecutorArtifactRetentionJobTest {
     }
 
     @Test
+    void rejectsAComputedPathThatEscapesTheWorkspace(@TempDir Path workspace, @TempDir Path outside)
+            throws Exception {
+        ExecutorArtifactRetentionJob job = new ExecutorArtifactRetentionJob(
+                mock(PreDefenseTaskMapper.class), workspace.toString(), 3);
+
+        org.junit.jupiter.api.Assertions.assertNull(
+                job.resolveSafe(outside.resolve("attempt-1")),
+                "an outside directory must never be accepted for deletion");
+        org.junit.jupiter.api.Assertions.assertNull(
+                job.resolveSafe(workspace.resolve("..").resolve("escape").resolve("attempt-1")));
+        assertTrue(job.resolveSafe(Files.createDirectories(workspace.resolve("pre_defense-12")
+                .resolve("attempt-1"))) != null, "an in-workspace attempt is accepted");
+    }
+
+    @Test
+    void refusesToDeleteThroughASymlinkOrJunction(@TempDir Path workspace, @TempDir Path outside) throws Exception {
+        Path outsideAttempt = Files.createDirectories(outside.resolve("attempt-1"));
+        Files.writeString(outsideAttempt.resolve("stdout.log"), "must stay\n");
+        Path link = workspace.resolve("pre_defense-10");
+        boolean linked = false;
+        String linkError = "";
+        try {
+            Files.createSymbolicLink(link, outside);
+            linked = true;
+        } catch (UnsupportedOperationException | java.nio.file.FileSystemException exception) {
+            linkError = exception.toString();
+            try {
+                Files.deleteIfExists(link);
+            } catch (java.io.IOException ignored) {
+                // best effort; mklink below reports the real problem
+            }
+            try {
+                java.nio.file.Path cmd = java.nio.file.Path.of(
+                        System.getenv().getOrDefault("SystemRoot", "C:\\Windows"), "System32", "cmd.exe");
+                Process junction = new ProcessBuilder(cmd.toString(), "/c", "mklink", "/J",
+                        link.toString(), outside.toString()).redirectErrorStream(true).start();
+                String output = new String(junction.getInputStream().readAllBytes(),
+                        java.nio.charset.StandardCharsets.UTF_8);
+                linkError = linkError + " | junction exit=" + junction.waitFor() + " output=" + output;
+                linked = junction.exitValue() == 0;
+            } catch (java.io.IOException ignored) {
+                linked = false;
+            }
+        }
+        org.junit.jupiter.api.Assumptions.assumeTrue(linked,
+                "symlink/junction creation is not permitted on this host: " + linkError);
+        Files.setLastModifiedTime(outsideAttempt, FileTime.from(Instant.now().minus(10, ChronoUnit.DAYS)));
+
+        PreDefenseTaskMapper mapper = mock(PreDefenseTaskMapper.class);
+        PreDefenseTask task = new PreDefenseTask();
+        task.setTaskId(10L);
+        task.setStatus("success");
+        task.setCurrentAttempt(2);
+        when(mapper.selectById(10L)).thenReturn(task);
+
+        new ExecutorArtifactRetentionJob(mapper, workspace.toString(), 1).cleanup();
+
+        assertTrue(Files.exists(outsideAttempt), "a link must never lead deletion outside the workspace");
+    }
+
+    @Test
     void skipsUnknownTaskDirectories(@TempDir Path workspace) throws Exception {
         Path stray = Files.createDirectories(workspace.resolve("not-a-task").resolve("attempt-1"));
         PreDefenseTaskMapper mapper = mock(PreDefenseTaskMapper.class);

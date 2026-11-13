@@ -19,14 +19,20 @@ public class TaskProgressController {
     private final TaskProgressQueryService taskProgressQueryService;
     private final ThreadPoolTaskExecutor taskExecutor;
     private final TaskExecutionQuotaPolicy quotaPolicy;
+    private final com.securitymodel.application.task.GpuLeaseService gpuLeaseService;
+    private final com.securitymodel.application.task.GpuLeaseBlockedProbe blockedProbe;
 
     public TaskProgressController(
             TaskProgressQueryService taskProgressQueryService,
             @Qualifier("taskAsync") ThreadPoolTaskExecutor taskExecutor,
-            TaskExecutionQuotaPolicy quotaPolicy) {
+            TaskExecutionQuotaPolicy quotaPolicy,
+            com.securitymodel.application.task.GpuLeaseService gpuLeaseService,
+            com.securitymodel.application.task.GpuLeaseBlockedProbe blockedProbe) {
         this.taskProgressQueryService = taskProgressQueryService;
         this.taskExecutor = taskExecutor;
         this.quotaPolicy = quotaPolicy;
+        this.gpuLeaseService = gpuLeaseService;
+        this.blockedProbe = blockedProbe;
     }
 
     @GetMapping
@@ -89,7 +95,33 @@ public class TaskProgressController {
         status.put("quota", quotaPolicy.status());
         status.put("runningTaskCount", status.get("activeCount"));
         status.put("maxRunningTasks", quotaPolicy.status().get("maxRunningTasks"));
+        status.put("gpuSlot", gpuSlotStatus());
         return status;
+    }
+
+    /** Global slot state only: no task ids, paths, or other users' details. */
+    private Map<String, Object> gpuSlotStatus() {
+        Map<String, Object> slot = new LinkedHashMap<>();
+        slot.put("slotId", gpuLeaseService.getSlotId());
+        try {
+            var blocked = gpuLeaseService.findBlocked();
+            if (!blocked.isEmpty()) {
+                var lease = blocked.get(0);
+                slot.put("state", "blocked");
+                slot.put("blockedReason", lease.getBlockedReason());
+                slot.put("blockedAt", lease.getBlockedAt());
+                slot.put("lastProbeAt", blockedProbe.getLastProbeAt());
+                slot.put("guidance", "确认遗留 Python 进程已退出后由管理员显式解除隔离；TTL 过期不会自动解除");
+                return slot;
+            }
+            var active = gpuLeaseService.findActive();
+            slot.put("state", active.isEmpty() ? "idle" : "leased");
+            slot.put("leasedUntil", active.isEmpty() ? null : active.get(0).getExpiresAt());
+        } catch (RuntimeException exception) {
+            slot.put("state", "unknown");
+            slot.put("message", "GPU 槽位状态暂不可读");
+        }
+        return slot;
     }
 
     @PostMapping("/refresh")

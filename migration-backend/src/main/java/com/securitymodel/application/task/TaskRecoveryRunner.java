@@ -19,12 +19,15 @@ public class TaskRecoveryRunner {
     private final PreDefenseTaskMapper taskMapper;
     private final GpuLeaseService gpuLeaseService;
     private final com.securitymodel.infrastructure.executor.AttemptProcessRegistry processRegistry;
+    private final SchedulingReadinessGate readinessGate;
 
     public TaskRecoveryRunner(PreDefenseTaskMapper taskMapper, GpuLeaseService gpuLeaseService,
-                              com.securitymodel.infrastructure.executor.AttemptProcessRegistry processRegistry) {
+                              com.securitymodel.infrastructure.executor.AttemptProcessRegistry processRegistry,
+                              SchedulingReadinessGate readinessGate) {
         this.taskMapper = taskMapper;
         this.gpuLeaseService = gpuLeaseService;
         this.processRegistry = processRegistry;
+        this.readinessGate = readinessGate;
     }
 
     @EventListener(ApplicationReadyEvent.class)
@@ -69,5 +72,7 @@ public class TaskRecoveryRunner {
         if (!running.isEmpty()) {
             log.info("任务恢复扫描完成: scanned={}, recovered={}", running.size(), recovered);
         }
+        // Only now may a new start claim the single GPU slot.
+        readinessGate.markReady();
     }
 }

@@ -170,6 +170,39 @@ class GpuLeaseMySqlIT {
     }
 
     @Test
+    void transactionRollbackLeavesNoGhostLease() {
+        new org.springframework.transaction.support.TransactionTemplate(
+                new org.springframework.jdbc.datasource.DataSourceTransactionManager(jdbc.getDataSource()))
+                .execute(status -> {
+                    leaseService.acquire(71L, "run-71", 1);
+                    status.setRollbackOnly();
+                    return null;
+                });
+
+        GpuLease afterRollback = leaseMapper.findBySlot(SLOT);
+        assertEquals(null, afterRollback == null ? null : afterRollback.getLeaseToken());
+
+        GpuLease retried = leaseService.acquire(72L, "run-72", 1);
+        assertEquals(1L, retried.getFencingToken(), "a rolled-back acquire must not consume a fence");
+        assertEquals(72L, retried.getTaskId());
+    }
+
+    @Test
+    void quarantineSurvivesAServiceRecreation() {
+        leaseService.acquire(81L, "run-81", 1);
+        leaseService.markBlocked(81L, "run-81", "ORPHANED_PROCESS_UNKNOWN");
+        expireNow();
+
+        GpuLeaseService restarted = new GpuLeaseService(leaseMapper, SLOT, 300);
+        TaskCommandException exception = assertThrows(TaskCommandException.class,
+                () -> restarted.acquire(82L, "run-82", 1));
+        assertTrue(exception.getMessage().contains("GPU_LEASE_BLOCKED"));
+
+        restarted.releaseByRun(81L, "run-81");
+        assertEquals(82L, restarted.acquire(82L, "run-82", 1).getTaskId());
+    }
+
+    @Test
     void quarantinedSlotCannotBeReclaimedAfterExpiry() {
         GpuLease lease = leaseService.acquire(61L, "run-61", 1);
         leaseService.markBlocked(61L, "run-61", "ORPHANED_PROCESS_UNKNOWN");

@@ -10,9 +10,11 @@ import org.springframework.stereotype.Component;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -22,10 +24,11 @@ import java.util.Optional;
  * Records the executor child process (and its spawned children) next to the attempt artifacts,
  * and decides whether a restart may safely release the GPU slot.
  *
- * <p>Invariant: {@link #prepare(Path)} is written <em>before</em> the child starts and the launch
- * aborts if it cannot be written. A missing record therefore proves the child never started;
- * anything recorded but not positively matched is {@link ReapOutcome#UNKNOWN} and must keep the
- * slot quarantined.</p>
+ * <p>Invariant: {@link #prepare(Path)} is written <em>before</em> the child starts, with
+ * {@code schema_version=2}, and the launch aborts if it cannot be written. A missing or
+ * unreadable record does <strong>not</strong> prove that the child never started (the file may
+ * have been deleted, or an older version never wrote one), so it is {@link ReapOutcome#UNKNOWN}
+ * and keeps the slot quarantined. Only a positive identity match can kill.</p>
  */
 @Component
 public class AttemptProcessRegistry {
@@ -33,6 +36,7 @@ public class AttemptProcessRegistry {
     private static final Logger log = LoggerFactory.getLogger(AttemptProcessRegistry.class);
     private static final String RECORD = "process.json";
     private static final String CHILDREN = "python-children.json";
+    private static final int SCHEMA_VERSION = 2;
 
     private final Path workspace;
     private final ObjectMapper objectMapper;
@@ -41,39 +45,46 @@ public class AttemptProcessRegistry {
             ObjectMapper objectMapper,
             @Value("${security-model.executor.workspace:}") String workspace) {
         this.objectMapper = objectMapper;
-        this.workspace = Paths.get(workspace).toAbsolutePath().normalize();
+        String configured = workspace == null ? "" : workspace.trim();
+        // A blank workspace must never fall back to the current directory (the repository root).
+        this.workspace = configured.isEmpty() ? null : Paths.get(configured).toAbsolutePath().normalize();
     }
 
     /** Write the pre-start marker; throws so the caller does not start a process it cannot trace. */
     public void prepare(Path taskDir) throws IOException {
+        if (taskDir == null) {
+            throw new IOException("未提供 attempt 目录，无法记录执行进程");
+        }
+        Path target = requireInsideWorkspace(taskDir.resolve(RECORD));
         ObjectNode node = objectMapper.createObjectNode();
+        node.put("schema_version", SCHEMA_VERSION);
         node.put("state", "starting");
         node.put("recorded_at", Instant.now().toString());
-        Files.writeString(taskDir.resolve(RECORD),
-                objectMapper.writeValueAsString(node), StandardCharsets.UTF_8);
+        writeAtomically(target, objectMapper.writeValueAsString(node));
     }
 
-    public void record(Path taskDir, Process process) {
+    /**
+     * Rewrites the marker as running. Returns normally only after the record is durable;
+     * the caller must terminate the child when this throws.
+     */
+    public void record(Path taskDir, Process process) throws IOException {
         if (taskDir == null || process == null) {
-            return;
+            throw new IOException("缺少进程或 attempt 目录，无法记录执行进程");
         }
-        try {
-            ObjectNode node = objectMapper.createObjectNode();
-            node.put("state", "running");
-            node.put("pid", process.pid());
-            node.put("command", process.info().command().orElse(""));
-            node.put("started_at", process.info().startInstant().map(Instant::toString).orElse(null));
-            node.put("recorded_at", Instant.now().toString());
-            Files.writeString(taskDir.resolve(RECORD),
-                    objectMapper.writeValueAsString(node), StandardCharsets.UTF_8);
-        } catch (IOException | RuntimeException exception) {
-            log.warn("Could not record executor process: dir={}, reason={}", taskDir, exception.getMessage());
-        }
+        Path target = requireInsideWorkspace(taskDir.resolve(RECORD));
+        ObjectNode node = objectMapper.createObjectNode();
+        node.put("schema_version", SCHEMA_VERSION);
+        node.put("state", "running");
+        node.put("pid", process.pid());
+        node.put("command", process.info().command().orElse(""));
+        node.put("started_at", process.info().startInstant().map(Instant::toString).orElse(null));
+        node.put("recorded_at", Instant.now().toString());
+        writeAtomically(target, objectMapper.writeValueAsString(node));
     }
 
-    /** Outcome of the pre-recovery probe. Only EXITED, REAPED and NOT_STARTED allow releasing. */
+    /** Outcome of the pre-recovery probe. Only EXITED and REAPED allow releasing the slot. */
     public enum ReapOutcome {
-        /** No pre-start record: the child never started (prepare precedes start). */
+        /** A versioned record positively proves the launch never began (R3 intent), not used in R2. */
         NOT_STARTED,
         /** Process identity positively checked and confirmed gone. */
         EXITED,
@@ -81,17 +92,18 @@ public class AttemptProcessRegistry {
         REAPED,
         /** Live process could not be killed; the slot must stay quarantined. */
         KILL_FAILED,
-        /** Identity or children cannot be verified; do not kill, do not release. */
+        /** Record missing/unreadable/legacy or identity/children cannot be verified; never kill. */
         UNKNOWN
     }
 
     public ReapOutcome reapIfOrphaned(Long taskId, Integer attempt) {
         Path recordFile = locate(taskId, attempt, RECORD);
         if (recordFile == null) {
-            return ReapOutcome.NOT_STARTED;
+            // The record may have been deleted, or an older version never wrote one.
+            return ReapOutcome.UNKNOWN;
         }
         JsonNode record = readJson(recordFile);
-        if (record == null) {
+        if (record == null || record.path("schema_version").asInt(-1) != SCHEMA_VERSION) {
             return ReapOutcome.UNKNOWN;
         }
         long pid = record.path("pid").asLong(-1);
@@ -180,8 +192,35 @@ public class AttemptProcessRegistry {
         }
     }
 
+    private void writeAtomically(Path target, String content) throws IOException {
+        Files.createDirectories(target.getParent());
+        Path temp = Files.createTempFile(target.getParent(), ".process-", ".tmp");
+        try {
+            Files.writeString(temp, content, StandardCharsets.UTF_8);
+            try {
+                Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING,
+                        StandardCopyOption.ATOMIC_MOVE);
+            } catch (AtomicMoveNotSupportedException exception) {
+                Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING);
+            }
+        } finally {
+            Files.deleteIfExists(temp);
+        }
+    }
+
+    private Path requireInsideWorkspace(Path file) throws IOException {
+        if (workspace == null) {
+            throw new IOException("未配置 executor workspace，拒绝在未知目录记录进程");
+        }
+        Path normalized = file.toAbsolutePath().normalize();
+        if (!normalized.startsWith(workspace)) {
+            throw new IOException("attempt 目录不在受控 workspace 内");
+        }
+        return normalized;
+    }
+
     private Path locate(Long taskId, Integer attempt, String fileName) {
-        if (taskId == null || attempt == null || workspace.toString().isEmpty()) {
+        if (taskId == null || attempt == null || workspace == null) {
             return null;
         }
         Path file = workspace.resolve("pre_defense-" + taskId)

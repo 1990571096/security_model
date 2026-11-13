@@ -18,15 +18,22 @@ public class GpuLeaseBlockedProbe {
 
     private final GpuLeaseService leaseService;
     private final AttemptProcessRegistry processRegistry;
+    private volatile java.time.LocalDateTime lastProbeAt;
 
     public GpuLeaseBlockedProbe(GpuLeaseService leaseService, AttemptProcessRegistry processRegistry) {
         this.leaseService = leaseService;
         this.processRegistry = processRegistry;
     }
 
+    /** Last time the probe actually ran; surfaced to administrators, never a task detail. */
+    public java.time.LocalDateTime getLastProbeAt() {
+        return lastProbeAt;
+    }
+
     @Scheduled(fixedDelayString = "${security-model.executor.gpu.blocked-probe-interval-ms:60000}",
             initialDelayString = "${security-model.executor.gpu.blocked-probe-initial-delay-ms:30000}")
     public void probe() {
+        lastProbeAt = java.time.LocalDateTime.now();
         java.util.List<GpuLease> blocked;
         try {
             blocked = leaseService.findBlocked();

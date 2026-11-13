@@ -15,16 +15,27 @@ class AttemptProcessRegistryTest {
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @Test
-    void missingRecordProvesTheChildNeverStarted(@TempDir Path workspace) {
+    void missingRecordIsUnknownBecauseItCannotProveTheChildNeverStarted(@TempDir Path workspace) {
         AttemptProcessRegistry registry = new AttemptProcessRegistry(objectMapper, workspace.toString());
 
-        assertEquals(AttemptProcessRegistry.ReapOutcome.NOT_STARTED, registry.reapIfOrphaned(1L, 1));
+        assertEquals(AttemptProcessRegistry.ReapOutcome.UNKNOWN, registry.reapIfOrphaned(1L, 1));
+    }
+
+    @Test
+    void legacyRecordWithoutSchemaVersionIsUnknown(@TempDir Path workspace) throws Exception {
+        Path attemptDir = Files.createDirectories(workspace.resolve("pre_defense-1").resolve("attempt-1"));
+        Files.writeString(attemptDir.resolve("process.json"), "{\"state\":\"running\",\"pid\":12345}",
+                StandardCharsets.UTF_8);
+        AttemptProcessRegistry registry = new AttemptProcessRegistry(objectMapper, workspace.toString());
+
+        assertEquals(AttemptProcessRegistry.ReapOutcome.UNKNOWN, registry.reapIfOrphaned(1L, 1));
     }
 
     @Test
     void startingMarkerWithoutPidIsUnknown(@TempDir Path workspace) throws Exception {
         Path attemptDir = Files.createDirectories(workspace.resolve("pre_defense-2").resolve("attempt-1"));
-        Files.writeString(attemptDir.resolve("process.json"), "{\"state\":\"starting\"}", StandardCharsets.UTF_8);
+        Files.writeString(attemptDir.resolve("process.json"),
+                "{\"schema_version\":2,\"state\":\"starting\"}", StandardCharsets.UTF_8);
         AttemptProcessRegistry registry = new AttemptProcessRegistry(objectMapper, workspace.toString());
 
         assertEquals(AttemptProcessRegistry.ReapOutcome.UNKNOWN, registry.reapIfOrphaned(2L, 1));
@@ -49,7 +60,8 @@ class AttemptProcessRegistryTest {
                 .redirectErrorStream(true)
                 .start();
         Files.writeString(attemptDir.resolve("process.json"),
-                "{\"state\":\"running\",\"pid\":" + process.pid() + "}", StandardCharsets.UTF_8);
+                "{\"schema_version\":2,\"state\":\"running\",\"pid\":" + process.pid() + "}",
+                StandardCharsets.UTF_8);
         AttemptProcessRegistry registry = new AttemptProcessRegistry(objectMapper, workspace.toString());
 
         assertEquals(AttemptProcessRegistry.ReapOutcome.UNKNOWN, registry.reapIfOrphaned(4L, 1));
@@ -87,5 +99,46 @@ class AttemptProcessRegistryTest {
         assertEquals(AttemptProcessRegistry.ReapOutcome.UNKNOWN, registry.reapIfOrphaned(6L, 1));
         assertEquals(true, child.isAlive(), "a parent exit alone does not release the slot");
         child.destroyForcibly();
+    }
+
+    @Test
+    void reusedPidIsNotKilledAndIsReportedExited(@TempDir Path workspace) throws Exception {
+        Path attemptDir = Files.createDirectories(workspace.resolve("pre_defense-7").resolve("attempt-1"));
+        Process unrelated = new ProcessBuilder("ping", "-n", "20", "127.0.0.1")
+                .redirectErrorStream(true)
+                .start();
+        Files.writeString(attemptDir.resolve("process.json"),
+                "{\"schema_version\":2,\"state\":\"running\",\"pid\":" + unrelated.pid()
+                        + ",\"started_at\":\"2000-01-01T00:00:00Z\"}", StandardCharsets.UTF_8);
+        AttemptProcessRegistry registry = new AttemptProcessRegistry(objectMapper, workspace.toString());
+
+        assertEquals(AttemptProcessRegistry.ReapOutcome.EXITED, registry.reapIfOrphaned(7L, 1));
+        assertEquals(true, unrelated.isAlive(), "a reused pid must never be killed");
+        unrelated.destroyForcibly();
+    }
+
+    @Test
+    void corruptedRecordIsUnknown(@TempDir Path workspace) throws Exception {
+        Path attemptDir = Files.createDirectories(workspace.resolve("pre_defense-8").resolve("attempt-1"));
+        Files.writeString(attemptDir.resolve("process.json"), "{not-json", StandardCharsets.UTF_8);
+        AttemptProcessRegistry registry = new AttemptProcessRegistry(objectMapper, workspace.toString());
+
+        assertEquals(AttemptProcessRegistry.ReapOutcome.UNKNOWN, registry.reapIfOrphaned(8L, 1));
+    }
+
+    @Test
+    void refusesToPrepareOutsideTheConfiguredWorkspace(@TempDir Path workspace, @TempDir Path outside)
+            throws Exception {
+        AttemptProcessRegistry registry = new AttemptProcessRegistry(objectMapper, workspace.toString());
+        Path foreignDir = Files.createDirectories(outside.resolve("pre_defense-11").resolve("attempt-1"));
+
+        org.junit.jupiter.api.Assertions.assertThrows(java.io.IOException.class,
+                () -> registry.prepare(foreignDir));
+    }
+
+    @Test
+    void blankWorkspaceNeverFallsBackToTheRepositoryRoot() {
+        AttemptProcessRegistry registry = new AttemptProcessRegistry(objectMapper, "");
+        assertEquals(AttemptProcessRegistry.ReapOutcome.UNKNOWN, registry.reapIfOrphaned(9L, 1));
     }
 }

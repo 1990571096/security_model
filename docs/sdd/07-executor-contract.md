@@ -249,9 +249,11 @@ python algorithm_entry.py --export-clean-subset \
 
 The Java side (`CleanSubsetExportExecutor`) writes `<artifactRoot>/clean-subset-exports/`, redirects
 stdout+stderr to `*.export.log`, then renames `.part` → final only when the process exited 0 and
-the `.part` ZIP is non-empty. Timeouts destroy the process tree (descendants first, then the
-direct process). `ExportRecoveryRunner` converges rows left `pending`/`running` after a restart
-to `EXPORT_NOT_STARTED` / `EXPORT_INTERRUPTED`; it never marks a half-written ZIP as success.
+the `.part` ZIP is non-empty. On timeout `ExecutorProcessGuard` kills and confirms the whole tree
+(root, `descendants()`, recorded children); if any process cannot be confirmed gone the export fails
+with an explicit "timeout and child not confirmed exited" reason instead of reporting success.
+`ExportRecoveryRunner` converges rows left `pending`/`running` after a restart to
+`EXPORT_NOT_STARTED` / `EXPORT_INTERRUPTED`; it never marks a half-written ZIP as success.
 
 Selection files must resolve inside the task artifact root and match `selected_indices_(\d+).npy`;
 the export is idempotent per `(task_id, isolation_ratio)` via a unique key.
@@ -264,35 +266,50 @@ artifact boundary: a retry increments `attempt` and never overwrites an earlier 
 After the child process ends (success, failure or cancel), `ExecutorArtifactPolicy`:
 
 - trims `stdout.log` / `stderr.log` to the last `security-model.executor.artifacts.max-log-bytes`
-  (default 20 MiB) and prefixes a truncation marker with the original byte count;
+  (default 20 MiB) and prefixes a truncation marker with the original byte count. This is an
+  **archive-size bound applied after the process ends**, not a runtime disk-growth limit;
 - writes `manifest.json` listing every top-level file with `bytes` and `sha256`;
 - never changes the task outcome if trimming or hashing fails (warn only).
 
 `ExecutorArtifactRetentionJob` deletes an attempt directory only when all hold: retention is
 enabled (`retention-days > 0`), the task exists with status `success|failed|canceled`, the attempt
-is not `current_attempt`, the directory is older than the retention window, and the path stays
-inside the configured workspace. All other directories are left untouched.
+is not `current_attempt`, the directory is older than the retention window, and `toRealPath()` of
+the candidate is inside `workspace.toRealPath()` and equals its own absolute normalized path (so
+symlinks, junctions and `..` escapes are refused). All other directories are left untouched.
 
-The executor writes `process.json` **before** starting the child (`state: starting`) and rewrites it
-with `pid`, `command` and `started_at` after `ProcessBuilder.start()`; if the pre-start file cannot
-be written the launch is refused with `PROCESS_RECORD_FAILED`. The adapter records its spawned
-training pids in `python-children.json` and removes the file when training ends.
+The executor writes `process.json` **before** starting the child (`schema_version: 2`,
+`state: starting`) and rewrites it with `pid`, `command` and `started_at` after
+`ProcessBuilder.start()`; both writes use a temporary file plus `ATOMIC_MOVE` (plain move fallback).
+If the pre-start file cannot be written the launch is refused with `PROCESS_RECORD_FAILED`; if the
+post-start record cannot be written the executor kills the tree and fails the attempt. The adapter
+records its spawned training pids in `python-children.json` and removes the file when training ends.
 
 On restart, recovery probes that record and kills only when the recorded `startInstant` matches
 the live process, then waits for the whole known tree (descendants captured before the kill plus
-recorded children). Outcomes:
+recorded children). A missing record, a non-v2 record, corrupted JSON, a `starting` record without
+pid, or a missing/unreadable start time is `UNKNOWN` — it is **not** proof that the child never
+started. Outcomes:
 
 | Outcome | Meaning | GPU slot |
 | --- | --- | --- |
-| `NOT_STARTED` | no pre-start record; child never started | release |
+| `NOT_STARTED` | only when a future versioned protocol positively proves no submission; R2 never returns it | release |
 | `EXITED` | identity matched and tree confirmed gone | release |
 | `REAPED` | matching tree killed and confirmed gone | release |
 | `KILL_FAILED` | tree still alive after kill | quarantine (`blocked_at`) |
-| `UNKNOWN` | identity/children cannot be verified (missing start time, live recorded child, unreadable record) | quarantine, never kill |
+| `UNKNOWN` | missing/legacy/corrupt record, missing start time, unreadable identity, live recorded child | quarantine, never kill |
+
+The executor's `finally` releases the lease only after `ExecutorProcessGuard.ensureGone` confirms
+root, descendants and recorded children are gone; otherwise it calls
+`markBlocked("EXECUTOR_TREE_ALIVE")`. Interrupt, training timeout, cancel and export timeout follow
+the same rule. Startup recovery must finish before new launches: `SchedulingReadinessGate` makes
+`launchTask` return `SCHEDULING_NOT_READY` until `TaskRecoveryRunner` completes; read-only APIs are
+not blocked.
 
 A quarantined slot rejects acquisition even after `expires_at` passed: TTL proves a lost heartbeat,
 not an idle GPU. `GPU_LEASE_BLOCKED` is reported separately from `GPU_BUSY`. `GpuLeaseBlockedProbe`
-re-probes quarantined slots every 60 s and releases only on `NOT_STARTED`/`EXITED`/`REAPED`.
+re-probes quarantined slots every 60 s and releases only on `NOT_STARTED`/`EXITED`/`REAPED`. The
+executor-status API exposes `gpuSlot` (`blocked/leased/idle/unknown`, reason, blocked time, last
+probe, guidance) without task ids or filesystem paths.
 
 
 

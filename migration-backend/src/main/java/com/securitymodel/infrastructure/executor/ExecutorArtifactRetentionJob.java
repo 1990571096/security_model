@@ -108,10 +108,12 @@ public class ExecutorArtifactRetentionJob {
     }
 
     private boolean deleteTree(Path attemptDir) {
-        if (!attemptDir.toAbsolutePath().normalize().startsWith(workspace)) {
+        Path resolved = resolveSafe(attemptDir);
+        if (resolved == null) {
+            log.warn("Refuse to delete a symlink/junction or out-of-workspace artifact: dir={}", attemptDir);
             return false;
         }
-        try (Stream<Path> stream = Files.walk(attemptDir)) {
+        try (Stream<Path> stream = Files.walk(resolved)) {
             stream.sorted(Comparator.reverseOrder()).forEach(path -> {
                 try {
                     Files.deleteIfExists(path);
@@ -125,7 +127,27 @@ public class ExecutorArtifactRetentionJob {
                     attemptDir, exception.getMessage());
             return false;
         }
-        return !Files.exists(attemptDir);
+        return !Files.exists(resolved);
+    }
+
+    /**
+     * Only a real (non-link) directory whose resolved path stays inside the resolved workspace
+     * may be deleted. Comparing normalized strings alone would follow a junction out of bounds.
+     */
+    Path resolveSafe(Path dir) {
+        try {
+            Path real = dir.toRealPath();
+            Path workspaceReal = workspace.toRealPath();
+            if (!real.startsWith(workspaceReal)) {
+                return null;
+            }
+            if (!real.equals(dir.toAbsolutePath().normalize())) {
+                return null;
+            }
+            return real;
+        } catch (IOException exception) {
+            return null;
+        }
     }
 
     private Long parseTaskId(String name) {

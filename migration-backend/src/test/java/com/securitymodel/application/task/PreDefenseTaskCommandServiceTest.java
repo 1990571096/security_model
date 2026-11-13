@@ -40,6 +40,7 @@ class PreDefenseTaskCommandServiceTest {
     private final GpuLeaseService gpuLeaseService = mock(GpuLeaseService.class);
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final ThreadPoolTaskExecutor taskExecutor = new ThreadPoolTaskExecutor();
+    private final SchedulingReadinessGate readinessGate = new SchedulingReadinessGate();
     private PreDefenseTaskCommandService commandService;
 
     @BeforeEach
@@ -65,7 +66,9 @@ class PreDefenseTaskCommandServiceTest {
                 objectMapper,
                 operationAuditService,
                 currentUserService,
-                taskAccessGuard);
+                taskAccessGuard,
+                readinessGate);
+        readinessGate.markReady();
 
         when(taskMapper.selectList(any())).thenReturn(List.of());
         when(resourceQueryService.findDataset(1L)).thenReturn(dataset());
@@ -113,6 +116,21 @@ class PreDefenseTaskCommandServiceTest {
         assertEquals(2, attempts.get(1).path("attempt").asInt());
         assertNotEquals("previous-run", attempts.get(1).path("runId").asText());
         verify(defenseTaskExecutor).runPreDefense(any(DefenseTaskRequest.class));
+    }
+
+    @Test
+    void refusesToStartUntilStartupRecoveryIsReady() {
+        PreDefenseTask pending = task(33L, "pending", null);
+        when(taskAccessGuard.requireOwned(33L)).thenReturn(pending);
+        readinessGate.markNotReady();
+
+        var exception = org.junit.jupiter.api.Assertions.assertThrows(TaskCommandException.class,
+                () -> commandService.start(33L));
+
+        org.junit.jupiter.api.Assertions.assertTrue(
+                exception.getMessage().contains("SCHEDULING_NOT_READY"));
+        verify(gpuLeaseService, org.mockito.Mockito.never()).acquire(any(), any(), any());
+        verify(taskMapper, org.mockito.Mockito.never()).claimForExecution(any(), any(), any(), any(), any());
     }
 
     @Test

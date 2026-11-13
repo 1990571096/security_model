@@ -26,7 +26,11 @@
           <div><span>队列占用</span><strong>{{ executor.queueSize ?? 0 }} / {{ executor.queueCapacity ?? '-' }}</strong></div>
           <div><span>已完成</span><strong>{{ executor.completedTaskCount ?? 0 }}</strong></div>
           <div><span>运行配额</span><strong>{{ executor.runningTaskCount ?? 0 }} / {{ executor.maxRunningTasks ?? '-' }}</strong></div>
+          <div><span>GPU 槽位</span><strong>{{ gpuSlotLabel }}</strong></div>
         </div>
+        <el-alert v-if="gpuSlot.state === 'blocked'" type="warning" :closable="false" show-icon
+          :title="`GPU 槽位已隔离：${gpuSlot.blockedReason || '原因未记录'}`"
+          :description="`隔离开始：${formatDate(gpuSlot.blockedAt)}；最近探测：${formatDate(gpuSlot.lastProbeAt)}。${gpuSlot.guidance || 'TTL 过期不会自动解除。'}`" />
       </el-card>
       <el-card shadow="never">
         <template #header><strong>当前接入范围</strong></template>
@@ -146,6 +150,7 @@ const statusOptions = [{ label: '等待中', value: 'pending' }, { label: '运�
 const statItems = [{ key: 'totalCount', label: '全部任务', note: '当前安全防御任务总量' }, { key: 'runningCount', label: '运行中', note: '正在占用执行资源' }, { key: 'successCount', label: '已完成', note: '已产生实验结果' }, { key: 'failedCount', label: '失败', note: '支持原参数重试' }]
 const completionProgress = computed(() => { const total = Number(statistics.value.totalCount || 0); return total ? Math.round((Number(statistics.value.successCount || 0) / total) * 100) : 0 })
 const executorLabel = computed(() => executor.value.saturated ? '资源紧张' : executor.value.acceptingTasks === false ? '暂停接收' : '运行正常'); const executorTagType = computed(() => executor.value.saturated ? 'warning' : executor.value.acceptingTasks === false ? 'danger' : 'success')
+const gpuSlot = computed(() => executor.value.gpuSlot || {}); const gpuSlotLabel = computed(() => ({ blocked: '隔离中', leased: '占用中', idle: '空闲', unknown: '未知' })[gpuSlot.value.state] || '未知')
 const sampleStats = computed(() => report.value?.cleaningResult?.sample_stats || {}); const snapshotRows = computed(() => report.value?.executionSnapshot?.attempts || []); const isolationRatios = computed(() => report.value?.cleanDatasetDownload?.isolationRatios || [])
 const detailProgress = ref(null)
 const detailProgressValue = computed(() => safeProgress(detailProgress.value?.progress ?? selectedTask.value?.progress))

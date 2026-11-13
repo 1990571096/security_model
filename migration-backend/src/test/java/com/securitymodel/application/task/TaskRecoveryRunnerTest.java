@@ -19,8 +19,9 @@ class TaskRecoveryRunnerTest {
     private final PreDefenseTaskMapper taskMapper = mock(PreDefenseTaskMapper.class);
     private final GpuLeaseService gpuLeaseService = mock(GpuLeaseService.class);
     private final AttemptProcessRegistry processRegistry = mock(AttemptProcessRegistry.class);
+    private final SchedulingReadinessGate readinessGate = new SchedulingReadinessGate();
     private final TaskRecoveryRunner recoveryRunner =
-            new TaskRecoveryRunner(taskMapper, gpuLeaseService, processRegistry);
+            new TaskRecoveryRunner(taskMapper, gpuLeaseService, processRegistry, readinessGate);
 
     @Test
     void marksInterruptedRunningTaskAsRetryableFailure() {
@@ -28,7 +29,7 @@ class TaskRecoveryRunnerTest {
         when(taskMapper.selectList(any())).thenReturn(List.of(task));
         when(taskMapper.failOrphanedForRun(
                 eq(21L), eq("run-21"), any(), any())).thenReturn(1);
-        when(processRegistry.reapIfOrphaned(21L, null)).thenReturn(AttemptProcessRegistry.ReapOutcome.NOT_STARTED);
+        when(processRegistry.reapIfOrphaned(21L, null)).thenReturn(AttemptProcessRegistry.ReapOutcome.EXITED);
 
         recoveryRunner.recoverOrphanedTasks();
 

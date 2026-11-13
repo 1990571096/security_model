@@ -41,6 +41,7 @@ public class PreDefenseTaskCommandService {
     private final OperationAuditService operationAuditService;
     private final CurrentUserService currentUserService;
     private final TaskAccessGuard taskAccessGuard;
+    private final SchedulingReadinessGate readinessGate;
 
     public PreDefenseTaskCommandService(
             PreDefenseTaskMapper taskMapper,
@@ -54,7 +55,8 @@ public class PreDefenseTaskCommandService {
             ObjectMapper objectMapper,
             OperationAuditService operationAuditService,
             CurrentUserService currentUserService,
-            TaskAccessGuard taskAccessGuard) {
+            TaskAccessGuard taskAccessGuard,
+            SchedulingReadinessGate readinessGate) {
         this.taskMapper = taskMapper;
         this.resourceQueryService = resourceQueryService;
         this.defenseTaskExecutor = defenseTaskExecutor;
@@ -67,6 +69,7 @@ public class PreDefenseTaskCommandService {
         this.operationAuditService = operationAuditService;
         this.currentUserService = currentUserService;
         this.taskAccessGuard = taskAccessGuard;
+        this.readinessGate = readinessGate;
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -263,6 +266,9 @@ public class PreDefenseTaskCommandService {
     }
 
     private void launchTask(PreDefenseTask task) {
+        if (!readinessGate.isReady()) {
+            throw new TaskCommandException("SCHEDULING_NOT_READY: 启动恢复尚未完成，暂不接受新的执行请求");
+        }
         validateTaskForLaunch(task);
         int attempt = nextAttempt(task.getExecutionSnapshot());
         String runId = UUID.randomUUID().toString();

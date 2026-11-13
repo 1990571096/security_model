@@ -38,6 +38,7 @@ public class PythonLddTaskExecutor implements DefenseTaskExecutor {
     private final com.securitymodel.application.task.GpuLeaseService gpuLeaseService;
     private final ExecutorArtifactPolicy artifactPolicy;
     private final AttemptProcessRegistry processRegistry;
+    private final ExecutorProcessGuard processGuard;
     private final String pythonExecutable;
     private final String pythonScript;
     private final long timeoutSeconds;
@@ -51,6 +52,7 @@ public class PythonLddTaskExecutor implements DefenseTaskExecutor {
             com.securitymodel.application.task.GpuLeaseService gpuLeaseService,
             ExecutorArtifactPolicy artifactPolicy,
             AttemptProcessRegistry processRegistry,
+            ExecutorProcessGuard processGuard,
             @Value("${security-model.executor.python.executable:python}") String pythonExecutable,
             @Value("${security-model.executor.python.script:}") String pythonScript,
             @Value("${security-model.executor.python.timeout-seconds:3600}") long timeoutSeconds) {
@@ -60,6 +62,7 @@ public class PythonLddTaskExecutor implements DefenseTaskExecutor {
         this.gpuLeaseService = gpuLeaseService;
         this.artifactPolicy = artifactPolicy;
         this.processRegistry = processRegistry;
+        this.processGuard = processGuard;
         this.pythonExecutable = pythonExecutable;
         this.pythonScript = pythonScript;
         this.timeoutSeconds = timeoutSeconds;
@@ -94,11 +97,21 @@ public class PythonLddTaskExecutor implements DefenseTaskExecutor {
             }
         } finally {
             canceledRuns.remove(request.getRunId());
+            Process process = activeProcesses.remove(request.getRunId());
+            Path taskDir = context == null ? null : context.taskDir();
+            // Never release the slot while any known executor process may still be alive.
+            boolean treeGone = processGuard.ensureGone(process, taskDir, 3000, true);
             if (context != null) {
                 artifactPolicy.finalizeAttempt(context.taskDir());
             }
-            // The lease is held for the whole process lifetime, including cancel unwinding.
-            gpuLeaseService.releaseQuietly(request.getGpuLeaseToken());
+            if (treeGone) {
+                gpuLeaseService.releaseQuietly(request.getGpuLeaseToken());
+            } else {
+                gpuLeaseService.markBlocked(request.getTaskId(), request.getRunId(),
+                        "EXECUTOR_TREE_ALIVE");
+                log.error("执行进程树未确认退出，GPU 槽位已隔离: taskId={}, runId={}",
+                        request.getTaskId(), request.getRunId());
+            }
         }
     }
 
@@ -148,8 +161,18 @@ public class PythonLddTaskExecutor implements DefenseTaskExecutor {
             throw new IllegalStateException("PROCESS_RECORD_FAILED: 无法记录执行进程，已拒绝启动", exception);
         }
         Process process = builder.start();
-        processRegistry.record(context.taskDir, process);
         activeProcesses.put(request.getRunId(), process);
+        try {
+            processRegistry.record(context.taskDir, process);
+        } catch (IOException | RuntimeException exception) {
+            // The child is already running but untraceable. Kill it before reporting failure.
+            boolean gone = processGuard.ensureGone(process, context.taskDir, 3000, true);
+            if (!gone) {
+                gpuLeaseService.markBlocked(request.getTaskId(), request.getRunId(),
+                        "EXECUTOR_TREE_ALIVE");
+            }
+            throw new IllegalStateException("PROCESS_RECORD_FAILED: 无法记录执行进程，已终止本次执行", exception);
+        }
         try {
             PythonProcessWaiter.Outcome outcome = new PythonProcessWaiter()
                     .waitFor(process, timeoutSeconds, () -> isCanceled(request),
@@ -171,8 +194,9 @@ public class PythonLddTaskExecutor implements DefenseTaskExecutor {
                 throw new IllegalStateException("RESULT_MISSING: 未生成 result.json");
             }
             return result;
-        } finally {
-            activeProcesses.remove(request.getRunId(), process);
+        } catch (InterruptedException exception) {
+            processGuard.ensureGone(process, context.taskDir, 3000, true);
+            throw exception;
         }
     }
 

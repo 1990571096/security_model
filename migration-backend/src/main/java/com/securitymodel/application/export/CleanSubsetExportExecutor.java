@@ -18,6 +18,7 @@ public class CleanSubsetExportExecutor {
 
     private final CleanSubsetExportTaskMapper mapper;
     private final CleanSubsetExportService service;
+    private final com.securitymodel.infrastructure.executor.ExecutorProcessGuard processGuard;
     private final String pythonExecutable;
     private final String pythonScript;
     private final long timeoutSeconds;
@@ -25,11 +26,13 @@ public class CleanSubsetExportExecutor {
     public CleanSubsetExportExecutor(
             CleanSubsetExportTaskMapper mapper,
             @Lazy CleanSubsetExportService service,
+            com.securitymodel.infrastructure.executor.ExecutorProcessGuard processGuard,
             @Value("${security-model.executor.python.executable:python}") String pythonExecutable,
             @Value("${security-model.executor.python.script:}") String pythonScript,
             @Value("${security-model.executor.python.timeout-seconds:3600}") long timeoutSeconds) {
         this.mapper = mapper;
         this.service = service;
+        this.processGuard = processGuard;
         this.pythonExecutable = pythonExecutable;
         this.pythonScript = pythonScript;
         this.timeoutSeconds = timeoutSeconds;
@@ -71,8 +74,10 @@ public class CleanSubsetExportExecutor {
             if (!process.waitFor(timeoutSeconds, java.util.concurrent.TimeUnit.SECONDS)) {
                 // Kill the whole tree: a Python child writing the ZIP must not survive and
                 // keep appending to a file the task has already reported as failed.
-                process.descendants().forEach(ProcessHandle::destroyForcibly);
-                process.destroyForcibly();
+                boolean gone = processGuard.ensureGone(process, outputDir, 3000, true);
+                if (!gone) {
+                    throw new IllegalStateException("导出清洗数据集超时，且子进程未能确认退出");
+                }
                 throw new IllegalStateException("导出清洗数据集超时");
             }
             mapper.updateProgress(exportId, 85);

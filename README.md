@@ -234,6 +234,7 @@ mvn -pl eladmin-system -am test "-Denforcer.skip=true" "-Dsecurity-model.skip-te
 - `docs/sdd/12-resume-project-narrative.md`：简历项目描述与面试讲解提纲。
 - `docs/sdd/13-framework-migration-readiness.md`：Spring Boot 3、Java 17、Vue 3 迁移验收记录。
 - `docs/sdd/17-agent-development-guide.md`：后续逐轮迭代的任务范围、依赖与验收条件（规划文档）。
+- `docs/sdd/20-stage-execution-and-acceptance.md`：开发 Agent 的逐阶段执行任务书，包含实施步骤、默认决策、故障验收矩阵和交接模板。
 - `docs/sdd/18-multiuser-ownership-and-resources.md`：多用户归属、共享资源权限、历史迁移与 GPU 并发（R0 设计契约）。
 - `docs/sdd/19-local-data-layout-and-retention.md`：受控本地目录布局与保留策略（R0 草案）。
 - `docs/project-introduction-and-interview-guide.md`：完整项目介绍、业务流程、当前进度和面试讲解稿。
@@ -243,17 +244,17 @@ mvn -pl eladmin-system -am test "-Denforcer.skip=true" "-Dsecurity-model.skip-te
 
 - 当前真实运行和答辩展示只覆盖 LDD 训练前数据清洗。
 - 训练中、训练后和其他对比算法暂不接入主流程。
-- **多用户隔离已在 R1 落地**：任务归属以 `owner_user_id` 为准，任务/报告/日志/产物/导出/审计均做 owner 校验；跨用户读对管理员默认关闭（`SECURITY_MODEL_ADMIN_CROSS_USER_READ`），且任何角色都不能跨用户写。R1 为**有条件通过**：隔离库迁移与双账号端到端验收已实跑通过（85 单测 + 30 项 MySQL IT），但生产库迁移尚未执行，不能表述为“生产级权限体系已完成”。
-- **恢复护栏（ADR-017）**：启动前写 `process.json`（写失败拒绝启动），启动后写 pid/启动时间，适配器写 `python-children.json`；重启恢复只有确认整棵树退出（`NOT_STARTED/EXITED/REAPED`）才释放 GPU 租约；`KILL_FAILED/UNKNOWN` 置 `blocked_at` 隔离，TTL 过期仍返回 `GPU_LEASE_BLOCKED`，由 60s 探测确认退出后解除。Java 85 单测 + 30 IT 全绿；未跑真实 LDD。R3 调度意图见 ADR-018（已按评审修订、未实施）。
-- **R2 第三切片已落地**：attempt 目录内日志超过 `max-log-bytes`（默认 20 MiB）只保留尾部并写截断标记；每次执行写 `manifest.json`（文件名/字节数/SHA-256）；`retention-days` 默认 0（不删除），开启后只清理“终态任务 + 非当前 attempt + 超期”的目录。日志截断发生在执行结束后，**只约束归档大小，不限制运行期间的磁盘增长**。Java 85 单测 + 30 IT 全绿；未跑真实 LDD。
+- **多用户隔离已在 R1 落地**：任务归属以 `owner_user_id` 为准，任务/报告/日志/产物/导出/审计均做 owner 校验；跨用户读对管理员默认关闭（`SECURITY_MODEL_ADMIN_CROSS_USER_READ`），且任何角色都不能跨用户写。R1 为**有条件通过**：隔离库迁移与双账号端到端验收已实跑通过（104 单测 + 33 项 MySQL IT），但生产库迁移尚未执行，不能表述为“生产级权限体系已完成”。
+- **恢复护栏（ADR-017）**：`process.json` 使用 `schema_version=2` 与临时文件原子替换；启动前写 `state:starting`，启动后写 pid/启动时间；无记录、旧协议、损坏或启动时间缺失一律 `UNKNOWN`，不误杀。执行器 `finally`、超时、取消、中断和导出超时都由 `ExecutorProcessGuard` 确认整棵树（含 `descendants()` 与 `python-children.json`）退出后才释放租约，否则 `markBlocked("EXECUTOR_TREE_ALIVE")`。隔离槽位 TTL 过期仍返回 `GPU_LEASE_BLOCKED`，60s 重探确认退出才解除；执行器状态 API 和前端展示槽位原因/时间/指引。恢复完成前 `launchTask` 返回 `SCHEDULING_NOT_READY`。Java 104 单测（0 跳过）+ 33 IT 全绿，含独立 JVM 崩溃演练；未跑真实 LDD。R3 调度意图见 ADR-018（已按评审修订、未实施）。
+- **R2 产物治理已落地**：attempt 目录内日志超过 `max-log-bytes`（默认 20 MiB）只在**执行结束后**保留尾部并写截断标记；每次执行写 `manifest.json`（文件名/字节数/SHA-256）；`retention-days` 默认 0（不删除），开启后只清理“终态任务 + 非当前 attempt + 超期 + real-path 在 workspace 内”的目录。日志截断只约束归档大小，**不限制运行期间的磁盘增长**。Java 104 单测（0 跳过）+ 33 IT 全绿；未跑真实 LDD。
 - 升级到 R1 必须执行 `sql/security_model_ownership.sql`（先跑只读段，审核后写入 `sys_pre_defense_ownership_decision` 决策行，再在同一 MySQL 会话里 `SET @apply_backfill = 1` 重跑）；未执行迁移时任务接口会显式失败。升级前签发的旧 token 没有 `userId`，需重新登录后才能执行任务写操作。
 - 令牌不可单独撤销，但每次请求都会回查 `sys_user.enabled` 与 `is_admin`：禁用账号或撤销管理员后，已签发 token 立即失去权限，无需等 8 小时过期；代价是每个认证请求一次主键查询。
 - 共享数据集/算法/超参数模板的写操作仅管理员；普通用户只读。数据集登记后需管理员调用 `POST /api/dataset/{id}/validate` 才会变为可用（`parse_status='success'`）。
 - 任务产物默认写在系统临时目录（`<tmp>/security-model-executor`），尚未迁到受控数据根目录（R2）。
-- 同一张 GPU 的串行只靠适配器文件锁；配额不是 GPU 并发控制，陈旧锁会导致后续任务全部失败（R2 才做数据库单槽租约）。
+- 同一张 GPU 的串行由 MySQL 单槽租约（`sys_gpu_lease`）强制为 1；适配器文件锁是第二道防线。配额不是 GPU 并发控制。无记录/身份不确定时槽位持久隔离，新任务得到 `GPU_LEASE_BLOCKED`，不会自动放行。
 - 新后端已经完成当前 LDD 展示范围内的认证、领域服务、数据访问和 JWT 迁移；旧工程仅作为回退基线。
 - 前端任务中心已接入真实任务接口，覆盖创建表单、启动、报告摘要、日志和清洗子集导出；数据集资源、算法资源和训练前、训练中、训练后防御演示页面已建立。
-- 清洗子集导出已改为异步任务，支持进度查询和失败重试；当前迁移版尚无导出任务启动恢复扫描。
+- 清洗子集导出已改为异步任务，支持进度查询和失败重试；启动时 `ExportRecoveryRunner` 把遗留 `pending/running` 显式置为 `EXPORT_NOT_STARTED/EXPORT_INTERRUPTED`，不自动重派发，写到一半的 ZIP 不会成为成功下载。
 - 任务详情已支持 stdout/stderr 按 offset 增量轮询，任务中心已展示有界执行池和任务配额状态；SSE/WebSocket 日志流和后续模型训练衔接仍为后续优化项。
 
 ## 可用于简历的工程亮点
