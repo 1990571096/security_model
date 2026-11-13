@@ -3,6 +3,7 @@ package com.securitymodel.application.export;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.securitymodel.application.task.AfterCommitTaskDispatcher;
+import com.securitymodel.application.task.TaskAccessGuard;
 import com.securitymodel.application.audit.CurrentUserService;
 import com.securitymodel.application.audit.OperationAuditService;
 import com.securitymodel.domain.export.CleanSubsetExportTask;
@@ -34,6 +35,7 @@ public class CleanSubsetExportService {
     private final CleanSubsetExportExecutor executor;
     private final OperationAuditService operationAuditService;
     private final CurrentUserService currentUserService;
+    private final TaskAccessGuard taskAccessGuard;
 
     public CleanSubsetExportService(
             CleanSubsetExportTaskMapper exportMapper,
@@ -42,7 +44,8 @@ public class CleanSubsetExportService {
             AfterCommitTaskDispatcher dispatcher,
             CleanSubsetExportExecutor executor,
             OperationAuditService operationAuditService,
-            CurrentUserService currentUserService) {
+            CurrentUserService currentUserService,
+            TaskAccessGuard taskAccessGuard) {
         this.exportMapper = exportMapper;
         this.taskMapper = taskMapper;
         this.objectMapper = objectMapper;
@@ -50,6 +53,7 @@ public class CleanSubsetExportService {
         this.executor = executor;
         this.operationAuditService = operationAuditService;
         this.currentUserService = currentUserService;
+        this.taskAccessGuard = taskAccessGuard;
     }
 
     public Map<String, Object> describe(PreDefenseTask task) {
@@ -80,7 +84,7 @@ public class CleanSubsetExportService {
 
     @Transactional(rollbackFor = Exception.class)
     public CleanSubsetExportTask submit(Long taskId, Integer requestedRatio) {
-        PreDefenseTask task = requiredTask(taskId);
+        PreDefenseTask task = taskAccessGuard.requireOwned(taskId);
         int ratio = resolveRatio(task, requestedRatio);
         String operator = currentUserService.username();
         exportMapper.insertIfAbsent(taskId, ratio, operator);
@@ -112,6 +116,7 @@ public class CleanSubsetExportService {
         return exportTask;
     }
 
+    /** Internal lookup used by the async executor (no security context). Never expose through a controller. */
     public CleanSubsetExportTask findRequired(Long exportId) {
         CleanSubsetExportTask task = exportMapper.selectById(exportId);
         if (task == null) {
@@ -120,13 +125,20 @@ public class CleanSubsetExportService {
         return task;
     }
 
+    /** Controller-facing lookup: requires read permission on the parent task. */
+    public CleanSubsetExportTask findReadable(Long exportId) {
+        CleanSubsetExportTask task = findRequired(exportId);
+        taskAccessGuard.requireReadable(task.getTaskId());
+        return task;
+    }
+
     public List<CleanSubsetExportTask> findByTaskId(Long taskId) {
-        requiredTask(taskId);
+        taskAccessGuard.requireReadable(taskId);
         return exportMapper.findByTaskId(taskId);
     }
 
     public Path resolveDownloadFile(Long exportId) throws IOException {
-        CleanSubsetExportTask exportTask = findRequired(exportId);
+        CleanSubsetExportTask exportTask = findReadable(exportId);
         if (!"success".equals(exportTask.getStatus()) || !StringUtils.hasText(exportTask.getFilePath())) {
             throw new IllegalArgumentException("导出任务尚未完成");
         }

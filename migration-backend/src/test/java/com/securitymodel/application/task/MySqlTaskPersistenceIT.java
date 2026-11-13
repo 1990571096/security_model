@@ -2,6 +2,7 @@ package com.securitymodel.application.task;
 
 import com.securitymodel.domain.task.PreDefenseTask;
 import com.securitymodel.infrastructure.persistence.mapper.PreDefenseTaskMapper;
+import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -25,8 +26,10 @@ import java.sql.DriverManager;
 import java.sql.Statement;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
+import java.util.stream.Collectors;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -93,8 +96,12 @@ class MySqlTaskPersistenceIT {
                   update_by VARCHAR(255) NULL,
                   create_time DATETIME NULL,
                   update_time DATETIME NULL,
+                  owner_user_id BIGINT NULL,
+                  data_origin VARCHAR(16) NULL,
+                  owner_backfill_status VARCHAR(16) NULL,
                   PRIMARY KEY (task_id),
-                  KEY idx_status (status)
+                  KEY idx_status (status),
+                  KEY idx_owner_status (owner_user_id, status)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
                 """);
         jdbc.update("DELETE FROM sys_pre_defense");
@@ -189,6 +196,38 @@ class MySqlTaskPersistenceIT {
         assertNull(taskMapper.selectById(pendingId).getCleaningResult());
     }
 
+    @Test
+    void ownerScopedQueryReturnsOnlyThatUsersRows() {
+        long aliceTask = insertTask("success", null, 7L, "alice", "legacy");
+        long bobTask = insertTask("success", null, 8L, "bob", "legacy");
+        long demoTask = insertTask("success", null, 7L, "alice", "demo");
+
+        List<PreDefenseTask> aliceRows = taskMapper.selectList(
+                Wrappers.<PreDefenseTask>lambdaQuery().eq(PreDefenseTask::getOwnerUserId, 7L));
+
+        assertEquals(2, aliceRows.size());
+        assertEquals(Set.of(aliceTask, demoTask), aliceRows.stream()
+                .map(PreDefenseTask::getTaskId).collect(Collectors.toSet()));
+        assertEquals("legacy", aliceRows.stream()
+                .filter(item -> item.getTaskId() == aliceTask).findFirst().orElseThrow().getDataOrigin());
+        assertEquals(bobTask, taskMapper.selectOne(
+                Wrappers.<PreDefenseTask>lambdaQuery().eq(PreDefenseTask::getOwnerUserId, 8L)).getTaskId());
+    }
+
+    @Test
+    void demoRowsAreExcludedFromTheOwnerScopedList() {
+        long realTask = insertTask("success", null, 7L, "alice", "legacy");
+        insertTask("success", null, 7L, "alice", "demo");
+
+        List<PreDefenseTask> visible = taskMapper.selectList(
+                Wrappers.<PreDefenseTask>lambdaQuery()
+                        .eq(PreDefenseTask::getOwnerUserId, 7L)
+                        .ne(PreDefenseTask::getDataOrigin, "demo"));
+
+        assertEquals(1, visible.size());
+        assertEquals(realTask, visible.get(0).getTaskId());
+    }
+
     private int claim(long taskId, String runId, CountDownLatch ready, CountDownLatch start) throws Exception {
         ready.countDown();
         assertTrue(start.await(5, TimeUnit.SECONDS));
@@ -197,14 +236,20 @@ class MySqlTaskPersistenceIT {
     }
 
     private long insertTask(String status, String runId) {
+        return insertTask(status, runId, null, null, null);
+    }
+
+    private long insertTask(String status, String runId, Long ownerUserId, String createBy, String dataOrigin) {
         long taskId = System.currentTimeMillis() * 1000 + TASK_IDS.getAndIncrement();
         jdbc.update("""
                         INSERT INTO sys_pre_defense
                           (task_id, task_name, status, dataset_id, algorithm_id, progress,
-                           current_run_id, current_attempt, create_time, update_time)
-                        VALUES (?, ?, ?, 1, 1, 0, ?, ?, NOW(), NOW())
+                           current_run_id, current_attempt, create_by, create_time, update_time,
+                           owner_user_id, data_origin)
+                        VALUES (?, ?, ?, 1, 1, 0, ?, ?, ?, NOW(), NOW(), ?, ?)
                         """,
-                taskId, "integration-task-" + taskId, status, runId, runId == null ? null : 1);
+                taskId, "integration-task-" + taskId, status, runId,
+                runId == null ? null : 1, createBy, ownerUserId, dataOrigin);
         return taskId;
     }
 

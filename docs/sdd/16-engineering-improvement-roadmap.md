@@ -1,6 +1,6 @@
 # 迁移后工程完善路线
 
-更新时间：2026-10-26
+更新时间：2026-11-13（R0 记录）
 
 ## 目标
 
@@ -10,11 +10,41 @@
 
 | 阶段 | 范围 | 验收 |
 | --- | --- | --- |
+| R0：事实审计与设计契约（2026-11-13 完成） | 以源码核对任务状态、数据归属、执行与结果协议；修正与代码冲突的文档；冻结状态机/协议/目录语义；给出待决建议 | 文档与代码无矛盾；演示数据与真实能力可区分；待决事项与风险成文 |
 | I1：质量门禁与事实对齐 | 基础门禁已具备；本轮校准文档实现事实，本轮未重跑构建 | 迁移版测试、YAML 解析和前端生产构建以最近一次实际验收记录为准；远端 Actions 记录另行确认 |
 | I2：任务可靠性 | 本机数据库验收完成；远端 CI 结果待确认。更广泛的 API 与故障场景集成测试仍可补充 | 测试仅操作随机隔离 schema；并发领取只有一个成功者；完成与恢复竞争只能产生一个终态；恢复只收敛仍匹配 run_id 的 running 任务 |
 | I3：真实资源与查询 | 资源增改停用持久化、任务分页、资源批量查询、明确空/错误状态 | 写入后刷新仍可见；列表请求数不随任务行数线性增加；资源历史引用保留 |
 | I3b：可观测性 | 结构化日志、关键运行指标 | 任务可通过 taskId/runId 追踪；监控不伪造硬件利用率 |
 | I4：按需引入基础设施 | Redis 资源目录缓存已落地；多进程调度需要明确后再评估 Outbox + RabbitMQ | Redis 有 ADR、TTL、主动失效、MySQL 回源和单元测试；消息队列仍需独立需求与验收 |
+
+
+## R0 实施记录（2026-11-13）
+
+- 核对范围：`migration-backend` 全部 Java 源码、`algorithm-runtime/vab/algorithm_entry.py`、
+  `sql/eladmin.sql` 及 6 个 `security_model_*.sql`、`migration-frontend` 路由与关键页面、SDD 01/03/05/07/09/10/11/17。
+- 修正 7 处与代码冲突的文档表述，清单见 `05-decisions.md` ADR-012（C1–C7）。
+- 冻结内容：任务五态与允许边、`request.json`/`result.json`/`progress.json` v1 字段、`run_id + attempt` 回调校验、
+  `(task_id, isolation_ratio)` 导出幂等键、产物真实路径 containment、错误码清单。
+- 新增专题：`18-multiuser-ownership-and-resources.md`（归属矩阵、共享资源三方案、历史迁移、GPU 并发）、
+  `19-local-data-layout-and-retention.md`（受控目录布局与保留策略草案）。
+- 明确未实现项：多用户归属授权、GPU 单槽租约、导出启动恢复、数据集 `parse_status` 推进、硬件指标采集。
+- 未改动：任何业务代码、SQL、前端；既有 128 batch / 5 epochs 配置与一次工程验证结果均未触碰、未重跑。
+
+**本轮验证命令与真实结果**
+
+```powershell
+# 仓库状态（执行前）
+D:\Git\Git\cmd\git.exe status --short     # 无输出：工作区干净
+D:\Git\Git\cmd\git.exe log --oneline -1   # d8c33cc docs: define multi-user and agent delivery roadmap
+
+# 单元测试（本机 Java 20 / Maven 3.9.14，编译 release 17）
+mvn -B -f migration-backend/pom.xml verify
+# 结果：BUILD SUCCESS，Tests run: 30, Failures: 0, Errors: 0, Skipped: 0（9 个测试类），总耗时 03:13 min
+```
+
+- 未执行 `-Pmysql-it`：本轮仅文档变更，且本地 MySQL 凭据未在会话中验证；MySQL 集成测试状态沿用
+  2026-10-26 的记录（3 项通过），不表述为本轮通过。
+- 未执行前端 `npm run build`：前端未改动，沿用 2026-10-26 的构建记录。
 
 ## I1 实施记录
 
@@ -24,7 +54,7 @@
 - 迁移版增加 `AfterCommitTaskDispatcher` 单元测试，覆盖事务提交前不派发、无事务时立即派发、异常处理器和无异常处理器两种失败路径。
 - GitHub Actions 运行迁移版 Maven 验证和 Vue 3 前端生产构建。
 - 本地验收命令：`mvn -B -f migration-backend/pom.xml verify`；前端执行 `npm run build`。
-- 2026-10-26 实际验收：Maven `verify` 成功，10 项迁移版测试全部通过，包含应用 YAML 解析；Vite 生产构建成功。
+- 2026-10-26 实际验收：Maven `verify` 成功，10 项迁移版测试全部通过，包含应用 YAML 解析；Vite 生产构建成功。（该数字为当时记录；2026-11-13 实测已增至 9 个测试类、30 项单元测试）
 - 前端构建仍提示 Element Plus 聚合 chunk 超过 500 kB（实际输出约 947 kB）；构建通过，但可在后续 I3 评估按需加载和拆包收益。
 - CI：GitHub Actions 工作流已加入后端验证与前端生产构建；远端运行状态以对应 Actions 记录为准，本地通过不代表远端已验证。
 
@@ -39,7 +69,7 @@
 - 此项在首次制定路线时尚未完成，现已通过下述 MySQL 集成测试验收。
 - MySQL 集成测试使用独立的随机临时 schema，不复用或清理开发数据库；测试完成后仅删除本次创建且名称符合测试前缀的 schema。
 - 集成验收场景：两个并发领取请求对同一 `pending` 任务竞争且仅一个成功；正常完成与启动恢复对同一 `running + run_id` 竞争且仅一个终态更新成功；恢复扫描将遗留 `running` 收敛为 `EXECUTOR_RESTARTED`，不修改 pending 或已终态任务。
-- 2026-10-26 本机 MySQL 验收通过：`mvn -B -f migration-backend/pom.xml verify -Pmysql-it`，10 项单元测试与 3 项 MySQL 集成测试全部通过。测试创建随机隔离 schema，清理后断言 schema 不存在。
+- 2026-10-26 本机 MySQL 验收通过：`mvn -B -f migration-backend/pom.xml verify -Pmysql-it`，10 项单元测试与 3 项 MySQL 集成测试全部通过。（单元测试数当时为 10 项，2026-11-13 已增至 30 项；MySQL 集成测试本轮未重跑）测试创建随机隔离 schema，清理后断言 schema 不存在。
 - CI 使用独立 MySQL 8.4 服务运行集成测试；工作流配置已提交到仓库，但远端运行结果尚未确认。普通本地 `mvn verify` 不要求启动 MySQL，显式运行方式记录在 MVP runbook。
 
 ## 本轮自检发现
@@ -80,6 +110,21 @@
 ### 消息队列
 
 当前单机进程内线程池适用于现阶段。需要独立 Worker、多实例部署或跨进程调度时，优先评估 MySQL Transactional Outbox + RabbitMQ。方案必须涵盖确认、重复投递、消费幂等、有限重试、死信和任务状态补偿。Redis Streams、Kafka 不与 RabbitMQ 并行引入，除非存在独立的业务理由。
+
+## R1 实施记录（多用户归属与资源收敛，2026-11-13）
+
+- 范围：稳定 `user_id` 身份、任务/报告/日志/产物/导出/审计的服务端归属校验、共享资源写操作收敛为管理员、历史数据迁移脚本、数据集验证入口。
+- 数据：`sys_pre_defense` 新增 `owner_user_id`、`data_origin`、`owner_backfill_status` 与 `idx_owner_status`；脚本 `sql/security_model_ownership.sql` 可重复执行，回滚脚本为 `sql/security_model_ownership_rollback.sql`。
+- 授权：`TaskAccessGuard` 统一判定；写=仅 owner，读=owner 或开关开启的管理员；demo 行与无 owner 行对普通用户不可写、demo 行任何人不可写；越权返回 403（`ACCESS_DENIED` / `ADMIN_REQUIRED`）。
+- 身份撤销（评审修正）：JWT 只证明登录主体，`enabled`/`is_admin` 每次请求回查 `sys_user`；禁用账号、撤销管理员后旧令牌立即失效，令牌内 `adm` 不参与授权。
+- 资源：数据集/算法/超参数写操作仅管理员；新增 `POST /api/dataset/{id}/validate`，校验路径存在、可读、非空后置 `parse_status='success'`，失败写 `failed` 与原因。
+- 迁移（评审修正）：脚本改为两段式，默认 `@apply_backfill=0` 只读审核；确认演示行 ID（`@demo_task_ids`）与错误匹配（`@reject_task_ids`）后才回填，不再按“无快照 + 有结果”启发式判 demo。
+- 配额：单用户并发改为按 `owner_user_id` 计数，历史无 owner 任务不占配额。
+- 未实现（保留在 R2）：GPU 单槽数据库租约、导出任务启动恢复、日志与产物限额、配额与领取同事务。
+- 验收补充（评审第二轮）：新增 `OwnershipE2ESupport` 与 `OwnershipEndToEndIT`(6 项)、`OwnershipEndToEndCrossReadIT`(3 项)，用 `@SpringBootTest` + 真实 Security 链 + 真实隔离库跑双账号登录后访问同一任务，覆盖 403、demo/无 owner 隔离、登录后禁用立即失效、旧 token 无 `userId`、伪造 `adm`、管理员开关两种取值。**这些用例只完成编译，尚未执行**（本机 MySQL 拒绝无密码连接）。同时按 `18` §8 逐入口核对归属规则，按 §9 区分单元/契约/端到端证据等级，按 §10 固化迁移执行记录模板。
+- 状态口径：R1 为“有条件通过”。已完成归属模型、服务端访问控制、账号状态实时校验与迁移审核机制；真实数据库迁移执行、迁移脚本实机验证与双账号数据库链路仍待补证，不得表述为“多用户生产级权限体系已完成”。
+- 验证（2026-11-13 本机实测）：`mvn -B -f migration-backend/pom.xml verify -Pmysql-it` 通过 **57 项单元测试 + 17 项 MySQL 集成测试**（`MySqlTaskPersistenceIT` 5、`OwnershipMigrationScriptIT` 3、`OwnershipEndToEndIT` 6、`OwnershipEndToEndCrossReadIT` 3），BUILD SUCCESS。迁移脚本在隔离库实跑时暴露并修复了两处缺陷（开关被重置为 0、`data_origin IS NULL` 导致用户名匹配全部失效）。**生产库迁移仍未执行**，不能据此宣称生产已迁移。
+- 未触碰：LDD 128 batch / 5 epochs 配置、算法执行器、既有工程验证结果。
 
 ## 文档同步规则
 

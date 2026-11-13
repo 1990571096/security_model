@@ -171,3 +171,64 @@ MySQL 继续作为资源和任务的事实源，任务状态、任务报告和�
 Agent 采用外部大模型 API，本机不部署大模型。生成模型和 embedding 服务均只能接收经过当前用户权限过滤、服务端脱敏、字段白名单限制的 SDD 文档片段、算法参数说明及实验报告摘要；禁止发送原始样本、完整日志、本机绝对路径、凭据与用户个人信息。供应商、费用上限、数据留存条款和密钥注入方式在接入前另行确定。
 
 验收：双用户在 MySQL + HTTP 集成测试中各自创建、管理和查看实验，跨用户列表及 ID 直取/产物下载均无法越权；外部 API 出站请求可测试白名单和脱敏，违规内容不会离开服务端。以上均为后续迭代验收条件，不代表当前代码已经实现。
+
+## ADR-012：R0 事实冻结——文档以运行代码为准，归属契约进入设计阶段
+
+日期：2026-11-13；状态：已生效（仅冻结事实与契约，不含实现）。
+
+决策：
+
+1. 文档与实现冲突时，以 `migration-backend` 源码、`sql/` 脚本和**已实际执行的测试**为事实，先修文档再谈实现。本轮确认并修正的冲突如下，不允许回退到旧表述：
+
+| 编号 | 冲突点 | 修正后的事实 |
+| --- | --- | --- |
+| C1 | `07-executor-contract.md` 称 `result.json` 缺失且退出码为 0 时“补最小成功结果” | `PythonLddTaskExecutor.invoke()` 直接抛 `RESULT_MISSING`，任务判失败。不存在补偿成功路径 |
+| C2 | `07` 与 README 让迁移版用 `--spring.profiles.active=dev,python-executor` 启动 Python 执行器 | `python-executor` profile 只存在于旧 `eladmin`（`@Profile("python-executor")`）。迁移版通过配置键 `security-model.executor.python.*`（环境变量 `SECURITY_MODEL_EXECUTOR_PYTHON_SCRIPT` 等）注入 |
+| C3 | `01` 把数据导入写成“上传 + 解析” | 只有本地路径元信息登记；无上传接口；`parse_status` 被固定写 `pending`，平台无推进入口 |
+| C4 | `03` 列出 `/api/tasks`、`/api/reports/{id}`、`/api/datasets/upload`、`/api/executors/callback` | 均不存在，实际接口以控制器为准（见 03 第 6 节） |
+| C5 | `09`/`11` 称页面“接口失败显示明确错误状态，不使用样例数据” | 工作台、案例页、运行监控页、接口扩展预览为前端硬编码演示数据（含 RTX 3090 节点利用率、攻击成功率 4.7%、累计任务 28、虚构实验配置清单）；仅资源/任务/报告/导出走真实接口 |
+| C6 | `11` 称保留 `GET /api/pre-defense/download-cleaned-dataset/{taskId}` 兼容接口、可登记模型资源 | 两者都不存在 |
+| C7 | `09`/`16` 记录“10 项单元测试” | 2026-11-13 实测 `mvn verify` 为 9 个测试类、30 项单元测试全通过（不含 `mysql-it`） |
+
+2. R0 冻结以下语义，后续迭代不得悄悄改动：任务五态与允许的状态边（见 03 第 5 节）、`request.json`/`result.json`/`progress.json` 的字段集合、`run_id + attempt` 回调校验规则、`(task_id, isolation_ratio)` 导出幂等键、产物路径 containment 规则。需要变更时先加新 ADR。
+
+3. 多用户归属的**实现方案尚未决定**（共享资源写入权限、历史 `create_by` 回填口径、GPU 并发上限、路径验证入口）。推荐方案与风险见 [18-multiuser-ownership-and-resources.md](18-multiuser-ownership-and-resources.md)、[19-local-data-layout-and-retention.md](19-local-data-layout-and-retention.md)。在用户确认前，不得给历史数据赋予任意用户访问权，也不得按推荐方案直接改配置或改代码。
+
+4. 演示内容必须与真实能力可区分：演示页数据不得进入真实指标口径，也不得写在简历或论文中作为实验结果。展示算法（LDD 以外的算法卡片）继续保持“展示占位”。
+
+5. 本轮范围仅限文档与设计契约：不实现 R1 授权、不接入消息队列/RAG/Agent、不修改也不重跑既有 LDD 128 batch / 5 epochs 配置。
+
+原因：R0 的职责是把“文档说什么”和“代码做什么”对齐。旧文档中的三处乐观描述（补偿成功、profile 启动、无样例数据）会直接误导后续授权与可靠性改造，必须先纠正再进入 R1。
+
+影响：
+- 修正后的文档降低了宣称能力，但不降低代码能力；R1 的验收基线因此可测。
+- 04/16 中的“已完成”条目若与上表冲突，以本 ADR 为准，后续统一收敛。
+
+## ADR-013：R1 落地决策——稳定用户 ID 归属、共享资源只读、历史数据隔离
+
+日期：2026-11-13；状态：**已实施，评审结论“有条件通过”；隔离库迁移与双账号端到端验收已实跑通过，生产库迁移未执行**。
+
+用户指示“按 R0 推荐方案开发”，据此把 18 号文档 §6 的待决项 D1、D2、D3、D6 落为决策，D4（GPU 并发上限）、D5（自动重试策略）、D7（部署数据根目录）仍留到 R2，本轮不实现。
+
+决策：
+
+1. **归属键**：`sys_pre_defense` 新增 `owner_user_id BIGINT NULL`，作为唯一授权依据；`create_by` 只保留为用户名快照（展示与审计用），不再参与授权。新增 `data_origin`（`user` / `demo` / `legacy`）与 `owner_backfill_status`（`matched` / `unattributed`）。
+2. **身份**：JWT 增加 `adm` 声明，签发时来自 `sys_user.is_admin`；`JwtAuthenticationFilter` 把 `(userId, username, admin)` 作为 principal 注入 SecurityContext。旧 token 没有 `userId`（升级前签发），视为无归属身份：可登录态访问资源共享目录，但任何任务写操作返回“登录状态无效，请重新登录”。不引入单独的会话表，刷新令牌不在本轮范围。
+3. **共享资源（D1 = 方案 A）**：数据集/算法/超参数模板的写操作仅管理员；普通用户只读。`ResourceCommandService` 在入口校验，越权返回 403 `ADMIN_REQUIRED`。
+4. **历史数据（D2/D3）**：按用户名精确匹配回填；不匹配标 `unattributed`，仅管理员（且仅当跨用户读开关开启）可读，任何用户不可写。**演示行判定改为人工按任务 ID 指定**（`@demo_task_ids`），不再使用“无快照 + 有结果”启发式；脚本默认只读审核，确认后才回填。**迁移不修改任何业务字段**，只写三列标记。
+5. **管理员跨用户读（默认关闭）**：配置项 `security-model.ownership.admin-cross-user-read=false`。开启后管理员可读他人任务、报告、日志、产物与导出，并写审计；**任何角色都不能跨用户写**（编辑/启动/重试/取消/删除/导出提交）。
+6. **数据集验证入口（D6）**：新增 `POST /api/dataset/{id}/validate`（仅管理员），校验路径存在、可读、非空后把 `parse_status` 推进为 `success` 并写 `parse_message`/`parse_time`；失败写 `failed` 与原因，不抛 500。这是消除“登记即死路”的最小实现，不做内容级解析。
+7. **配额口径**：单用户运行任务数按 `owner_user_id` 计数；`owner_user_id IS NULL` 的历史任务不占配额，也不会被新逻辑认领。
+8. **R1 不做**：GPU 单槽租约、导出启动恢复、日志/产物限额、消息队列、RAG、Agent。这些仍在 R2/R3/R4+。
+9. **令牌不撤销，但权限每次请求重算（评审后补充）**：JWT 只证明“谁登录过”，`enabled` 与 `is_admin` 以 `sys_user` 当前行为准。`JwtAuthenticationFilter` 每个请求按 `userId` 读取账号状态：账号被禁用或删除则本次请求不认证；管理员降权后 `ROLE_ADMIN` 立即消失，令牌里的 `adm` 声明不参与授权。代价是每个认证请求一次主键读，换取“禁用/降权无需等 8 小时令牌过期”，也不引入令牌黑名单或权限版本表。旧 token（无 `userId`）不查询、不认证为可写身份。
+10. **demo 行任何人不可写（评审后补充）**：迁移会给演示行回填 owner 以便追溯，但 `TaskAccessGuard.requireOwner` 先判 `data_origin='demo'` 并直接拒绝。写规则与读规则（非跨用户管理员不可见）保持一致，避免“能按 ID 改一条自己看不到的行”。
+
+原因：R0 已证明当前实现是“单库共享语义”，任何多用户验收都会失败；而单机、少量真实用户的场景下，方案 A 能以最小改动把“各自管理和查看实验”变得可测，同时不把历史演示数据误当真实实验。
+
+影响：
+- 数据库需要执行 `sql/security_model_ownership.sql`；代码依赖新列，**未执行迁移则启动后任务相关接口报错**（这是刻意的显式失败，不做静默降级）。
+- 旧 token 在有效期内无法执行任务写操作，需重新登录；这是升级代价，记录在 README。
+- 资源写操作从“任意登录用户”收紧为“管理员”，前端非管理员保存按钮会收到 403；R1 不改前端交互，只在接口层强制。
+- 回滚：`sql/security_model_ownership_rollback.sql` 删除三列即可恢复旧语义；代码回滚需同步回滚 jar，但**不要**删列后再跑旧代码前恢复备份，避免 owner 数据丢失后无法追溯。
+
+实施结果（2026-11-13）：决策 1–10 已落地；`TaskAccessGuard` 为核心判定点，`owner_user_id` 是唯一授权键；单元测试 57 项通过、`verify -Pmysql-it` 的 17 项 MySQL 集成测试通过（迁移脚本、双账号端到端、持久层）。评审后的三处修正：①令牌权限改为每请求回查 `sys_user`（禁用/降权立即生效）；②demo 行任何人不可写；③迁移脚本改为“默认只读审核、确认任务 ID 后才回填”，不再用快照启发式判 demo。第二轮补充：`OwnershipEndToEndIT` 与 `OwnershipEndToEndCrossReadIT` 用真实 Security 链 + 真实隔离库完成双账号验收；迁移脚本在隔离库实跑时发现两处缺陷（开关被重置、`data_origin IS NULL` 使用户名匹配全部失效）并修复。**生产库尚未执行迁移**，不得表述为生产已验证。前端未做交互改动，非管理员保存资源会直接收到 403。决策 8 的范围仍未越界（无 MQ/RAG/Agent、无 GPU 租约）。

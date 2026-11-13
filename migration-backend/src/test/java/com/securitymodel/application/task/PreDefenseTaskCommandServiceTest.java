@@ -36,6 +36,7 @@ class PreDefenseTaskCommandServiceTest {
     private final DefenseTaskExecutor defenseTaskExecutor = mock(DefenseTaskExecutor.class);
     private final OperationAuditService operationAuditService = mock(OperationAuditService.class);
     private final CurrentUserService currentUserService = mock(CurrentUserService.class);
+    private final TaskAccessGuard taskAccessGuard = mock(TaskAccessGuard.class);
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final ThreadPoolTaskExecutor taskExecutor = new ThreadPoolTaskExecutor();
     private PreDefenseTaskCommandService commandService;
@@ -61,7 +62,8 @@ class PreDefenseTaskCommandServiceTest {
                 new AfterCommitTaskDispatcher(),
                 objectMapper,
                 operationAuditService,
-                currentUserService);
+                currentUserService,
+                taskAccessGuard);
 
         when(taskMapper.selectList(any())).thenReturn(List.of());
         when(resourceQueryService.findDataset(1L)).thenReturn(dataset());
@@ -88,7 +90,7 @@ class PreDefenseTaskCommandServiceTest {
         PreDefenseTask failed = task(31L, "failed", existingSnapshot);
         PreDefenseTask pending = task(31L, "pending", existingSnapshot);
 
-        when(taskMapper.selectById(31L)).thenReturn(failed, pending);
+        when(taskAccessGuard.requireOwned(31L)).thenReturn(failed, pending);
         when(taskMapper.resetForRetry(31L)).thenReturn(1);
         when(taskMapper.claimForExecution(eq(31L), any(), eq(2), any(), any())).thenReturn(1);
 
@@ -113,7 +115,7 @@ class PreDefenseTaskCommandServiceTest {
     @Test
     void rejectedExecutorDispatchMarksOnlyTheCurrentAttemptFailed() throws Exception {
         PreDefenseTask pending = task(32L, "pending", null);
-        when(taskMapper.selectById(32L)).thenReturn(pending);
+        when(taskAccessGuard.requireOwned(32L)).thenReturn(pending);
         when(taskMapper.claimForExecution(eq(32L), any(), eq(1), any(), any())).thenReturn(1);
         doThrow(new RejectedExecutionException("queue full"))
                 .when(defenseTaskExecutor).runPreDefense(any(DefenseTaskRequest.class));

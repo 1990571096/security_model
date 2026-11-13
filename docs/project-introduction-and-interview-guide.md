@@ -91,12 +91,12 @@ LDD 有效配置按以下顺序合并：
 
 ### 4.3 Python 算法执行
 
-Java 后端不直接调用 `LDD.py` 内部函数，而是调用统一的 `DefenseTaskExecutor`。当前实现由 `PythonDefenseTaskExecutor` 启动外部 Python 进程：
+Java 后端不直接调用 `LDD.py` 内部函数，而是调用统一的 `DefenseTaskExecutor`。当前实现由 `PythonLddTaskExecutor` 启动外部 Python 进程：
 
 ```text
-PreDefenseService
+PreDefenseTaskCommandService
   -> DefenseTaskExecutor
-  -> PythonDefenseTaskExecutor
+  -> PythonLddTaskExecutor
   -> algorithm-runtime/vab/algorithm_entry.py
   -> VaB 外部工程中的 LDD.py
 ```
@@ -162,7 +162,7 @@ LDD 输出保留样本索引，例如 `selected_indices_<ratio>.npy`。平台不
 | 资源管理 | 数据集、算法、模型、超参数模板的登记和引用保护 |
 | `PreDefenseService` | LDD 任务创建、参数合并、启动、取消、重试和状态流转 |
 | `DefenseTaskExecutor` | 屏蔽具体算法运行方式，定义统一执行器边界 |
-| `PythonDefenseTaskExecutor` | 启动、监控和回收 Python 外部进程 |
+| `PythonLddTaskExecutor` | 启动、监控和回收 Python 外部进程 |
 | 快照服务 | 记录资源、参数、Java/Python 运行环境和内容摘要 |
 | 任务进度服务 | 提供统计、批量进度和执行池状态 |
 | 导出服务 | 根据 LDD 保留索引重建清洗后 CIFAR-10 子集 |

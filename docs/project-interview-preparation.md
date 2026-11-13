@@ -249,7 +249,7 @@ Java 的 `PythonProcessWaiter` 等待外层适配器进程时关注该文件的�
 
 ### 如何证明项目经过测试？
 
-截至 2026-10-26，仓库现有 Surefire 报告记录迁移版 30 项单元测试通过，Failsafe 报告记录 3 项 MySQL 集成测试通过，失败、错误和跳过均为 0。单测覆盖资源命令/查询、缓存 TTL 与故障降级、事务提交后派发、任务重试快照、进度等待与查询、启动恢复和 YAML 配置解析；MySQL 集成测试验证并发领取原子性、成功完成与恢复之间的条件更新竞争、孤儿任务恢复边界。报告对应的运行命令为 `mvn -B -f migration-backend/pom.xml test` 和 `mvn -B -f migration-backend/pom.xml verify -Pmysql-it`。本次文档同步没有重跑测试，上述数字是现有报告记录，不是本轮测试结果。GitHub Actions 配置了 MySQL 8.4 service，远端结果仍以 Actions 页面为准。旧 ELADMIN 的测试不计入迁移版覆盖；LDD 工程链路验证也不等于论文正式实验。
+截至 2026-11-13（R1 及评审修正），`mvn -B -f migration-backend/pom.xml verify` 实测迁移版 12 个测试类、57 项单元测试通过，失败/错误/跳过均为 0，jar 打包成功。单测覆盖资源命令/查询、缓存 TTL 与故障降级、事务提交后派发、任务重试快照、进度等待与查询、启动恢复、YAML 配置解析，以及 R1 新增的任务归属守卫（8 项，含 demo 写拒绝）、按 owner 配额（4 项）、资源管理员权限与数据集验证（4 项）、进度查询越权与统计 scope（3 项）、真实登录取证后的双账号 HTTP 契约（8 项，含禁用账号与令牌 `adm` 不被信任）。MySQL 集成测试 8 项场景分两个类：`MySqlTaskPersistenceIT` 5 项（并发领取原子性、完成与恢复的条件更新竞争、孤儿恢复边界、owner 范围查询、demo 排除）已在评审环境通过；`OwnershipMigrationScriptIT` 3 项（迁移脚本两段式流程）本机因 `root` 无密码未执行，`mysql-it` 需要 `MYSQL_IT_PASSWORD`。命令为 `mvn -B -f migration-backend/pom.xml test` 和 `mvn -B -f migration-backend/pom.xml verify -Pmysql-it`。GitHub Actions 配置了 MySQL 8.4 service，远端结果仍以 Actions 页面为准。旧 ELADMIN 的测试不计入迁移版覆盖；LDD 工程链路验证也不等于论文正式实验。
 
 ## 8. 代码追问导航
 
@@ -270,7 +270,7 @@ Java 的 `PythonProcessWaiter` 等待外层适配器进程时关注该文件的�
 3. 按某个隔离比例导出的 ZIP，能解释其中的索引、标签和图片文件。
 4. 当前本机 VaB 路径、Python 环境、PyTorch/CUDA 和 GPU 信息。
 5. 一个失败或取消/重试案例，说明状态如何变化、`run_id` 如何变化、旧回调如何被隔离。
-6. 构建和测试命令输出，以及 Surefire/Failsafe 报告。明确迁移版现有报告的 30 项单元测试、3 项 MySQL 集成测试与旧模块历史定向测试的区别。
+6. 构建和测试命令输出，以及 Surefire/Failsafe 报告。明确迁移版实测 57 项单元测试（2026-11-13）、集成测试 8 项场景中 5 项有执行证据、3 项迁移脚本用例本机未跑（缺 `MYSQL_IT_PASSWORD`），以及旧模块历史定向测试的区别。
 
 不要把 `migration-frontend/src/data/demoData.js` 中的任务数字、统计百分比、模拟案例或演示模式页面作为真实实验数据。也不要把页面出现“已接入运行”的静态标签当作后端算法接入证据。
 
@@ -315,5 +315,5 @@ Java 的 `PythonProcessWaiter` 等待外层适配器进程时关注该文件的�
 - 能说明 SHA-256 的文件大小条件和目录不做全量摘要。
 - 能区分 LDD 保留索引、清洗子集 ZIP 与算法内部中间张量。
 - 能把演示数据、工程验证和正式实验分开陈述。
-- 能准确说出仓库现有报告记录迁移版 30 项单测、3 项 MySQL 集成测试及其覆盖边界，并说明面试时以最新报告为准。
+- 能准确说出迁移版实测 48 项单测（2026-11-13）、MySQL 集成测试 5 项场景中仅 3 项有执行记录，并说明面试时以最新报告为准。
 - 能指出三阶段展示不代表多算法真实执行，也能给出合理扩展路径。

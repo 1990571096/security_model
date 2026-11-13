@@ -62,7 +62,11 @@
 
 R6/R7 不能因简历需要跳过安全依赖，但不以 R4 消息队列为前提。R4/R8 是可选扩展；若时间有限，完成 R0-R3 + R5 比做不可靠的“全栈展示”更有价值。R8 仅当有两实例或独立 GPU Worker 测试条件时实施。
 
-## 3. R0：事实冻结与设计契约
+## 3. R0：事实冻结与设计契约（2026-11-13 已完成）
+
+> 完成记录见 `09-project-status.md` 第 5.1 节与 `16-engineering-improvement-roadmap.md` 的 R0 实施记录；
+> 修正清单见 `05-decisions.md` ADR-012；归属契约与待决事项见 `18-multiuser-ownership-and-resources.md`、
+> 目录与保留策略见 `19-local-data-layout-and-retention.md`。R1 开始前须先确认 18 号文档 §6 的 D1–D7。
 
 **先核查**：`01-system-scope.md` 将“上传/解析”写作核心流程，但现行资源主要是本地路径元数据登记；`03-target-architecture.md` 仍有旧包迁移措辞和未实现的目标接口；`07-executor-contract.md` 中“result.json 缺失可补最小成功结果”与 `PythonLddTaskExecutor` 当前 `RESULT_MISSING` 失败行为冲突。核查后以运行代码为事实修正文档，不能悄悄改执行语义。
 
@@ -71,7 +75,24 @@ R6/R7 不能因简历需要跳过安全依赖，但不以 R4 消息队列为前�
 
 **交付**：状态图、数据归属矩阵、组件图、进度/结果 JSON v1、错误码清单、文件保留策略草案和兼容性约束。更新 `01`、`03`、`05`、`07`、`09`、`16`；新增需要的专题文档按实际决策建立。验收为文档和真实实现无矛盾，规划与当前状态明确分栏。
 
-## 4. R1：认证、授权和数据边界
+## 4. R1：认证、授权和数据边界（2026-11-13 已实施，评审“有条件通过”）
+
+> 实施记录见 `09-project-status.md` §5.2、`16-engineering-improvement-roadmap.md` 的 R1 实施记录、`05-decisions.md` ADR-013。
+> 已落地：稳定 `owner_user_id` 归属、`TaskAccessGuard` 服务端校验、共享资源写操作仅管理员、历史数据迁移脚本、
+> 数据集验证入口、按 owner 的配额计数、令牌每请求回查账号状态。
+> **验收证据（2026-11-13 本机实跑）**：57 项单元测试 + 17 项 MySQL 集成测试全部通过，含真实 Security 链 +
+> 真实隔离库的双账号端到端（`OwnershipEndToEndIT` 6 项、`OwnershipEndToEndCrossReadIT` 3 项）与迁移脚本两段式
+> 实跑（`OwnershipMigrationScriptIT` 3 项，并修出两处脚本缺陷）。**仍未完成**：生产库迁移执行与留档、GPU 单槽租约（R2）。
+
+**R1 收尾命令（本机执行，密码只走环境变量，不写入仓库/命令历史/文档）**：
+
+```powershell
+$env:MYSQL_IT_PASSWORD = '<本机 MySQL 密码>'
+mvn -B -f migration-backend/pom.xml verify -Pmysql-it
+```
+
+迁移脚本先在隔离库跑只读段，填 `@demo_task_ids`/`@reject_task_ids` 后再跑回填段，并保存逐行与聚合核对结果；
+记录字段与模板见 `18` §10，证据分级见 `18` §9。
 
 **设计**：支持多个真实登录用户分别创建、管理、查看自己的实验；确定最小角色（管理员、实验用户、只读观察者）及任务归属（建议稳定 user ID 而不是仅用户名）；按数据集、任务、报告、日志、导出、审计动作列权限矩阵。列表查询、ID 直取、重试/取消、报告、进度、日志、图片及 ZIP 下载均在服务端校验归属，不要只依赖前端隐藏按钮。管理员跨用户查看须明确授权和审计；共享目录资源与私有实验分离。生产 profile 无 JWT 密钥则拒绝启动，开发 profile 可有显式本地设置；日志不打印密钥/令牌。若历史任务没有 owner ID，设计迁移映射与不可识别记录的隔离策略。
 

@@ -38,6 +38,7 @@ public class PreDefenseTaskCommandService {
     private final ObjectMapper objectMapper;
     private final OperationAuditService operationAuditService;
     private final CurrentUserService currentUserService;
+    private final TaskAccessGuard taskAccessGuard;
 
     public PreDefenseTaskCommandService(
             PreDefenseTaskMapper taskMapper,
@@ -49,7 +50,8 @@ public class PreDefenseTaskCommandService {
             AfterCommitTaskDispatcher afterCommitTaskDispatcher,
             ObjectMapper objectMapper,
             OperationAuditService operationAuditService,
-            CurrentUserService currentUserService) {
+            CurrentUserService currentUserService,
+            TaskAccessGuard taskAccessGuard) {
         this.taskMapper = taskMapper;
         this.resourceQueryService = resourceQueryService;
         this.defenseTaskExecutor = defenseTaskExecutor;
@@ -60,6 +62,7 @@ public class PreDefenseTaskCommandService {
         this.objectMapper = objectMapper;
         this.operationAuditService = operationAuditService;
         this.currentUserService = currentUserService;
+        this.taskAccessGuard = taskAccessGuard;
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -74,9 +77,11 @@ public class PreDefenseTaskCommandService {
         applyCommand(task, command);
         task.setStatus("pending");
         task.setProgress(0);
-        String operator = currentUserService.username();
-        task.setCreateBy(operator);
-        task.setUpdateBy(operator);
+        var identity = currentUserService.requireStableIdentity();
+        task.setCreateBy(identity.username());
+        task.setUpdateBy(identity.username());
+        task.setOwnerUserId(identity.userId());
+        task.setDataOrigin("user");
         task.setCreateTime(LocalDateTime.now());
         task.setUpdateTime(task.getCreateTime());
         taskMapper.insert(task);
@@ -88,7 +93,7 @@ public class PreDefenseTaskCommandService {
     @Transactional(rollbackFor = Exception.class)
     public PreDefenseTask update(Long taskId, PreDefenseTaskCommand command) {
         validateCommand(command);
-        PreDefenseTask task = findRequired(taskId);
+        PreDefenseTask task = taskAccessGuard.requireOwned(taskId);
         if (!"pending".equals(task.getStatus())) {
             throw new TaskCommandException("只有等待中的任务才能编辑");
         }
@@ -117,6 +122,7 @@ public class PreDefenseTaskCommandService {
         if (tasks.size() != taskIds.size()) {
             throw new TaskCommandException("存在不存在的任务");
         }
+        tasks.forEach(taskAccessGuard::requireOwner);
         if (tasks.stream().anyMatch(task -> "running".equals(task.getStatus()))) {
             throw new TaskCommandException("运行中的任务不能删除");
         }
@@ -128,7 +134,7 @@ public class PreDefenseTaskCommandService {
 
     @Transactional(rollbackFor = Exception.class)
     public Map<String, Object> start(Long taskId) {
-        PreDefenseTask task = findRequired(taskId);
+        PreDefenseTask task = taskAccessGuard.requireOwned(taskId);
         if (!"pending".equals(task.getStatus())) {
             throw new TaskCommandException("只有等待中的任务才能启动");
         }
@@ -141,14 +147,14 @@ public class PreDefenseTaskCommandService {
 
     @Transactional(rollbackFor = Exception.class)
     public Map<String, Object> retry(Long taskId) {
-        PreDefenseTask task = findRequired(taskId);
+        PreDefenseTask task = taskAccessGuard.requireOwned(taskId);
         if (!"failed".equals(task.getStatus())) {
             throw new TaskCommandException("只有失败的任务才能重试");
         }
         if (taskMapper.resetForRetry(taskId) != 1) {
             throw new TaskCommandException("任务状态已变化，请刷新后重试");
         }
-        launchTask(findRequired(taskId));
+        launchTask(taskAccessGuard.requireOwned(taskId));
         operationAuditService.recordTask(
                 taskId, "RETRY", "failed", "running",
                 Map.of("taskId", taskId), "重试 LDD 清洗任务");
@@ -157,7 +163,7 @@ public class PreDefenseTaskCommandService {
 
     @Transactional(rollbackFor = Exception.class)
     public Map<String, Object> cancel(Long taskId) {
-        PreDefenseTask task = findRequired(taskId);
+        PreDefenseTask task = taskAccessGuard.requireOwned(taskId);
         if (!"running".equals(task.getStatus())) {
             throw new TaskCommandException("只有运行中的任务才能取消");
         }
@@ -178,12 +184,9 @@ public class PreDefenseTaskCommandService {
         return Map.of("message", "LDD 任务已取消", "taskId", taskId);
     }
 
+    /** Read path used by the detail endpoint and the audit listing: owner, or admin cross-user read. */
     public PreDefenseTask findRequired(Long taskId) {
-        PreDefenseTask task = taskMapper.selectById(taskId);
-        if (task == null) {
-            throw new TaskCommandException("任务不存在");
-        }
-        return task;
+        return taskAccessGuard.requireReadable(taskId);
     }
 
     private void validateCommand(PreDefenseTaskCommand command) {

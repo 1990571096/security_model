@@ -54,7 +54,7 @@
 当前平台只允许启动 LDD（训练前防御）。历史 mock baseline 仅保留在旧代码和数据库结构中，用于兼容迁移，不属于当前可执行算法范围。
 
 当前真实接入的算法为 LDD。平台通过
-`PythonDefenseTaskExecutor` 和 `algorithm-runtime/vab/algorithm_entry.py` 调用外部
+`PythonLddTaskExecutor` 和 `algorithm-runtime/vab/algorithm_entry.py` 调用外部
 VaB 项目中的 `LDD.py`，并将配置、结构化结果和任务产物渲染到训练前任务详情页。
 
 后续真实算法应继续实现后端统一的 `DefenseTaskExecutor` 边界，避免业务 CRUD
@@ -84,6 +84,7 @@ SOURCE sql/security_model_execution_snapshot.sql;
 SOURCE sql/security_model_task_run_context.sql;
 SOURCE sql/security_model_clean_subset_export.sql;
 SOURCE sql/security_model_operation_audit.sql;
+SOURCE sql/security_model_ownership.sql;
 ```
 
 已有开发库只需补充 MVP 数据：
@@ -94,7 +95,23 @@ SOURCE sql/security_model_execution_snapshot.sql;
 SOURCE sql/security_model_task_run_context.sql;
 SOURCE sql/security_model_clean_subset_export.sql;
 SOURCE sql/security_model_operation_audit.sql;
+SOURCE sql/security_model_ownership.sql;
 ```
+
+`security_model_ownership.sql` 分两段使用：
+
+1. **第一段（默认，只读）**：直接执行。它只新增 `owner_user_id`、`data_origin`、
+   `owner_backfill_status` 三列与 `idx_owner_status`，然后打印逐行清单、疑似演示行、
+   `running` 但无 `run_id` 的行、按作者分组计数。**不修改任何业务行**（`@apply_backfill = 0`）。
+2. **审核后第二段**：把确认的演示任务 ID 填入 `@demo_task_ids`、把“同名但非本人”的匹配填入
+   `@reject_task_ids`，把 `@apply_backfill` 改为 `1`，再执行一次（幂等）。确认的演示行变为
+   `owner_user_id=NULL` + `unattributed` + `demo`；其余按用户名精确匹配写 `matched`；仍无法匹配的
+   写 `unattributed`，对普通用户不可见。
+
+脚本不改状态、结果 JSON、run id 或执行快照；回滚脚本为
+`sql/security_model_ownership_rollback.sql`。执行前请先 `mysqldump` 备份 `sys_pre_defense`。
+本仓库种子库中的 3、4 号任务（`test` 名下、`running`、无快照无结果）已核实为演示行，
+应放入 `@demo_task_ids`，不要作为真实实验认领。
 
 列出的 migration 脚本可重复执行。`execution_snapshot` 保存每次启动时冻结的资源和参数，
 `current_run_id` 与 `current_attempt` 用于校验异步执行器回调是否属于当前运行；
@@ -136,8 +153,11 @@ npm run dev -- --host 0.0.0.0
 
 - `admin / <初始化时设置的密码>`
 
-登录使用迁移版后端验证码与 JWT。页面数据接口不可用时部分列表会回退到前端样例数据；
-样例数据不代表真实任务或实验结果。
+登录使用迁移版后端验证码与 JWT。真实数据只来自资源、任务、进度、报告、日志、导出和审计接口；
+工作台（`/dashboard`）、案例库（`/cases`）、运行监控（`/runtime-monitor`）、接口扩展预览
+（`/training-defense`）四页是前端硬编码的演示内容，其中包含“累计任务 28”“攻击成功率 4.7%”、
+RTX 3090 节点利用率以及虚构的实验配置清单，**不代表真实任务、真实实验指标或真实硬件状态**，
+演示时须口头说明。
 
 ## 验证命令
 
@@ -159,9 +179,16 @@ npm run build
 旧 Vue CLI/Webpack 在 Node 17+ 环境下需要 `--openssl-legacy-provider`。构建时出现 asset size 或 Browserslist 过期提示属于当前旧前端栈的已知警告，不阻塞 MVP 联调。
 
 迁移版后端通过 Maven `verify` 执行单元测试；使用 `-Pmysql-it` 可额外运行 MySQL 集成测试。
-集成测试覆盖并发原子领取、正常完成与恢复扫描的状态竞争，以及孤儿任务恢复边界，并只使用
-随机命名的临时 schema。GitHub Actions 工作流配置了 MySQL 8.4 服务和该集成测试；远端运行
-结果需以 Actions 记录为准。
+集成测试覆盖并发原子领取、正常完成与恢复扫描的状态竞争、孤儿任务恢复边界、迁移脚本两段式行为，
+以及真实安全链路的双账号归属验收（每个类都只使用随机命名的临时 schema）。
+密码通过环境变量 `MYSQL_IT_PASSWORD` 提供，不写入仓库、文档或命令历史；交互式运行可用：
+
+```powershell
+pwsh -File scripts\run-mysql-it.ps1
+```
+
+R1 的验收证据分级、接口归属审计表与迁移执行记录模板见 `docs/sdd/18-multiuser-ownership-and-resources.md` §8–§10。
+GitHub Actions 工作流配置了 MySQL 8.4 服务和该集成测试；远端运行结果需以 Actions 记录为准。
 
 旧版 ELADMIN 后端的定向测试使用以下命令单独运行，不计入迁移版测试覆盖：
 
@@ -188,6 +215,9 @@ mvn -pl eladmin-system -am test "-Denforcer.skip=true" "-Dsecurity-model.skip-te
 - `docs/sdd/11-platform-implementation.md`：当前平台实现、业务流程和实现思路。
 - `docs/sdd/12-resume-project-narrative.md`：简历项目描述与面试讲解提纲。
 - `docs/sdd/13-framework-migration-readiness.md`：Spring Boot 3、Java 17、Vue 3 迁移验收记录。
+- `docs/sdd/17-agent-development-guide.md`：后续逐轮迭代的任务范围、依赖与验收条件（规划文档）。
+- `docs/sdd/18-multiuser-ownership-and-resources.md`：多用户归属、共享资源权限、历史迁移与 GPU 并发（R0 设计契约）。
+- `docs/sdd/19-local-data-layout-and-retention.md`：受控本地目录布局与保留策略（R0 草案）。
 - `docs/project-introduction-and-interview-guide.md`：完整项目介绍、业务流程、当前进度和面试讲解稿。
 - `docs/resume-project-entry.md`：简历项目简介和 4-5 条核心项目要点。
 
@@ -195,6 +225,12 @@ mvn -pl eladmin-system -am test "-Denforcer.skip=true" "-Dsecurity-model.skip-te
 
 - 当前真实运行和答辩展示只覆盖 LDD 训练前数据清洗。
 - 训练中、训练后和其他对比算法暂不接入主流程。
+- **多用户隔离已在 R1 落地**：任务归属以 `owner_user_id` 为准，任务/报告/日志/产物/导出/审计均做 owner 校验；跨用户读对管理员默认关闭（`SECURITY_MODEL_ADMIN_CROSS_USER_READ`），且任何角色都不能跨用户写。R1 为**有条件通过**：隔离库迁移与双账号端到端验收已实跑通过（57 单测 + 17 项 MySQL IT），但生产库迁移尚未执行，不能表述为“生产级权限体系已完成”。
+- 升级到 R1 必须执行 `sql/security_model_ownership.sql`（先跑只读段，审核后在同一 MySQL 会话里 `SET @apply_backfill = 1, @demo_task_ids = '...', @reject_task_ids = '...'` 再跑回填段）；未执行迁移时任务接口会显式失败。升级前签发的旧 token 没有 `userId`，需重新登录后才能执行任务写操作。
+- 令牌不可单独撤销，但每次请求都会回查 `sys_user.enabled` 与 `is_admin`：禁用账号或撤销管理员后，已签发 token 立即失去权限，无需等 8 小时过期；代价是每个认证请求一次主键查询。
+- 共享数据集/算法/超参数模板的写操作仅管理员；普通用户只读。数据集登记后需管理员调用 `POST /api/dataset/{id}/validate` 才会变为可用（`parse_status='success'`）。
+- 任务产物默认写在系统临时目录（`<tmp>/security-model-executor`），尚未迁到受控数据根目录（R2）。
+- 同一张 GPU 的串行只靠适配器文件锁；配额不是 GPU 并发控制，陈旧锁会导致后续任务全部失败（R2 才做数据库单槽租约）。
 - 新后端已经完成当前 LDD 展示范围内的认证、领域服务、数据访问和 JWT 迁移；旧工程仅作为回退基线。
 - 前端任务中心已接入真实任务接口，覆盖创建表单、启动、报告摘要、日志和清洗子集导出；数据集资源、算法资源和训练前、训练中、训练后防御演示页面已建立。
 - 清洗子集导出已改为异步任务，支持进度查询和失败重试；当前迁移版尚无导出任务启动恢复扫描。
@@ -230,23 +266,28 @@ CIFAR-10 任务，报告页可按隔离比例读取 `selected_indices_<ratio>.np
 CIFAR-10 训练样本并下载 ZIP；压缩包包含 PNG 图片、标签、索引及重建元数据，而非
 VaB 运行期构造的触发器修改张量。
 
-启动使用真实 VaB 算法的后端前，需要设置：
+启动使用真实 VaB 算法的迁移版后端前，需要设置：
 
 ```powershell
 $env:VAB_ROOT='F:\Study\postgraduate\1下\VB backdoor defence\VaB-main'
-$env:SECURITY_MODEL_PYTHON_SCRIPT='F:\Study\postgraduate\毕业论文\security_model\algorithm-runtime\vab\algorithm_entry.py'
-$env:PYTHON_EXECUTABLE='F:\path\to\the\VaB-python.exe'
+$env:SECURITY_MODEL_EXECUTOR_PYTHON_SCRIPT='F:\Study\postgraduate\毕业论文\security_model\algorithm-runtime\vab\algorithm_entry.py'
+$env:SECURITY_MODEL_EXECUTOR_PYTHON_EXECUTABLE='F:\path\to\the\VaB-python.exe'
+$env:SECURITY_MODEL_JWT_SECRET='<至少32字节的本地密钥>'
 ```
 
-`PYTHON_EXECUTABLE` 必须指向可运行 LDD 的 Python 环境。清洗子集导出仅依赖该环境
-中的 `numpy`，不额外依赖 PyTorch、torchvision 或 Pillow。
+`SECURITY_MODEL_EXECUTOR_PYTHON_EXECUTABLE` 必须指向可运行 LDD 的 Python 环境。清洗子集导出仅依赖
+该环境中的 `numpy`，不额外依赖 PyTorch、torchvision 或 Pillow。
 
-然后用 Python 执行器 profile 启动后端：
+然后启动迁移版后端（**不是**旧 `eladmin`）：
 
 ```powershell
-cd F:\Study\postgraduate\毕业论文\security_model\eladmin
-mvn -pl eladmin-system -am spring-boot:run -Denforcer.skip=true "-Dspring-boot.run.profiles=dev,python-executor"
+cd F:\Study\postgraduate\毕业论文\security_model\migration-backend
+mvn spring-boot:run
 ```
+
+注意：`--spring.profiles.active=dev,python-executor` 只在旧 `eladmin` 工程中存在
+（`@Profile("python-executor")`），迁移版没有该 profile，设置它不会产生任何效果。迁移版通过
+`security-model.executor.python.*` 配置键读取上述环境变量。
 
 详细的参数映射、运行约束和验收标准见
 `docs/sdd/10-vab-integration.md`。

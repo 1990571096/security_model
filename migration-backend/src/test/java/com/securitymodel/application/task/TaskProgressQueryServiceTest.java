@@ -3,12 +3,14 @@ package com.securitymodel.application.task;
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.securitymodel.application.audit.CurrentUserService;
 import com.securitymodel.application.resource.ResourceQueryService;
 import com.securitymodel.domain.algorithm.Algorithm;
 import com.securitymodel.domain.dataset.Dataset;
 import com.securitymodel.domain.task.PreDefenseTask;
 import com.securitymodel.infrastructure.persistence.mapper.PreDefenseTaskMapper;
 import org.junit.jupiter.api.Test;
+import org.springframework.security.access.AccessDeniedException;
 
 import java.util.List;
 import java.util.Map;
@@ -21,7 +23,10 @@ import static org.mockito.Mockito.*;
 class TaskProgressQueryServiceTest {
     private final PreDefenseTaskMapper mapper = mock(PreDefenseTaskMapper.class);
     private final ResourceQueryService resources = mock(ResourceQueryService.class);
-    private final TaskProgressQueryService service = new TaskProgressQueryService(mapper, resources);
+    private final CurrentUserService currentUser = mock(CurrentUserService.class);
+    private final TaskAccessGuard guard = mock(TaskAccessGuard.class);
+    private final TaskProgressQueryService service =
+            new TaskProgressQueryService(mapper, resources, currentUser, guard);
 
     @Test
     void batchesResourceNamesAcrossThePage() {
@@ -29,6 +34,7 @@ class TaskProgressQueryServiceTest {
         result.setRecords(List.of(task(1), task(2), task(3)));
         result.setTotal(31);
         when(mapper.selectPage(any(IPage.class), any(Wrapper.class))).thenReturn(result);
+        when(currentUser.userId()).thenReturn(7L);
         Algorithm algorithm = new Algorithm();
         algorithm.setAlgorithmName("LDD");
         Dataset dataset = new Dataset();
@@ -52,6 +58,34 @@ class TaskProgressQueryServiceTest {
         assertThrows(IllegalArgumentException.class, () -> service.findPage(null, null, 0, 20));
         assertThrows(IllegalArgumentException.class, () -> service.findPage(null, null, 1, 101));
         verifyNoInteractions(mapper);
+    }
+
+    @Test
+    void statisticsAreScopedToTheCaller() {
+        when(currentUser.userId()).thenReturn(7L);
+        when(mapper.selectCount(any(Wrapper.class))).thenReturn(2L);
+
+        Map<String, Object> stats = service.statistics();
+
+        assertEquals("current-user", stats.get("scope"));
+        // One total plus five per-status counts, all through the scoped wrapper.
+        verify(mapper, times(6)).selectCount(any(Wrapper.class));
+    }
+
+    @Test
+    void anotherUsersTaskIsRejectedInsteadOfReturned() {
+        PreDefenseTask foreign = task(99L);
+        foreign.setOwnerUserId(8L);
+        when(mapper.selectById(99L)).thenReturn(foreign);
+        when(guard.canRead(foreign)).thenReturn(false);
+
+        assertThrows(AccessDeniedException.class, () -> service.findTask(99L));
+    }
+
+    @Test
+    void missingTaskReturnsNull() {
+        when(mapper.selectById(404L)).thenReturn(null);
+        assertNull(service.findTask(404L));
     }
 
     private PreDefenseTask task(long id) {

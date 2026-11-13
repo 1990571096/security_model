@@ -27,9 +27,9 @@ public class JwtTokenService {
         this.validity = validity;
     }
 
-    public String issue(Long userId, String username) {
+    public String issue(Long userId, String username, boolean admin) {
         Instant now = Instant.now();
-        return Jwts.builder().subject(username).claim("userId", userId)
+        return Jwts.builder().subject(username).claim("userId", userId).claim("adm", admin)
                 .issuedAt(Date.from(now)).expiration(Date.from(now.plus(validity)))
                 .signWith(signingKey).compact();
     }

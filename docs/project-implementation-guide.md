@@ -640,7 +640,7 @@ ZIP 包含 `metadata.json`、`selected_indices.npy`、索引 CSV、标签 CSV �
 
 ## 13. 测试与验证证据怎么表述
 
-截至 2026-10-26，仓库现有 Surefire 报告记录迁移版 30 项单元测试通过，Failsafe 报告记录 3 项 MySQL 集成测试通过，失败、错误和跳过均为 0。单元测试覆盖资源命令和查询、Redis 缓存读写/失效/故障降级、事务提交后派发、任务重试快照、进度等待与查询、任务重启恢复及 YAML 配置解析。MySQL 集成测试通过真实 MyBatis-Plus Mapper 验证并发原子领取、恢复快照与成功完成之间的条件更新竞争，以及孤儿任务恢复边界；测试使用唯一随机 schema，并在清理后断言 schema 已删除。仓库报告对应的命令为 `mvn -B -f migration-backend/pom.xml test` 和 `mvn -B -f migration-backend/pom.xml verify -Pmysql-it`。本次文档同步没有重跑测试，因此上述数字是现存报告的记录，不是本轮验证结果。GitHub Actions 配置了 MySQL 8.4 service，但远端结果应以 Actions 记录为准。旧 `eladmin/eladmin-system/src/test` 中的测试是旧版定向测试历史记录，不能合并计入迁移版覆盖。
+截至 2026-11-13（R1 及评审修正），`mvn -B -f migration-backend/pom.xml verify` 实测迁移版 **12 个测试类、57 项单元测试**通过，失败、错误和跳过均为 0；打包 jar 成功。MySQL 集成测试现有 2 个类共 8 项场景（`MySqlTaskPersistenceIT` 5 项：并发原子领取、恢复快照竞争、孤儿任务恢复、owner 范围查询、demo 排除；`OwnershipMigrationScriptIT` 3 项：只读段不改行、按确认 ID 隔离演示行、驳回匹配），属 `mysql-it` profile。5 项数据库用例已在评审环境通过；3 项迁移脚本用例在 2026-11-13 本机因 `root` 无密码被 MySQL 拒绝（`Access denied ... using password: NO`）而未执行，`sql/security_model_ownership.sql` 因此仍无实库执行证据。单元测试覆盖资源命令和查询、Redis 缓存读写/失效/故障降级、事务提交后派发、任务重试快照、进度等待与查询、任务重启恢复、YAML 配置解析，以及 R1 新增的任务归属守卫（含 demo 写拒绝）、按 owner 配额、资源管理员权限与数据集验证、真实登录取证后的双账号 HTTP 越权与禁用账号/降权令牌失效。仓库报告对应的命令为 `mvn -B -f migration-backend/pom.xml test` 和 `mvn -B -f migration-backend/pom.xml verify -Pmysql-it`（后者需 `MYSQL_IT_PASSWORD`）。GitHub Actions 配置了 MySQL 8.4 service，但远端结果应以 Actions 记录为准。旧 `eladmin/eladmin-system/src/test` 中的测试是旧版定向测试历史记录，不能合并计入迁移版覆盖。
 
 另外，已有文档记录过一次 CIFAR-10、SIG、batch size 128、5 epochs 的 LDD 工程链路验证。它验证的是平台与算法的工程接入，不是经过完整对照设计的论文正式实验。正式汇报前应以当前可访问的日志、索引文件和报告核对运行记录，不要只依赖演示数据或历史文档。
 

@@ -20,7 +20,7 @@ experiment.
 ```text
 Pre-defense task
   -> DefenseTaskRequest snapshot
-  -> PythonDefenseTaskExecutor
+  -> PythonLddTaskExecutor
   -> algorithm-runtime/vab/algorithm_entry.py
   -> generated single-task VaB script
   -> VaB data loader / model / training code

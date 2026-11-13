@@ -1,11 +1,16 @@
 # 项目目标与阶段进度说明
 
-更新时间：2026-10-26
+更新时间：2026-11-13（R0 事实审计）
 
 当前迁移版已接入 Redis 资源目录缓存，并具备 MySQL 集成测试和对应 CI 工作流配置。
 最近一次记录的本机 MySQL profile 验收覆盖原子领取、完成与恢复竞争、孤儿任务恢复边界，
-测试使用临时隔离 schema。本次文档校准不重跑测试，也不启动真实 LDD 训练。迁移后端以
-MySQL 保存任务状态，通过有界 JVM 线程池调用 Python LDD 进程；RabbitMQ/Kafka 未接入。
+测试使用临时隔离 schema。迁移后端以 MySQL 保存任务状态，通过有界 JVM 线程池调用 Python
+LDD 进程；RabbitMQ/Kafka 未接入。
+
+R0 已完成一次以源码为准的事实审计（2026-11-13）：修正了 7 处与代码冲突的文档表述（清单见
+[05-decisions.md](05-decisions.md) ADR-012），冻结了状态机、执行/结果协议与目录语义，并把
+多用户归属、共享资源权限、历史数据迁移、GPU 并发列为待决事项。**本轮不实现授权、不接入
+消息队列/RAG/Agent、不改动也不重跑 128 batch / 5 epochs 的既有 LDD 工程验证配置。**
 
 ## 1. 项目整体目标
 
@@ -69,6 +74,9 @@ Vue 2 工程继续作为业务回归和回滚基线，不参与迁移版主流�
 | 演示空壳体系 | 已补齐三大防御阶段页面、阶段切换、算法卡片、输入输出说明和接入状态；除 LDD 外均明确标记为展示占位。 |
 | 资源管理持久化 | 数据集和算法新增、编辑、停用已接入 MySQL，保存后刷新仍可见；资源操作写入审计，停用保留历史引用。 |
 | 资源目录缓存 | 已接入 Redis 资源目录缓存，默认 TTL 5 分钟；Redis 异常自动回源 MySQL，资源变更主动失效缓存。 |
+| 多用户归属 | **已实现（R1，2026-11-13）**：`sys_pre_defense.owner_user_id` 为唯一授权依据，`TaskAccessGuard` 统一拦截任务、报告、日志、产物、导出、下载与审计；列表/统计按当前用户过滤；跨用户读默认关闭。 |
+| 数据集可用性 | **已补验证入口（R1）**：`POST /api/dataset/{id}/validate`（仅管理员）校验路径存在、可读、非空后把 `parse_status` 推进为 `success`；失败写 `failed` 与原因。 |
+| 演示页面 | 工作台、案例库、运行监控、接口扩展预览为前端硬编码常量（含 RTX 3090 节点与攻击成功率），见 §5 边界说明。 |
 
 ## 5. 当前可演示能力
 
@@ -84,7 +92,56 @@ Vue 2 工程继续作为业务回归和回滚基线，不参与迁移版主流�
 - 按隔离比例提交导出任务，查看导出进度并下载由保留索引重建的 CIFAR-10 清洗子集。
 - 在任务详情中查看操作人、动作、状态变化和操作说明。
 - 浏览训练前、训练中、训练后三大防御页面及其算法方案卡片。
-- 资源目录、任务、报告、日志和审计均以接口返回为准；接口失败显示明确错误状态，不把样例数据伪装成真实记录。
+- 资源、任务、进度、报告、日志、导出和审计页面以接口返回为准；接口失败显示明确错误状态，不用样例数据伪装成功。
+
+**演示数据的边界（R0 校正）**：以下三处页面是**前端硬编码演示内容**，不是真实数据，演示时必须明确说明：
+
+| 页面 | 演示内容 | 事实 |
+| --- | --- | --- |
+| 工作台 `/dashboard` | 累计实验任务 28、平均攻击成功率 4.7%、近 7 日趋势、RTX 3090 节点 | 全部为常量；真实任务数、成功率需查 `/api/task-progress/statistics` |
+| 案例库 `/cases` | 案例编号、清洗规模、攻击成功率降幅 | 全部为 `demoData.js` 常量，无后端接口 |
+| 运行监控 `/runtime-monitor` | GPU/CPU/内存利用率、节点心跳 | 全部为常量；平台没有硬件采集实现，机型也不是 RTX 3090 |
+| 接口扩展预览 `/training-defense` | 实验配置清单、生效状态、操作人 | 全部为 `TrainingDefenseView.vue` 内的常量数组，不对应数据库记录 |
+
+因此“接口失败显示明确错误状态，不使用样例数据”只适用于资源、任务、报告、导出这条真实链路，
+不适用于上述三页。R1/R5 之前不得据此声称平台具备运行监控或案例管理能力。
+
+## 5.1 R0 事实审计结论（2026-11-13）
+
+核对范围：`docs/sdd/01、03、05、07、09、10、11、16、17` + `migration-backend` 全部 Java 源码 +
+`algorithm-runtime/vab/algorithm_entry.py` + `sql/` 建表与种子脚本 + `migration-frontend` 关键页面。
+
+| 结论项 | 事实 | 证据 |
+| --- | --- | --- |
+| 真实算法范围 | 只有 LDD（`vab://pre-defense/ldd`），其它实现路径在启动前被拒绝 | `SUPPORTED_ALGORITHMS`、`validateCommand` |
+| 执行模型 | API 进程内 `taskAsync` 线程池 + `ProcessBuilder` 子进程，无独立 Worker、无 MQ | `PythonLddTaskExecutor`、`TaskExecutorConfig` |
+| 完成依据 | `result.json` 是唯一依据；缺失即失败（无“补最小成功”路径） | `validateResult`、`invoke()` |
+| 进度依据 | `progress.json` 只是诊断，Java 只取 `progress` 字段并 clamp 到 0–99 | `updateProgressFromSnapshot` |
+| 恢复语义 | 启动时把所有 `running` 收敛为 `EXECUTOR_RESTARTED`，隐含单实例 | `TaskRecoveryRunner` |
+| 配额语义 | 4/用户 2 是 JVM 任务数，不限制 GPU；检查与领取不同事务 | `TaskExecutionQuotaPolicy` |
+| GPU 串行 | 仅由适配器 `VAB_ROOT/.security-model-vab.lock` 排他锁保证；陈旧锁会永久阻塞 | `acquire_lock` |
+| 产物位置 | 默认在系统临时目录 `<tmp>/security-model-executor/pre_defense-<id>/attempt-<n>` | `ExecutionFingerprintService` 默认值 |
+| 归属 | 无 owner 列、无服务端授权；`create_by` 是用户名快照 | 见 18 号文档事实表 |
+| 数据集登记 | 路径元数据登记，无上传、无验证推进 | `ResourceCommandService.saveDataset` |
+| 演示数据 | 工作台/案例/监控为硬编码常量 | `DashboardView.vue`、`demoData.js`、`RuntimeMonitorView.vue` |
+
+设计契约与待决事项分别落在 [18-multiuser-ownership-and-resources.md](18-multiuser-ownership-and-resources.md)
+与 [19-local-data-layout-and-retention.md](19-local-data-layout-and-retention.md)。
+
+## 5.2 R1 实施记录（2026-11-13）
+
+| 变更 | 事实 | 证据 |
+| --- | --- | --- |
+| 归属键 | `sys_pre_defense` 新增 `owner_user_id` / `data_origin` / `owner_backfill_status`；创建任务写入 `owner_user_id` 与 `data_origin='user'` | `sql/security_model_ownership.sql`、`PreDefenseTaskCommandService.create` |
+| 身份 | JWT 增加 `adm` 声明；过滤器把 `(userId, username, admin)` 作为 principal 注入。**评审后改为每次请求按 `userId` 读 `sys_user`**：账号禁用/删除则本次不认证，管理员降权后 `ROLE_ADMIN` 立即消失，令牌内 `adm` 不参与授权；旧 token 无 `userId`，任务写操作被拒 | `JwtTokenService`、`JwtAuthenticationFilter.resolve`、`SysUserMapper.findStateById` |
+| 授权 | 读写统一走 `TaskAccessGuard`：写=仅 owner；读=owner，或管理员在开关开启时跨用户读；demo 行非跨用户管理员不可见，且**任何角色不可写**；无 owner 行任何人不可写 | `TaskAccessGuard` |
+| 查询口径 | 列表、分页、运行中、统计均按 owner 过滤并排除 demo；统计响应新增 `scope` | `TaskProgressQueryService` |
+| 共享资源 | 数据集/算法/超参写操作仅管理员，越权 403 `ADMIN_REQUIRED` | `ResourceCommandService`、`ApiExceptionHandler` |
+| 数据集验证 | 新增管理员验证接口，失败不抛 500，写 `failed` 与原因 | `ResourceCommandService.verifyDataset` |
+| 配额 | 单用户并发按 `owner_user_id` 计数，历史无 owner 行不占配额 | `TaskExecutionQuotaPolicy` |
+| 迁移脚本 | 改为两段式：默认只读审核（`@apply_backfill=0`），确认 `@demo_task_ids` / `@reject_task_ids` 后再回填；不再按快照启发式判 demo | `sql/security_model_ownership.sql` |
+| 未做 | GPU 单槽租约、导出启动恢复、日志限额；真实 MySQL 双账号端到端 IT 已写但**未执行**（本机缺 `MYSQL_IT_PASSWORD`），迁移脚本实机执行同样未完成 | 见 `18` §9 证据矩阵 |
+| 接口审计 | 逐一核对任务、报告、日志、产物、导出、审计、统计、执行器状态、系统版本、共享资源入口，规则统一，无控制器可调用的无保护内部查询 | `18` §8 |
 
 ## 6. 待完成与优化建议
 
@@ -96,11 +153,14 @@ Vue 2 工程继续作为业务回归和回滚基线，不参与迁移版主流�
 
 ### P1：平台工程完善
 
-1. 持续补迁移版领域服务和 API 集成测试；现有 MySQL 集成测试仅覆盖任务原子领取、状态竞争和恢复扫描，不代表完整端到端覆盖。
-2. 补充 Python 依赖锁定、部署复现和应用重启演练。
-3. 继续补充 Redis 缓存命中率、失效和不可用降级的观测指标。
-4. 只有跨进程/多实例调度成为明确需求后，再评估 Outbox + RabbitMQ 和独立 Worker。
-5. 视需要将日志轮询升级为 SSE；SSE 属于服务端推送，不替代任务消息队列。
+1. **R1（下一个迭代）**：稳定用户 ID 归属、任务/报告/日志/产物/导出授权、共享资源写权限收敛、历史数据迁移。验收见 17 号指导书 R1。
+2. **R2**：配额与领取同事务、GPU 单槽租约、导出启动恢复、日志与产物限额、失败码细分。
+3. 持续补迁移版领域服务和 API 集成测试；现有 MySQL 集成测试仅覆盖任务原子领取、状态竞争和恢复扫描，不代表完整端到端覆盖。
+4. 补充 Python 依赖锁定、部署复现和应用重启演练。
+5. 继续补充 Redis 缓存命中率、失效和不可用降级的观测指标。
+6. 只有跨进程/多实例调度成为明确需求后，再评估 Outbox + RabbitMQ 和独立 Worker。
+7. 视需要将日志轮询升级为 SSE；SSE 属于服务端推送，不替代任务消息队列。
+8. 补齐数据集“登记 → 验证 → 可用”的状态推进，消除 `parse_status` 死路。
 
 ### P2：迁移收尾与平台增强
 
@@ -132,15 +192,23 @@ Vue 2 工程继续作为业务回归和回滚基线，不参与迁移版主流�
 - 当前不接入 VS、MetaPurifier 或其他对比算法的真实执行。
 - 当前不接入训练中防御和训练后防御的真实执行。
 - 三大防御阶段及算法卡片保留为完整展示架构，统一使用“展示占位”状态。
+- 工作台、案例库、运行监控为演示常量，不得作为真实运行数据或指标。
 - 当前不以工程验证结果替代论文正式实验结论。
+- 多用户隔离已在 R1 落地：任务归属以 `owner_user_id` 为准，服务端统一校验；R2 以后才补 GPU 单槽租约与导出恢复。
 
 ## 9. 迁移版质量门禁现状
 
-- `migration-backend` 当前包含资源、任务、缓存和配置相关单元测试，以及 1 个 MySQL 集成测试类；测试数量以最近一次验收报告为准。
-- MySQL 集成测试使用唯一随机 schema，验证并发领取仅一个成功、完成操作胜过已读取恢复快照、恢复只收敛孤儿 `running` 任务；清理后断言 schema 已删除。
+- `migration-backend` 现有 **12 个单元测试类、57 项单元测试**（2026-11-13 R1+评审修正后实测），以及 4 个 MySQL 集成测试类共 17 项场景：`MySqlTaskPersistenceIT` 5 项、`OwnershipMigrationScriptIT` 3 项、`OwnershipEndToEndIT` 6 项、`OwnershipEndToEndCrossReadIT` 3 项，均属 `mysql-it` profile。
+- R1 新增覆盖：`TaskAccessGuardTest` 8 项（owner/管理员/无 owner/demo 读与**demo 写拒绝**/跨用户）、`TaskExecutionQuotaPolicyTest` 4 项（按 owner 计数、跨用户不互相占用、全局上限、线程池关闭）、`OwnershipHttpContractTest` 8 项（真实 Security 过滤器链 + 真实控制器，持久层为 mock）、资源命令新增管理员拒绝与数据集验证 4 项、进度查询越权与统计 scope 3 项、集成测试新增 owner 范围查询与 demo 排除 2 项。
+- 端到端 IT（`OwnershipEndToEndIT` / `OwnershipEndToEndCrossReadIT`）使用真实 `@SpringBootTest` 上下文、真实 Security 过滤器、真实服务、真实隔离库：`OwnershipE2ESupport` 每轮创建随机 schema 并种入 admin/alice/bob 三个账号与四条归属状态不同的任务，两个账号各自 `/auth/code`→`/auth/login` 登录后访问同一任务，覆盖 403、demo 隔离、登录后禁用立即失效、无 `userId` 旧 token、伪造 `adm`、管理员开关 false/true 两种结果。**本机已执行通过（9/9）**。
+- 集成测试执行情况（2026-11-13 本机实测，`MYSQL_IT_PASSWORD` 由本机环境提供）：`mvn -B -f migration-backend/pom.xml verify -Pmysql-it` → **57 项单元测试 + 17 项 MySQL 集成测试全部通过，BUILD SUCCESS**。分布：`MySqlTaskPersistenceIT` 5、`OwnershipMigrationScriptIT` 3、`OwnershipEndToEndIT` 6、`OwnershipEndToEndCrossReadIT` 3。每个 IT 都用随机 schema，结束后删除。
+- 迁移脚本实机执行（隔离库）发现并修复两处缺陷：① 脚本把 `@apply_backfill` 重置为 0，导致“审核后重跑”永远退化为只读段；② 匹配条件 `data_origin <> 'demo'` 遇到历史行 `data_origin IS NULL` 结果为 NULL，按用户名匹配一行都写不进。修复后 `OwnershipMigrationScriptIT` 3/3 通过（只读段不改行、`@demo_task_ids` 隔离、`@reject_task_ids` 撤回、未知作者保持 `unattributed`）。
+- **仍未完成**：生产库 `eladmin` 上的实际迁移执行与逐行核对记录。隔离库通过只证明脚本行为正确，不等于生产数据已迁移；`sql/security_model_ownership.sql` 不得表述为“已在生产验证”。
+- MySQL 集成测试使用唯一随机 schema，验证并发领取仅一个成功、完成操作胜过已读取恢复快照、恢复只收敛孤儿 `running` 任务、owner 范围查询只返回本人行且 demo 行被排除；清理后断言 schema 已删除。
 - `.github/workflows/migration-quality.yml` 配置了迁移版 Maven `verify` 和 Vue 3 生产构建。工作流配置存在不代表远端 Actions 已成功，远端状态需以 GitHub Actions 记录为准。
 - `mysql-it` Maven profile 通过 Failsafe 启动 MySQL 集成测试；GitHub Actions 配置 MySQL 8.4 service。远端 Actions 尚未确认时，不将本地通过表述为远端通过。
-- 最近一次记录的本机 MySQL 验收命令 `mvn -B -f migration-backend/pom.xml verify -Pmysql-it` 已通过，覆盖 3 项数据库并发与恢复集成场景；本轮未重新执行。
+- 2026-11-13 R1 实测：`mvn -B -f migration-backend/pom.xml test` 通过 57 项单元测试（0 失败）；同日 `verify -Pmysql-it` 通过 57 项单测 + 17 项数据库 IT（含迁移脚本与两个端到端类）。
+- 迁移脚本已在随机隔离 schema 实跑通过，但**生产库尚未执行**；不得写成“迁移已完成/已验证生产”。
 - Redis 已进入迁移版依赖和运行配置，用于可重建资源目录；任务状态、报告和执行快照仍由 MySQL 保存。Redis 故障时缓存层降级回源 MySQL。
 - CI 工作流包含 MySQL 8.4 集成测试和前端生产构建；本次未查询 GitHub Actions 运行记录，不能据配置推断远端已通过。
-- 最近一次记录的本地普通 Maven 验证、MySQL profile 验证和前端生产构建结果见 `docs/sdd/16-engineering-improvement-roadmap.md`；本次文档编辑未重新运行这些命令。
+- 最近一次记录的本地普通 Maven 验证、MySQL profile 验证和前端生产构建结果见 `docs/sdd/16-engineering-improvement-roadmap.md`；R1 仅重跑普通 Maven 验证，前端未改动也未重跑构建。

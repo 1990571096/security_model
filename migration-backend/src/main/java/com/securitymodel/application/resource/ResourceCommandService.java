@@ -12,9 +12,12 @@ import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.time.LocalDateTime;
+import java.util.Map;
 
 @Service
 public class ResourceCommandService {
@@ -53,6 +56,7 @@ public class ResourceCommandService {
 
     @Transactional
     public Dataset saveDataset(Long id, DatasetInput input) {
+        currentUser.requireAdmin();
         Dataset dataset = id == null ? new Dataset() : requiredDataset(id);
         String previousPath = dataset.getFilePath();
         dataset.setDatasetName(input.datasetName().trim());
@@ -94,6 +98,7 @@ public class ResourceCommandService {
 
     @Transactional
     public Algorithm saveAlgorithm(Long id, AlgorithmInput input) {
+        currentUser.requireAdmin();
         Algorithm algorithm = id == null ? new Algorithm() : requiredAlgorithm(id);
         algorithm.setAlgorithmName(input.algorithmName().trim());
         algorithm.setAlgorithmType(input.algorithmType().trim());
@@ -123,6 +128,7 @@ public class ResourceCommandService {
 
     @Transactional
     public Dataset disableDataset(Long id) {
+        currentUser.requireAdmin();
         Dataset dataset = requiredDataset(id);
         dataset.setEnabled(false);
         dataset.setUpdateBy(currentUser.username());
@@ -135,6 +141,7 @@ public class ResourceCommandService {
 
     @Transactional
     public Algorithm disableAlgorithm(Long id) {
+        currentUser.requireAdmin();
         Algorithm algorithm = requiredAlgorithm(id);
         algorithm.setEnabled(false);
         algorithm.setUpdateBy(currentUser.username());
@@ -143,6 +150,59 @@ public class ResourceCommandService {
         cache.evict(ResourceCatalogCache.ALGORITHM_LIST, "security-model:resource:algorithm:" + id);
         audit.recordResource("algorithm", id, "DISABLE", "disabled", null);
         return algorithm;
+    }
+
+    /**
+     * Admin-only verification step that turns a registered path into a usable dataset.
+     *
+     * <p>R1 scope: existence and readability only. It does not parse samples, count labels or
+     * hash content, and a failure is reported as {@code parse_status='failed'} instead of an
+     * exception so the operator can read the reason in the UI.</p>
+     */
+    @Transactional
+    public Dataset verifyDataset(Long id) {
+        currentUser.requireAdmin();
+        Dataset dataset = requiredDataset(id);
+        Path path;
+        try {
+            path = Path.of(dataset.getFilePath()).toAbsolutePath().normalize();
+        } catch (InvalidPathException exception) {
+            return markVerification(dataset, "failed", "数据集路径格式无效");
+        }
+        if (!Files.exists(path)) {
+            return markVerification(dataset, "failed", "路径不存在：" + path);
+        }
+        if (!Files.isReadable(path)) {
+            return markVerification(dataset, "failed", "路径不可读：" + path);
+        }
+        try {
+            if (Files.isRegularFile(path) && Files.size(path) == 0) {
+                return markVerification(dataset, "failed", "数据集文件为空：" + path);
+            }
+            if (Files.isDirectory(path)) {
+                try (var entries = Files.list(path)) {
+                    if (entries.findAny().isEmpty()) {
+                        return markVerification(dataset, "failed", "数据集目录为空：" + path);
+                    }
+                }
+            }
+        } catch (IOException exception) {
+            return markVerification(dataset, "failed", "路径读取失败：" + exception.getMessage());
+        }
+        return markVerification(dataset, "success", "路径验证通过：存在且可读");
+    }
+
+    private Dataset markVerification(Dataset dataset, String status, String message) {
+        dataset.setParseStatus(status);
+        dataset.setParseMessage(message);
+        dataset.setParseTime(LocalDateTime.now());
+        dataset.setUpdateBy(currentUser.username());
+        dataset.setUpdateTime(LocalDateTime.now());
+        datasets.updateById(dataset);
+        cache.evict(ResourceCatalogCache.DATASET_LIST, "security-model:resource:dataset:" + dataset.getDatasetId());
+        audit.recordResource("dataset", dataset.getDatasetId(), "VERIFY", status,
+                Map.of("filePath", dataset.getFilePath(), "message", message));
+        return dataset;
     }
 
     private Dataset requiredDataset(Long id) {

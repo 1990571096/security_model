@@ -6,9 +6,9 @@ import com.securitymodel.application.export.CleanSubsetExportService;
 import com.securitymodel.application.report.PreDefenseLogQueryService;
 import com.securitymodel.application.report.PreDefenseReportQueryService;
 import com.securitymodel.application.task.ExecutionFingerprintService;
+import com.securitymodel.application.task.TaskAccessGuard;
 import com.securitymodel.domain.export.CleanSubsetExportTask;
 import com.securitymodel.domain.task.PreDefenseTask;
-import com.securitymodel.infrastructure.persistence.mapper.PreDefenseTaskMapper;
 import org.springframework.core.io.Resource;
 import org.springframework.http.*;
 import org.springframework.web.bind.annotation.*;
@@ -24,23 +24,23 @@ public class PreDefenseReportController {
     private final PreDefenseReportQueryService reportService;
     private final PreDefenseLogQueryService logService;
     private final CleanSubsetExportService exportService;
-    private final PreDefenseTaskMapper taskMapper;
     private final ObjectMapper objectMapper;
     private final ExecutionFingerprintService fingerprintService;
+    private final TaskAccessGuard taskAccessGuard;
 
     public PreDefenseReportController(
             PreDefenseReportQueryService reportService,
             PreDefenseLogQueryService logService,
             CleanSubsetExportService exportService,
-            PreDefenseTaskMapper taskMapper,
             ObjectMapper objectMapper,
-            ExecutionFingerprintService fingerprintService) {
+            ExecutionFingerprintService fingerprintService,
+            TaskAccessGuard taskAccessGuard) {
         this.reportService = reportService;
         this.logService = logService;
         this.exportService = exportService;
-        this.taskMapper = taskMapper;
         this.objectMapper = objectMapper;
         this.fingerprintService = fingerprintService;
+        this.taskAccessGuard = taskAccessGuard;
     }
 
     @GetMapping("/report/{taskId}")
@@ -63,7 +63,7 @@ public class PreDefenseReportController {
 
     @GetMapping("/cleaned-dataset/exports/{exportId}")
     public CleanSubsetExportTask export(@PathVariable Long exportId) {
-        return exportService.findRequired(exportId);
+        return exportService.findReadable(exportId);
     }
 
     @GetMapping("/cleaned-dataset/exports/task/{taskId}")
@@ -73,7 +73,7 @@ public class PreDefenseReportController {
 
     @GetMapping("/cleaned-dataset/exports/{exportId}/download")
     public ResponseEntity<Resource> download(@PathVariable Long exportId) throws IOException {
-        CleanSubsetExportTask task = exportService.findRequired(exportId);
+        CleanSubsetExportTask task = exportService.findReadable(exportId);
         Path path = exportService.resolveDownloadFile(exportId);
         return ResponseEntity.ok()
                 .contentType(MediaType.parseMediaType("application/zip"))
@@ -87,10 +87,7 @@ public class PreDefenseReportController {
     public ResponseEntity<Resource> artifact(
             @PathVariable Long taskId,
             @RequestParam String artifactPath) throws IOException {
-        PreDefenseTask task = taskMapper.selectById(taskId);
-        if (task == null) {
-            throw new IllegalArgumentException("任务不存在");
-        }
+        PreDefenseTask task = taskAccessGuard.requireReadable(taskId);
         JsonNode result = objectMapper.readTree(task.getCleaningResult());
         Path root = Paths.get(result.path("artifacts").path("path").asText()).toAbsolutePath().normalize();
         Path target = Paths.get(artifactPath).toAbsolutePath().normalize();

@@ -7,9 +7,11 @@ import jakarta.servlet.http.HttpServletRequest;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import com.securitymodel.application.audit.AdminRequiredException;
 import com.securitymodel.application.task.TaskCommandException;
 import com.securitymodel.application.resource.ResourceConflictException;
 import com.securitymodel.application.resource.ResourceNotFoundException;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -38,6 +40,30 @@ public class ApiExceptionHandler {
         var error = exception.getBindingResult().getFieldError();
         return ResponseEntity.badRequest().body(Map.of("code", "VALIDATION_FAILED",
                 "message", error == null ? "请求字段无效" : error.getField() + ": " + error.getDefaultMessage()));
+    }
+
+    @ExceptionHandler(AdminRequiredException.class)
+    public ResponseEntity<Map<String, Object>> handleAdminRequired(
+            AdminRequiredException exception,
+            HttpServletRequest request) {
+        return ResponseEntity.status(HttpStatus.FORBIDDEN).body(Map.of(
+                "code", "ADMIN_REQUIRED",
+                "message", exception.getMessage(),
+                "path", request.getRequestURI(),
+                "timestamp", OffsetDateTime.now().toString()
+        ));
+    }
+
+    @ExceptionHandler(AccessDeniedException.class)
+    public ResponseEntity<Map<String, Object>> handleAccessDenied(
+            AccessDeniedException exception,
+            HttpServletRequest request) {
+        return ResponseEntity.status(HttpStatus.FORBIDDEN).body(Map.of(
+                "code", "ACCESS_DENIED",
+                "message", exception.getMessage(),
+                "path", request.getRequestURI(),
+                "timestamp", OffsetDateTime.now().toString()
+        ));
     }
 
     @ExceptionHandler(TaskCommandException.class)

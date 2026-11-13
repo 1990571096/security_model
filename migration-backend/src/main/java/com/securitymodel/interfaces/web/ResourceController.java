@@ -48,6 +48,12 @@ public class ResourceController {
         return resourceCommandService.disableDataset(datasetId);
     }
 
+    /** Admin-only: promotes a registered path from {@code pending} to {@code success}. */
+    @PostMapping("/api/dataset/{datasetId}/validate")
+    public Dataset validateDataset(@PathVariable Long datasetId) {
+        return resourceCommandService.verifyDataset(datasetId);
+    }
+
     @GetMapping("/api/algorithm")
     public List<Algorithm> algorithms() { return resourceQueryService.findAlgorithms(); }
 

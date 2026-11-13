@@ -59,7 +59,8 @@ public class AuthController {
             throw new IllegalArgumentException("用户名或密码错误");
         }
         return Map.of(
-                "token", "Bearer " + tokenService.issue(user.getUserId(), user.getUsername()),
+                "token", "Bearer " + tokenService.issue(user.getUserId(), user.getUsername(),
+                        user.getAdmin() != null && user.getAdmin() == 1),
                 "user", userView(user));
     }
 
