@@ -13,6 +13,7 @@ import re
 import struct
 import subprocess
 import sys
+import uuid
 import zipfile
 import zlib
 from datetime import datetime, timezone
@@ -21,6 +22,10 @@ from pathlib import Path
 
 class IntegrationError(Exception):
     """Raised for a platform/VaB integration contract failure."""
+
+    def __init__(self, message, error_code="VAB_INTEGRATION_ERROR"):
+        super().__init__(message)
+        self.error_code = error_code
 
 
 SUPPORTED_ALGORITHMS = {
@@ -462,15 +467,181 @@ def build_command(script, config):
     ]
 
 
-def acquire_lock(lock_path):
+LOCK_STALE_SECONDS_DEFAULT = 6 * 60 * 60
+
+
+def _pid_alive(pid):
+    """Best-effort liveness probe that never signals the target process."""
     try:
-        descriptor = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    except FileExistsError as exc:
-        raise IntegrationError(
-            "another VaB task is already using the shared GPU/runtime lock: {}".format(lock_path)
-        ) from exc
-    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-        handle.write("{}\n".format(os.getpid()))
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return False
+        try:
+            exit_code = ctypes.c_ulong()
+            if kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)) == 0:
+                return False
+            return exit_code.value == 259  # STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def read_lock_metadata(lock_path):
+    """Return the recorded lock metadata; empty dict when unreadable or corrupt."""
+    try:
+        raw = Path(lock_path).read_text(encoding="utf-8", errors="replace").strip()
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return {}
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        data = None
+    if isinstance(data, dict):
+        return data
+    first_line = raw.splitlines()[0].strip()
+    try:
+        return {"pid": int(first_line), "token": None}
+    except ValueError:
+        return {}
+
+
+def _lock_is_stale(lock_path, metadata, stale_after_seconds):
+    pid = metadata.get("pid")
+    if pid is not None and not _pid_alive(pid):
+        return True
+    if pid is not None:
+        return False
+    try:
+        age = datetime.now(timezone.utc).timestamp() - Path(lock_path).stat().st_mtime
+    except OSError:
+        return False
+    return age > stale_after_seconds
+
+
+def acquire_lock(lock_path, task_id=None, run_id=None, stale_after_seconds=None):
+    """Take the adapter lock, reclaiming it only when the recorded holder is dead.
+
+    Returns the lease token so release can avoid deleting a successor's lock.
+    """
+    lock_path = Path(lock_path)
+    if stale_after_seconds is None:
+        try:
+            stale_after_seconds = int(
+                os.environ.get("SECURITY_MODEL_VAB_LOCK_STALE_SECONDS", LOCK_STALE_SECONDS_DEFAULT)
+            )
+        except ValueError:
+            stale_after_seconds = LOCK_STALE_SECONDS_DEFAULT
+    payload = {
+        "version": 1,
+        "pid": os.getpid(),
+        "host": platform.node(),
+        "task_id": None if task_id is None else str(task_id),
+        "run_id": None if run_id is None else str(run_id),
+        "token": uuid.uuid4().hex,
+        "acquired_at": datetime.now(timezone.utc).isoformat(),
+    }
+    for _ in range(3):
+        try:
+            descriptor = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            metadata = read_lock_metadata(lock_path)
+            if metadata is None:
+                continue
+            holder = metadata.get("pid")
+            if not _lock_is_stale(lock_path, metadata, stale_after_seconds):
+                raise IntegrationError(
+                    "GPU_LOCK_BUSY: another VaB task is using the shared GPU/runtime lock: "
+                    "pid={}, task_id={}, run_id={}".format(
+                        holder, metadata.get("task_id"), metadata.get("run_id")
+                    ),
+                    error_code="GPU_LOCK_BUSY",
+                )
+            quarantine = lock_path.with_name(
+                "{}.stale.{}.{}".format(lock_path.name, os.getpid(), uuid.uuid4().hex)
+            )
+            try:
+                os.replace(str(lock_path), str(quarantine))
+            except OSError:
+                continue
+            moved = read_lock_metadata(quarantine)
+            if moved is not None and moved.get("token") != metadata.get("token"):
+                # Another process refreshed the lock between read and replace: give it back.
+                try:
+                    os.replace(str(quarantine), str(lock_path))
+                except OSError:
+                    pass
+                raise IntegrationError(
+                    "GPU_LOCK_BUSY: lock changed hands during stale reclaim",
+                    error_code="GPU_LOCK_BUSY",
+                )
+            try:
+                quarantine.unlink()
+            except OSError:
+                pass
+            continue
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle)
+            handle.write("\n")
+        return payload["token"]
+    raise IntegrationError(
+        "GPU_LOCK_BUSY: could not reclaim the VaB runtime lock after retries",
+        error_code="GPU_LOCK_BUSY",
+    )
+
+
+def release_lock(lock_path, token):
+    """Release only when the on-disk lock still belongs to this run."""
+    metadata = read_lock_metadata(lock_path)
+    if metadata is None:
+        return
+    if metadata.get("token") not in (None, token):
+        return
+    try:
+        Path(lock_path).unlink()
+    except OSError:
+        pass
+
+
+def classify_runtime_failure(output_text):
+    """Map child-process output to a stable failure code without guessing."""
+    lowered = (output_text or "").lower()
+    if (
+        "cuda out of memory" in lowered
+        or "outofmemoryerror" in lowered
+        or "cublas_status_alloc_failed" in lowered
+        or "cudnn_status_alloc_failed" in lowered
+    ):
+        return "GPU_OOM"
+    if (
+        "no cuda-capable device" in lowered
+        or "cuda driver version" in lowered
+        or "torch not compiled with cuda" in lowered
+        or "cuda_error_no_device" in lowered
+        or "no device of requested type" in lowered
+    ):
+        return "CUDA_UNAVAILABLE"
+    return "VAB_INTEGRATION_ERROR"
 
 
 def parse_metrics(output_root):
@@ -615,7 +786,11 @@ def run(args):
             )
         else:
             lock_path = vab_root / ".security-model-vab.lock"
-            acquire_lock(lock_path)
+            lock_token = acquire_lock(
+                lock_path,
+                task_id=request.get("taskId"),
+                run_id=request.get("runId"),
+            )
             try:
                 execution_log = output_root / "execution.log"
                 write_progress(progress_path, {
@@ -645,10 +820,17 @@ def run(args):
                         returncode=process.wait(),
                     )
             finally:
-                if lock_path.exists():
-                    lock_path.unlink()
+                release_lock(lock_path, lock_token)
             if completed.returncode != 0:
-                raise IntegrationError("VaB process exited with code {}".format(completed.returncode))
+                log_text = ""
+                try:
+                    log_text = execution_log.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    pass
+                raise IntegrationError(
+                    "VaB process exited with code {}".format(completed.returncode),
+                    error_code=classify_runtime_failure(log_text),
+                )
 
             purity, selected_counts, logs = parse_metrics(output_root)
             images = sorted(output_root.rglob("*.png"))
@@ -695,7 +877,7 @@ def run(args):
             started_at,
             run_id=request.get("runId") if "request" in locals() else None,
             attempt=request.get("attempt") if "request" in locals() else None,
-            error_code="VAB_INTEGRATION_ERROR",
+            error_code=getattr(exc, "error_code", "VAB_INTEGRATION_ERROR"),
             failure_reason=str(exc),
         )
 

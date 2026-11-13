@@ -133,8 +133,15 @@ mvn -B -f migration-backend/pom.xml verify
 - 并发：GPU 准入由数据库租约强制为 1（`GPU_BUSY`），JVM 的 4/2 配额只作拒绝上限；租约与 `claimForExecution` 同一事务。
 - 续租：300s TTL、60s 心跳；续租失败取消进程并置 `GPU_LEASE_LOST`，不静默继续。
 - 导出：`ExportRecoveryRunner` 把 `pending`/`running` 显式置失败（`EXPORT_NOT_STARTED`/`EXPORT_INTERRUPTED`），不自动重派发；超时先杀进程树。
-- 验证：62 项单元测试 + 29 项 MySQL IT 全部通过；`GpuLeaseMySqlIT` 5/5（并发唯一、过期接管、fencing、按 run 释放、释放后可再获取）。**未跑真实 LDD**，生产库未建表。
-- 未实现：适配器陈旧锁接管、`GPU_LOCK_BUSY/GPU_OOM/CUDA_UNAVAILABLE` 细分、日志与产物限额、自动重试队列。
+- 验证：第一切片 62 项单元测试 + 29 项 MySQL IT 全部通过；`GpuLeaseMySqlIT` 5/5（并发唯一、过期接管、fencing、按 run 释放、释放后可再获取）。**未跑真实 LDD**，生产库未建表。
+
+### R2 第二切片实施记录（2026-11-13）
+
+- 范围：适配器陈旧锁接管、失败码细分、Java 无结果时 stderr 兜底归类。
+- 锁：锁文件改为 JSON（`pid/host/task_id/run_id/token/acquired_at`）；只有 pid 不存活才接管，接管前后比对 token 防止误删新锁；释放校验 token；Windows 用 `OpenProcess`/`GetExitCodeProcess` 探测存活（不使用会误杀进程的 `os.kill(pid,0)`）。
+- 失败码：`GPU_LOCK_BUSY`（锁被活进程占用，稍后重试）、`GPU_OOM`（OOM/CUBLAS/CUDNN 分配失败，人工调小 batch）、`CUDA_UNAVAILABLE`（无设备/驱动不符，不自动重试）；其余仍 `VAB_INTEGRATION_ERROR`。Java 仅在子进程没写 `result.json` 时按 stderr 兜底，有结果时以适配器写入的 `error_code` 为准。
+- 验证：Java **69 项单元测试 + 29 项 MySQL IT** 全绿（新增 `PythonLddTaskExecutorFailureCodeTest` 7 项）；适配器 `python -m unittest` **11 项**全绿。**未跑真实 CUDA/LDD**。
+- 未实现：自动重试队列（D5）、日志与 attempt 级产物限额、真实 LDD 显存实测。
 
 ## 文档同步规则
 

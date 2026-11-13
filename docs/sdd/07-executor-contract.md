@@ -220,14 +220,19 @@ Consumer rules (implemented in `PythonLddTaskExecutor.updateProgressFromSnapshot
 | `TASK_USER_QUOTA_EXCEEDED` | Java | Per-username quota hit | Yes (later) |
 | `EXECUTOR_RESTARTED` | Java | Recovery after app restart | Yes (retry) |
 | `TASK_CANCELED` | Java | Cancelled by operator | No |
-| `VAB_INTEGRATION_ERROR` | Python adapter | Any adapter failure (lock busy, CUDA missing, script error, non-zero child exit) | Depends on cause — see note |
+| `VAB_INTEGRATION_ERROR` | Python adapter | Adapter failure with no more specific code (script/config error, non-zero child exit) | Manual |
+| `GPU_LOCK_BUSY` | Python adapter / Java fallback | Adapter runtime lock held by a live process (or unreclaimable) | Retry later |
+| `GPU_OOM` | Python adapter / Java fallback | CUDA/CUBLAS/CUDNN allocation failure | Manual, lower batch |
+| `CUDA_UNAVAILABLE` | Python adapter / Java fallback | No CUDA device or driver/runtime mismatch | No automatic retry |
 | `EXPORT_QUEUE_FULL` | Java | Export dispatch rejected | Yes |
 | `EXPORT_FAILED` | Java | Export process failed/timeout/no ZIP | Manual |
 | `EXPORT_INTERRUPTED` | Java | Export thread interrupted | Manual |
 
-Note: `VAB_INTEGRATION_ERROR` is currently a single bucket. Concurrent-lock conflicts, missing
-CUDA and child-process failures are indistinguishable in the stored result. Splitting
-`GPU_LOCK_BUSY` / `GPU_OOM` / `CUDA_UNAVAILABLE` is an R2 item, not an implemented behaviour.
+Note: since 2026-11-13 the adapter classifies lock conflicts, CUDA OOM and missing-CUDA
+separately (`GPU_LOCK_BUSY` / `GPU_OOM` / `CUDA_UNAVAILABLE`); Java applies the same text
+classification only when the child died without writing `result.json`. `GPU_OOM` and
+`CUDA_UNAVAILABLE` are not automatically retried; `GPU_LOCK_BUSY` may be retried later by the
+operator (no queue yet).
 
 ## Clean Subset Export Contract
 
@@ -244,23 +249,34 @@ python algorithm_entry.py --export-clean-subset \
 
 The Java side (`CleanSubsetExportExecutor`) writes `<artifactRoot>/clean-subset-exports/`, redirects
 stdout+stderr to `*.export.log`, then renames `.part` → final only when the process exited 0 and
-the `.part` ZIP is non-empty. Timeouts call `destroyForcibly()` on the direct process only (no
-descendant sweep). There is **no** startup recovery for export tasks: a row left `pending` or
-`running` after a restart is never re-dispatched or converged automatically.
+the `.part` ZIP is non-empty. Timeouts destroy the process tree (descendants first, then the
+direct process). `ExportRecoveryRunner` converges rows left `pending`/`running` after a restart
+to `EXPORT_NOT_STARTED` / `EXPORT_INTERRUPTED`; it never marks a half-written ZIP as success.
 
 Selection files must resolve inside the task artifact root and match `selected_indices_(\d+).npy`;
 the export is idempotent per `(task_id, isolation_ratio)` via a unique key.
 
-## GPU Serialization (fact, not a designed scheduler)
+## GPU Serialization (database lease first, adapter lock second)
 
-VaB runs are serialized by an exclusive lock file at `VAB_ROOT/.security-model-vab.lock`
-(`os.open(O_CREAT|O_EXCL)`). Consequences:
+Concurrency is enforced by the MySQL single-slot lease (`sys_gpu_lease`, see ADR-014). The adapter
+lock at `VAB_ROOT/.security-model-vab.lock` remains as a second line of defence:
 
-- Two concurrent LDD tasks do not queue; the loser fails immediately with
-  `VAB_INTEGRATION_ERROR` (“another VaB task is already using the shared GPU/runtime lock”).
-- The lock is removed in a `finally`, but a hard kill / power loss / BSOD leaves a stale file and
-  **blocks all subsequent LDD runs** until it is deleted manually.
-- There is no PID validation and no age check.
+- The lock file now records JSON metadata: `pid`, `host`, `task_id`, `run_id`, `token`,
+  `acquired_at` (legacy files containing a bare pid are still readable).
+- Two concurrent LDD runs do not queue; the loser fails with `GPU_LOCK_BUSY`
+  (“another VaB task is using the shared GPU/runtime lock”).
+- A lock whose recorded pid is no longer alive is reclaimed: the file is moved aside, its
+  metadata token is re-checked, and only then is a new lock created. If the token changed
+  between read and move (another process just refreshed it), the file is restored and the new
+  caller gets `GPU_LOCK_BUSY`.
+- Liveness is checked without signalling: Windows uses `OpenProcess` + `GetExitCodeProcess`,
+  POSIX uses `os.kill(pid, 0)`.
+- Release deletes the file only when its `token` still matches the caller, so a slow run cannot
+  delete a successor's lock.
+- Residual risk: pid reuse looks like a live holder (conservative: stays busy); a file with
+  unparsable content and no pid is reclaimed only after
+  `SECURITY_MODEL_VAB_LOCK_STALE_SECONDS` (default 21600). On POSIX, a dead holder's pid may
+  have been reused by an unrelated process, which also stays conservative (busy).
 
 The platform quota does not model the GPU. A database-backed single-slot lease is proposed in
 `18-multiuser-ownership-and-resources.md` §5 and is **not implemented**.

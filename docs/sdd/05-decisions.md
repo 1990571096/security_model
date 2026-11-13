@@ -249,7 +249,7 @@ Agent 采用外部大模型 API，本机不部署大模型。生成模型和 emb
 5. **Fencing**：每次获取令牌单调 +1；续租与释放都以 `lease_token` 为条件，旧 worker 既不能延长也不能释放新租约。任务状态更新继续用 `run_id + attempt` 条件更新，两套条件互不替代。租约 token 用 `@JsonIgnore` 排除在 `request.json` 与执行快照之外，快照只保留 `slotId`/`fencingToken`/`expiresAt` 供审计。
 6. **并发口径**：GPU 准入并发由数据库租约强制为 **1**；`max-running-tasks=4`、`max-running-tasks-per-user=2` 保留为“拒绝/排队”的业务上限，不再被当作 GPU 并发数。多用户不等于多 GPU 并发。
 7. **导出重启收敛**：`ExportRecoveryRunner` 在启动时把 `pending`/`running` 导出显式置为失败（`EXPORT_NOT_STARTED` / `EXPORT_INTERRUPTED`），不自动重派发——可能写到一半的 ZIP 不能标 success；用户通过既有失败详情重新提交。导出进程超时后先杀进程树再强杀，避免子进程继续写文件。
-8. **本轮不做**：适配器锁陈旧接管（pid + 启动时间）、`GPU_LOCK_BUSY/GPU_OOM/CUDA_UNAVAILABLE` 细分、自动重试队列、attempt 级产物限额（均留 R2 后续或 R3）。
+8. **第一轮不做**（第二轮已补，见 ADR-015）：适配器锁陈旧接管（pid + 启动时间）、`GPU_LOCK_BUSY/GPU_OOM/CUDA_UNAVAILABLE` 细分、自动重试队列、attempt 级产物限额。
 
 原因：文件锁和 JVM 锁都不能跨进程、不能抗硬杀；把“谁在用 GPU”落到 MySQL 的单一活动行，才能让两个请求、两个实例和重启后的回收都有同一事实源。
 
@@ -258,3 +258,30 @@ Agent 采用外部大模型 API，本机不部署大模型。生成模型和 emb
 - 回滚 `sql/security_model_gpu_lease_rollback.sql` 会删除租约历史；只可在确认无任务执行后使用。
 - 租期 300 秒小于 Python `timeout-seconds=3600`，因此续租是正确性的一部分：JVM 卡死超过 TTL 时租约会过期，单机单实例下由人工确认进程后再启动新任务。
 - 未跑真实 LDD，因此“6GB 显存下的并发上限”仍无实测依据；本轮只把并发固定为 1。
+
+## ADR-015：适配器陈旧锁接管与失败码细分
+
+日期：2026-11-13；状态：**已实施并通过适配器单元测试；未跑真实 LDD**。
+
+背景：ADR-014 把并发门槛移到 MySQL 租约后，适配器文件锁仍是第二道防线。原锁只写裸 pid、无年龄判断：进程被 `SIGKILL`／断电后残留文件会让所有后续 LDD 永久失败，且失败统一为 `VAB_INTEGRATION_ERROR`，运维无法区分“锁被活进程占用”“显存不足”“CUDA 环境不可用”。
+
+决策：
+
+1. **锁元数据结构化**：锁文件写 JSON（`version/pid/host/task_id/run_id/token/acquired_at`）；旧格式（裸 pid 文本）仍可读，不被误判。
+2. **陈旧判定只看持有者是否还活着**：pid 不存活才允许接管；pid 存活一律 `GPU_LOCK_BUSY`，不用“文件存在太久”直接抢活进程的锁。无 pid 或内容不可解析时，才退化为按 `SECURITY_MODEL_VAB_LOCK_STALE_SECONDS`（默认 21600）年龄阈值接管。
+3. **接管要防误删新锁**：读到陈旧锁后先 `os.replace` 到隔离名，再比对隔离文件里的 `token` 是否仍是读到的那一个；不一致说明其间已有进程换了锁，恢复原文件并返回 `GPU_LOCK_BUSY`，不制造两个持有者。
+4. **释放校验 token**：`release_lock` 只在磁盘锁的 `token` 等于本次运行的 token（或旧格式无 token）时删除，慢进程不能删掉后继者的锁。
+5. **进程存活探测不发信号**：Windows 用 `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` + `GetExitCodeProcess == STILL_ACTIVE`；POSIX 用 `os.kill(pid, 0)`。（Windows 的 `os.kill(pid, 0)` 会真的终止进程，禁止使用。）
+6. **失败码细分**：适配器按子进程输出归类 `GPU_OOM`（`CUDA out of memory` / `CUBLAS_STATUS_ALLOC_FAILED` / `CUDNN_STATUS_ALLOC_FAILED`）、`CUDA_UNAVAILABLE`（无设备／驱动版本不符／未编译 CUDA），其余保持 `VAB_INTEGRATION_ERROR`；锁冲突单独为 `GPU_LOCK_BUSY`。`IntegrationError` 携带 `error_code`，写入 `result.json.error_code`。
+7. **Java 只在没有 result.json 时兜底归类**：子进程非零退出且未写结果时，按 stderr 文本归类为 `GPU_OOM`/`CUDA_UNAVAILABLE`/`GPU_LOCK_BUSY`，否则 `PYTHON_PROCESS_EXITED`；有 result.json 时一律以适配器写入的 `error_code` 为准，Java 不用文本猜测覆盖协议结果。
+8. **不自动重试**：`GPU_OOM`、`CUDA_UNAVAILABLE` 明确不可自动重试；`GPU_LOCK_BUSY` 只提示稍后重试，自动重试队列仍留 R3（D5 未关闭）。
+
+原因：锁的价值是阻止两个进程同时进 CUDA，宁可保守地判“占用中”，也不能为省一次人工操作而误抢活进程的锁；失败码只有作为稳定契约写入结果，才能被前端与后续重试策略使用。
+
+影响／残余风险：
+
+- 接管存在一个很窄的窗口：读陈旧文件与 `os.replace` 之间若被其他进程刷新，靠 token 比对回滚；但仍可能短暂把新锁移走再恢复，期间第三方会看到锁不存在。单机单实例 + 数据库租约为第一门槛，接受该窗口，不宣称“无竞态”。
+- pid 复用会被当作活持有者（保守，需人工确认）；无 pid 的损坏文件最多阻塞 6 小时。
+- 适配器单元测试 11 项（`algorithm-runtime/vab/tests/test_algorithm_lock.py`，`python -m unittest`），Java 归包测试 7 项；**均不涉及真实 CUDA／真实 LDD**。
+- `SECURITY_MODEL_VAB_LOCK_STALE_SECONDS` 只影响“无 pid／不可解析”文件的接管，不改变活进程判定；未把它做成按任务超时自动计算，避免与 3600 秒执行超时隐式耦合。
+

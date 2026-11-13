@@ -146,8 +146,9 @@ public class PythonLddTaskExecutor implements DefenseTaskExecutor {
             }
             String result = readIfExists(context.resultFile);
             if (process.exitValue() != 0 && !isFailedResult(result)) {
-                throw new IllegalStateException("PYTHON_PROCESS_EXITED: Python 进程退出码 "
-                        + process.exitValue() + "，stderr: " + readIfExists(context.stderrFile));
+                String stderr = readIfExists(context.stderrFile);
+                throw new IllegalStateException(classifyProcessFailure(stderr)
+                        + ": Python 进程退出码 " + process.exitValue() + "，stderr: " + stderr);
             }
             updateProgress(request, 90);
             if (!StringUtils.hasText(result)) {
@@ -295,11 +296,38 @@ public class PythonLddTaskExecutor implements DefenseTaskExecutor {
         if (StringUtils.hasText(message) && message.contains(":")) {
             String code = message.substring(0, message.indexOf(':'));
             if (List.of("EXECUTOR_NOT_CONFIGURED", "TASK_TIMEOUT", "PYTHON_PROCESS_EXITED",
-                    "RESULT_MISSING", "RESULT_INVALID_JSON", "RESULT_PROTOCOL_ERROR").contains(code)) {
+                    "RESULT_MISSING", "RESULT_INVALID_JSON", "RESULT_PROTOCOL_ERROR",
+                    "GPU_OOM", "CUDA_UNAVAILABLE", "GPU_LOCK_BUSY",
+                    "GPU_LEASE_LOST", "GPU_BUSY").contains(code)) {
                 return code;
             }
         }
         return "PYTHON_EXECUTION_ERROR";
+    }
+
+    /**
+     * Stable failure code for a child process that died without writing result.json.
+     * Text matching only; never used to infer success.
+     */
+    static String classifyProcessFailure(String output) {
+        String lowered = output == null ? "" : output.toLowerCase(java.util.Locale.ROOT);
+        if (lowered.contains("cuda out of memory")
+                || lowered.contains("outofmemoryerror")
+                || lowered.contains("cublas_status_alloc_failed")
+                || lowered.contains("cudnn_status_alloc_failed")) {
+            return "GPU_OOM";
+        }
+        if (lowered.contains("no cuda-capable device")
+                || lowered.contains("cuda driver version")
+                || lowered.contains("torch not compiled with cuda")
+                || lowered.contains("cuda_error_no_device")
+                || lowered.contains("no device of requested type")) {
+            return "CUDA_UNAVAILABLE";
+        }
+        if (lowered.contains("gpu_lock_busy") || lowered.contains(".security-model-vab.lock")) {
+            return "GPU_LOCK_BUSY";
+        }
+        return "PYTHON_PROCESS_EXITED";
     }
 
     private String stripCode(String message) {

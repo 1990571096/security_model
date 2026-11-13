@@ -153,8 +153,22 @@ Vue 2 工程继续作为业务回归和回滚基线，不参与迁移版主流�
 | 释放 | 执行器 `finally` 按 token 释放；启动恢复按 `task_id+run_id` 释放，不会清掉新租约 | `PythonLddTaskExecutor`、`TaskRecoveryRunner` |
 | 并发口径 | GPU 准入并发由数据库租约强制为 1；JVM 的 4/2 配额保留为拒绝/排队上限，不再当作 GPU 并发数 | 配置 `security-model.executor.gpu.*` |
 | 导出重启收敛 | 启动时把 `pending`/`running` 导出置为 `EXPORT_NOT_STARTED`/`EXPORT_INTERRUPTED`，不自动重派发；超时先杀进程树 | `ExportRecoveryRunner`、`CleanSubsetExportExecutor` |
-| 未做 | 适配器文件锁陈旧接管、`GPU_LOCK_BUSY`/`GPU_OOM`/`CUDA_UNAVAILABLE` 细分、自动重试队列、日志与产物限额 | 留 R2 后续 / R3 |
-| 验证 | 62 项单元测试 + 29 项 MySQL IT（持久层 5、迁移 6、端到端 9+4、GPU 租约 5） | 见 §9 |
+| 未做（第一切片时） | 适配器锁陈旧接管、失败码细分（已在 §5.4 第二切片补齐）；自动重试队列、日志与产物限额仍未做 | 留 R2 后续 / R3 |
+| 验证 | 第一切片 62 项单元测试 + 29 项 MySQL IT（持久层 5、迁移 6、端到端 9+4、GPU 租约 5） | 见 §9 |
+
+## 5.4 R2 第二切片实施记录（2026-11-13）
+
+| 变更 | 事实 | 证据 |
+| --- | --- | --- |
+| 适配器锁元数据 | 锁文件写 JSON：`pid/host/task_id/run_id/token/acquired_at`；旧裸 pid 文件仍可读 | `algorithm_entry.acquire_lock` |
+| 陈旧接管 | 仅在持有 pid 不存活时接管；隔离移动后比对 token，不一致则恢复并返回 `GPU_LOCK_BUSY`；无 pid 的损坏文件才按 `SECURITY_MODEL_VAB_LOCK_STALE_SECONDS`（默认 21600）年龄判定 | `acquire_lock`、`_lock_is_stale` |
+| 安全释放 | 只有磁盘锁 token 与本次运行一致才删除，慢进程不能删后继者的锁 | `release_lock` |
+| 存活探测 | Windows `OpenProcess` + `GetExitCodeProcess`；POSIX `os.kill(pid,0)`；不使用会终止进程的 Windows `os.kill(pid,0)` | `_pid_alive` |
+| 失败码细分 | `GPU_OOM`（OOM/CUBLAS/CUDNN 分配失败）、`CUDA_UNAVAILABLE`（无设备/驱动不符）、`GPU_LOCK_BUSY`（锁冲突），其余 `VAB_INTEGRATION_ERROR`；写入 `result.json.error_code` | `classify_runtime_failure`、`IntegrationError.error_code` |
+| Java 兜底 | 子进程非零退出且无 `result.json` 时按 stderr 归类；有结果时以适配器写入的 `error_code` 为准 | `PythonLddTaskExecutor.classifyProcessFailure` |
+| 不自动重试 | `GPU_OOM`/`CUDA_UNAVAILABLE` 明确不自动重试；`GPU_LOCK_BUSY` 仅提示稍后重试 | ADR-015 |
+| 未做 | 自动重试队列、日志与 attempt 级产物限额、真实 LDD 实测 | R3 |
+| 验证 | Java 69 项单元测试（新增 `PythonLddTaskExecutorFailureCodeTest` 7 项）+ 29 项 MySQL IT；适配器 `python -m unittest` 11 项 | §9 |
 
 ## 6. 待完成与优化建议
 
@@ -207,14 +221,14 @@ Vue 2 工程继续作为业务回归和回滚基线，不参与迁移版主流�
 - 三大防御阶段及算法卡片保留为完整展示架构，统一使用“展示占位”状态。
 - 工作台、案例库、运行监控为演示常量，不得作为真实运行数据或指标。
 - 当前不以工程验证结果替代论文正式实验结论。
-- 多用户隔离已在 R1 落地：任务归属以 `owner_user_id` 为准，服务端统一校验；R2 第一切片已补 GPU 单槽租约与导出重启收敛，但适配器陈旧锁、失败码细分、日志/产物限额仍未做。
+- 多用户隔离已在 R1 落地：任务归属以 `owner_user_id` 为准，服务端统一校验；R2 已补 GPU 单槽租约、导出重启收敛、适配器陈旧锁接管与失败码细分，日志/产物限额与自动重试队列仍未做。
 
 ## 9. 迁移版质量门禁现状
 
-- `migration-backend` 现有 **13 个单元测试类、62 项单元测试**（2026-11-13 R2 第一切片后实测），以及 5 个 MySQL 集成测试类共 **29 项**场景：`MySqlTaskPersistenceIT` 5 项、`OwnershipMigrationScriptIT` 6 项、`OwnershipEndToEndIT` 9 项、`OwnershipEndToEndCrossReadIT` 4 项、`GpuLeaseMySqlIT` 5 项，均属 `mysql-it` profile。
+- `migration-backend` 现有 **14 个单元测试类、69 项单元测试**（2026-11-13 R2 第二切片后实测），以及 5 个 MySQL 集成测试类共 **29 项**场景：`MySqlTaskPersistenceIT` 5 项、`OwnershipMigrationScriptIT` 6 项、`OwnershipEndToEndIT` 9 项、`OwnershipEndToEndCrossReadIT` 4 项、`GpuLeaseMySqlIT` 5 项，均属 `mysql-it` profile。另有适配器独立 Python 单元测试 11 项（`python -m unittest`，不计入 Maven 计数）。
 - R1 新增覆盖：`TaskAccessGuardTest` 8 项（owner/管理员/无 owner/demo 读与**demo 写拒绝**/跨用户）、`TaskExecutionQuotaPolicyTest` 4 项（按 owner 计数、跨用户不互相占用、全局上限、线程池关闭）、`OwnershipHttpContractTest` 8 项（真实 Security 过滤器链 + 真实控制器，持久层为 mock）、资源命令新增管理员拒绝与数据集验证 4 项、进度查询越权与统计 scope 3 项、集成测试新增 owner 范围查询与 demo 排除 2 项。
 - 端到端 IT（`OwnershipEndToEndIT` / `OwnershipEndToEndCrossReadIT`）使用真实 `@SpringBootTest` 上下文、真实 Security 过滤器、真实服务、真实隔离库：`OwnershipE2ESupport` 每轮创建随机 schema 并种入 admin/alice/bob 三个账号与四条归属状态不同的任务，两个账号各自 `/auth/code`→`/auth/login` 登录后访问同一任务，覆盖 403、demo 隔离、登录后禁用立即失效、无 `userId` 旧 token、伪造 `adm`、管理员开关 false/true 两种结果。**本机已执行通过（9/9）**。
-- 集成测试执行情况（2026-11-13 本机实测，`MYSQL_IT_PASSWORD` 由本机环境提供）：`mvn -B -f migration-backend/pom.xml verify -Pmysql-it` → **62 项单元测试 + 29 项 MySQL 集成测试全部通过，BUILD SUCCESS**。分布：`MySqlTaskPersistenceIT` 5、`OwnershipMigrationScriptIT` 6、`OwnershipEndToEndIT` 9、`OwnershipEndToEndCrossReadIT` 4、`GpuLeaseMySqlIT` 5。每个 IT 都用随机 schema，结束后删除。
+- 集成测试执行情况（2026-11-13 本机实测，`MYSQL_IT_PASSWORD` 由本机环境提供）：`mvn -B -f migration-backend/pom.xml verify -Pmysql-it` → **69 项单元测试 + 29 项 MySQL 集成测试全部通过，BUILD SUCCESS**；适配器 `python -m unittest` 11 项通过。分布：`MySqlTaskPersistenceIT` 5、`OwnershipMigrationScriptIT` 6、`OwnershipEndToEndIT` 9、`OwnershipEndToEndCrossReadIT` 4、`GpuLeaseMySqlIT` 5。每个 IT 都用随机 schema，结束后删除。
 - GPU 租约实测（`GpuLeaseMySqlIT` 5/5）：两个线程并发启动只有一个抢到槽位；租约过期后可被接管且 `fencing_token` 从 1 变 2；旧 token 续租返回 false、释放不会清掉新租约；按 `task+run` 释放只清匹配运行；释放后可再次获取且 fence 继续递增。
 - 导出重启收敛：`ExportRecoveryRunner` 在 `ApplicationReadyEvent` 把 `pending` 置 `EXPORT_NOT_STARTED`、`running` 置 `EXPORT_INTERRUPTED`，不自动重派发；未写单测/IT（本机未构造半写 ZIP 场景），列为未验证。
 - 迁移脚本实机执行（隔离库，`OwnershipMigrationScriptIT` 6/6）：①只读段加列加索引建决策表、不改业务行；②无决策时即使 `create_by` 命中真实账号也不认领；③1–4 标 `demo`、12 号 `assign user_id=1` 后为 `matched/legacy`；④`reject` 能撤回旧的自动匹配；⑤未知任务 ID 整批中止；⑥未知用户/非法决策值整批中止。旧版字符串开关的两处缺陷（开关被重置、`data_origin IS NULL` 使用户名匹配失效）随设计替换消失。
@@ -223,7 +237,7 @@ Vue 2 工程继续作为业务回归和回滚基线，不参与迁移版主流�
 - MySQL 集成测试使用唯一随机 schema，验证并发领取仅一个成功、完成操作胜过已读取恢复快照、恢复只收敛孤儿 `running` 任务、owner 范围查询只返回本人行且 demo 行被排除；清理后断言 schema 已删除。
 - `.github/workflows/migration-quality.yml` 配置了迁移版 Maven `verify` 和 Vue 3 生产构建。工作流配置存在不代表远端 Actions 已成功，远端状态需以 GitHub Actions 记录为准。
 - `mysql-it` Maven profile 通过 Failsafe 启动 MySQL 集成测试；GitHub Actions 配置 MySQL 8.4 service。远端 Actions 尚未确认时，不将本地通过表述为远端通过。
-- 2026-11-13 R2 实测：`mvn test` 通过 62 项单元测试（0 失败）；同日 `verify -Pmysql-it` 通过 62 项单测 + 29 项数据库 IT（含 GPU 租约、迁移脚本、导出/下载/预览/审计端到端与跨用户开关）。真实 LDD 未重跑。
+- 2026-11-13 R2 实测：`mvn test` 通过 69 项单元测试（0 失败）；同日 `verify -Pmysql-it` 通过 69 项单测 + 29 项数据库 IT（含 GPU 租约、迁移脚本、导出/下载/预览/审计端到端与跨用户开关）；适配器锁与失败码另有 11 项 Python 单测。均未涉及真实 CUDA／真实 LDD。
 - 迁移脚本已在随机隔离 schema 实跑通过，但**生产库尚未执行**；不得写成“迁移已完成/已验证生产”。
 - Redis 已进入迁移版依赖和运行配置，用于可重建资源目录；任务状态、报告和执行快照仍由 MySQL 保存。Redis 故障时缓存层降级回源 MySQL。
 - CI 工作流包含 MySQL 8.4 集成测试和前端生产构建；本次未查询 GitHub Actions 运行记录，不能据配置推断远端已通过。
