@@ -251,7 +251,7 @@
 | 审计查询跨用户隔离、管理员开关两种取值 | 端到端 IT | `auditQueryIsOwnerScoped`、`adminReadsExportsArtifactsAndAuditButStillCannotSubmit` | 通过：普通用户 403；开关 false 时管理员 403，true 时管理员可读但不可提交 |
 | 数据库层 owner 范围查询、demo 排除 | 隔离库 IT | `MySqlTaskPersistenceIT` 5 项 | 已执行通过 |
 | 迁移脚本：只读段、决策表、显式 assign、reject、非法决策中止 | 隔离库 IT，真实执行 SQL | `OwnershipMigrationScriptIT` 6 项 | **已执行通过**（6/6，2026-11-13） |
-| GPU 单槽租约：并发唯一、过期接管、fencing、按 run 释放 | 隔离库 IT | `GpuLeaseMySqlIT` 5 项 | **已执行通过**（5/5，2026-11-13） |
+| GPU 单槽租约：并发唯一、过期接管、fencing、按 run 释放、隔离槽位 TTL 过期仍不可接管 | 隔离库 IT | `GpuLeaseMySqlIT` 6 项 | **已执行通过**（6/6，2026-11-13） |
 | 租约与领取同事务、续租失败收敛 | 单元（mock mapper/service） + 代码核对 | `GpuLeaseServiceTest` 4 项、`PreDefenseTaskCommandServiceTest` | 单元通过；**真实并发领取+租约的组合未单独跑真实 LDD** |
 | 导出 pending/running 重启收敛 | 代码核对 | `ExportRecoveryRunner` | 未写测试，**未验证** |
 | 账号状态不依赖 Redis/本地缓存 | 代码核对 | 过滤器只查 `sys_user`；Redis 仅缓存资源目录 | 通过（静态核对） |

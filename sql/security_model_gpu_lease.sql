@@ -11,8 +11,11 @@ CREATE TABLE IF NOT EXISTS `sys_gpu_lease` (
   `heartbeat_at` DATETIME(3) NULL,
   `expires_at` DATETIME(3) NULL,
   `released_at` DATETIME(3) NULL,
+  `blocked_at` DATETIME(3) NULL,
+  `blocked_reason` VARCHAR(64) NULL,
   PRIMARY KEY (`slot_id`),
-  KEY `idx_gpu_lease_active` (`lease_token`, `expires_at`)
+  KEY `idx_gpu_lease_active` (`lease_token`, `expires_at`),
+  KEY `idx_gpu_lease_blocked` (`blocked_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 INSERT IGNORE INTO `sys_gpu_lease` (`slot_id`, `fencing_token`) VALUES ('default-gpu-0', 0);

@@ -87,6 +87,8 @@ class GpuLeaseMySqlIT {
                   heartbeat_at DATETIME(3) NULL,
                   expires_at DATETIME(3) NULL,
                   released_at DATETIME(3) NULL,
+                  blocked_at DATETIME(3) NULL,
+                  blocked_reason VARCHAR(64) NULL,
                   PRIMARY KEY (slot_id),
                   KEY idx_gpu_lease_active (lease_token, expires_at)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
@@ -165,6 +167,23 @@ class GpuLeaseMySqlIT {
 
         leaseService.releaseByRun(41L, "run-41");
         assertEquals(null, leaseMapper.findBySlot(SLOT).getLeaseToken());
+    }
+
+    @Test
+    void quarantinedSlotCannotBeReclaimedAfterExpiry() {
+        GpuLease lease = leaseService.acquire(61L, "run-61", 1);
+        leaseService.markBlocked(61L, "run-61", "ORPHANED_PROCESS_UNKNOWN");
+        expireNow();
+
+        TaskCommandException exception = assertThrows(TaskCommandException.class,
+                () -> leaseService.acquire(62L, "run-62", 1));
+        assertTrue(exception.getMessage().contains("GPU_LEASE_BLOCKED"));
+        assertEquals(61L, leaseMapper.findBySlot(SLOT).getTaskId(),
+                "TTL expiry must not clear a quarantined slot");
+
+        leaseService.releaseByRun(61L, "run-61");
+        assertEquals(null, leaseMapper.findBySlot(SLOT).getBlockedAt());
+        assertEquals(63L, leaseService.acquire(63L, "run-63", 1).getTaskId());
     }
 
     @Test

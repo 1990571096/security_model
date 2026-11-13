@@ -141,6 +141,12 @@ public class PythonLddTaskExecutor implements DefenseTaskExecutor {
                 .redirectOutput(context.stdoutFile.toFile())
                 .redirectError(context.stderrFile.toFile());
         builder.directory(Paths.get(fingerprintService.getWorkspace()).toFile());
+        try {
+            // Pre-start marker: if this cannot be written we must not start an untraceable child.
+            processRegistry.prepare(context.taskDir);
+        } catch (IOException exception) {
+            throw new IllegalStateException("PROCESS_RECORD_FAILED: 无法记录执行进程，已拒绝启动", exception);
+        }
         Process process = builder.start();
         processRegistry.record(context.taskDir, process);
         activeProcesses.put(request.getRunId(), process);
@@ -308,7 +314,7 @@ public class PythonLddTaskExecutor implements DefenseTaskExecutor {
             if (List.of("EXECUTOR_NOT_CONFIGURED", "TASK_TIMEOUT", "PYTHON_PROCESS_EXITED",
                     "RESULT_MISSING", "RESULT_INVALID_JSON", "RESULT_PROTOCOL_ERROR",
                     "GPU_OOM", "CUDA_UNAVAILABLE", "GPU_LOCK_BUSY",
-                    "GPU_LEASE_LOST", "GPU_BUSY").contains(code)) {
+                    "GPU_LEASE_LOST", "GPU_BUSY", "PROCESS_RECORD_FAILED").contains(code)) {
                 return code;
             }
         }

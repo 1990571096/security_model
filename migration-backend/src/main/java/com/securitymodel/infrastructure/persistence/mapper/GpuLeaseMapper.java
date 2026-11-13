@@ -39,6 +39,7 @@ public interface GpuLeaseMapper {
                 fencing_token = fencing_token + 1
             WHERE slot_id = #{slotId}
               AND (lease_token IS NULL OR expires_at < #{now})
+              AND blocked_at IS NULL
             """)
     int acquire(@Param("slotId") String slotId,
                 @Param("token") String token,
@@ -73,13 +74,48 @@ public interface GpuLeaseMapper {
     @Update("""
             UPDATE sys_gpu_lease
             SET lease_token = NULL, task_id = NULL, run_id = NULL, attempt = NULL,
-                released_at = #{now}
+                released_at = #{now}, blocked_at = NULL, blocked_reason = NULL
             WHERE slot_id = #{slotId} AND task_id = #{taskId} AND run_id = #{runId}
             """)
     int releaseByRun(@Param("slotId") String slotId,
                      @Param("taskId") Long taskId,
                      @Param("runId") String runId,
                      @Param("now") LocalDateTime now);
+
+    /**
+     * Quarantine the slot. Conditional on the run still owning the row so a later run cannot be
+     * blocked by a stale recovery decision.
+     */
+    @Update("""
+            UPDATE sys_gpu_lease
+            SET blocked_at = #{now}, blocked_reason = #{reason}
+            WHERE slot_id = #{slotId} AND task_id = #{taskId} AND run_id = #{runId}
+              AND blocked_at IS NULL
+            """)
+    int block(@Param("slotId") String slotId,
+              @Param("taskId") Long taskId,
+              @Param("runId") String runId,
+              @Param("reason") String reason,
+              @Param("now") LocalDateTime now);
+
+    @Select("""
+            SELECT * FROM sys_gpu_lease WHERE blocked_at IS NOT NULL ORDER BY slot_id
+            """)
+    @Results(id = "gpuLeaseBlocked", value = {
+            @Result(column = "slot_id", property = "slotId"),
+            @Result(column = "lease_token", property = "leaseToken"),
+            @Result(column = "task_id", property = "taskId"),
+            @Result(column = "run_id", property = "runId"),
+            @Result(column = "attempt", property = "attempt"),
+            @Result(column = "fencing_token", property = "fencingToken"),
+            @Result(column = "acquired_at", property = "acquiredAt"),
+            @Result(column = "heartbeat_at", property = "heartbeatAt"),
+            @Result(column = "expires_at", property = "expiresAt"),
+            @Result(column = "released_at", property = "releasedAt"),
+            @Result(column = "blocked_at", property = "blockedAt"),
+            @Result(column = "blocked_reason", property = "blockedReason")
+    })
+    List<GpuLease> findBlocked();
 
     @Select("""
             SELECT * FROM sys_gpu_lease WHERE slot_id = #{slotId}
@@ -94,7 +130,9 @@ public interface GpuLeaseMapper {
             @Result(column = "acquired_at", property = "acquiredAt"),
             @Result(column = "heartbeat_at", property = "heartbeatAt"),
             @Result(column = "expires_at", property = "expiresAt"),
-            @Result(column = "released_at", property = "releasedAt")
+            @Result(column = "released_at", property = "releasedAt"),
+            @Result(column = "blocked_at", property = "blockedAt"),
+            @Result(column = "blocked_reason", property = "blockedReason")
     })
     GpuLease findBySlot(@Param("slotId") String slotId);
 
@@ -113,7 +151,9 @@ public interface GpuLeaseMapper {
             @Result(column = "acquired_at", property = "acquiredAt"),
             @Result(column = "heartbeat_at", property = "heartbeatAt"),
             @Result(column = "expires_at", property = "expiresAt"),
-            @Result(column = "released_at", property = "releasedAt")
+            @Result(column = "released_at", property = "releasedAt"),
+            @Result(column = "blocked_at", property = "blockedAt"),
+            @Result(column = "blocked_reason", property = "blockedReason")
     })
     List<GpuLease> findActive(@Param("now") LocalDateTime now);
 }

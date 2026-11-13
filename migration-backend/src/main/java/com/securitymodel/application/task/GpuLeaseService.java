@@ -58,6 +58,11 @@ public class GpuLeaseService {
         String token = UUID.randomUUID().toString();
         int updated = mapper.acquire(slotId, token, taskId, runId, attempt, now, now.plusSeconds(ttlSeconds));
         if (updated != 1) {
+            GpuLease current = mapper.findBySlot(slotId);
+            if (current != null && current.getBlockedAt() != null) {
+                throw new TaskCommandException("GPU_LEASE_BLOCKED: GPU 槽位因遗留进程未确认退出而被隔离("
+                        + current.getBlockedReason() + ")，需确认进程退出后解除");
+            }
             throw new TaskCommandException("GPU_BUSY: 当前 GPU 正被其他任务占用，请稍后重试");
         }
         GpuLease lease = mapper.findBySlot(slotId);
@@ -104,6 +109,20 @@ public class GpuLeaseService {
             return;
         }
         mapper.releaseByRun(slotId, taskId, runId, LocalDateTime.now());
+    }
+
+    /** Quarantine the slot until an orphaned executor is proven gone; TTL alone is not proof. */
+    public void markBlocked(Long taskId, String runId, String reason) {
+        if (taskId == null || !StringUtils.hasText(runId)) {
+            return;
+        }
+        mapper.block(slotId, taskId, runId, StringUtils.hasText(reason) ? reason : "ORPHANED_PROCESS_UNKNOWN",
+                LocalDateTime.now());
+    }
+
+    /** Quarantined slots, re-probed by {@code GpuLeaseBlockedProbe}. */
+    public List<GpuLease> findBlocked() {
+        return mapper.findBlocked();
     }
 
     public List<GpuLease> findActive() {

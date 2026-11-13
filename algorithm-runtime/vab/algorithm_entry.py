@@ -730,6 +730,24 @@ def write_progress(path, payload):
     os.replace(str(temporary), str(path))
 
 
+def write_children(children_path, pids):
+    """Record spawned training pids so a restart can reason about the whole tree."""
+    try:
+        Path(children_path).write_text(
+            json.dumps({"pids": [int(pid) for pid in pids], "updated_at": utc_now()}),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+
+
+def remove_children(children_path):
+    try:
+        Path(children_path).unlink()
+    except OSError:
+        pass
+
+
 def run(args):
     started_at = utc_now()
     request_path = Path(args.request).resolve()
@@ -812,13 +830,18 @@ def run(args):
                         errors="replace",
                         bufsize=1,
                     )
-                    for line in process.stdout:
-                        log_file.write(line)
-                        print(line, end="", flush=True)
-                    completed = subprocess.CompletedProcess(
-                        args=process.args,
-                        returncode=process.wait(),
-                    )
+                    children_path = result_path.with_name("python-children.json")
+                    write_children(children_path, [process.pid])
+                    try:
+                        for line in process.stdout:
+                            log_file.write(line)
+                            print(line, end="", flush=True)
+                        completed = subprocess.CompletedProcess(
+                            args=process.args,
+                            returncode=process.wait(),
+                        )
+                    finally:
+                        remove_children(children_path)
             finally:
                 release_lock(lock_path, lock_token)
             if completed.returncode != 0:

@@ -223,6 +223,8 @@ public final class OwnershipE2ESupport {
                   heartbeat_at DATETIME(3) NULL,
                   expires_at DATETIME(3) NULL,
                   released_at DATETIME(3) NULL,
+                  blocked_at DATETIME(3) NULL,
+                  blocked_reason VARCHAR(64) NULL,
                   PRIMARY KEY (slot_id)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
                 """);

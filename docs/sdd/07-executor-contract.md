@@ -273,10 +273,26 @@ enabled (`retention-days > 0`), the task exists with status `success|failed|canc
 is not `current_attempt`, the directory is older than the retention window, and the path stays
 inside the configured workspace. All other directories are left untouched.
 
-The executor also writes `process.json` (`pid`, `command`, `started_at`) right after starting the
-child. On restart, recovery probes that pid and kills it only when its start time matches the
-record; the GPU lease is released only after the child is confirmed gone (ADR-017). If the kill
-fails, the lease is kept until its TTL expires.
+The executor writes `process.json` **before** starting the child (`state: starting`) and rewrites it
+with `pid`, `command` and `started_at` after `ProcessBuilder.start()`; if the pre-start file cannot
+be written the launch is refused with `PROCESS_RECORD_FAILED`. The adapter records its spawned
+training pids in `python-children.json` and removes the file when training ends.
+
+On restart, recovery probes that record and kills only when the recorded `startInstant` matches
+the live process, then waits for the whole known tree (descendants captured before the kill plus
+recorded children). Outcomes:
+
+| Outcome | Meaning | GPU slot |
+| --- | --- | --- |
+| `NOT_STARTED` | no pre-start record; child never started | release |
+| `EXITED` | identity matched and tree confirmed gone | release |
+| `REAPED` | matching tree killed and confirmed gone | release |
+| `KILL_FAILED` | tree still alive after kill | quarantine (`blocked_at`) |
+| `UNKNOWN` | identity/children cannot be verified (missing start time, live recorded child, unreadable record) | quarantine, never kill |
+
+A quarantined slot rejects acquisition even after `expires_at` passed: TTL proves a lost heartbeat,
+not an idle GPU. `GPU_LEASE_BLOCKED` is reported separately from `GPU_BUSY`. `GpuLeaseBlockedProbe`
+re-probes quarantined slots every 60 s and releases only on `NOT_STARTED`/`EXITED`/`REAPED`.
 
 
 

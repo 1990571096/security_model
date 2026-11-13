@@ -14,17 +14,25 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
 
 /**
- * Records the executor child process next to its attempt artifacts and verifies it is really gone
- * before a restart recovery releases the GPU lease.
+ * Records the executor child process (and its spawned children) next to the attempt artifacts,
+ * and decides whether a restart may safely release the GPU slot.
+ *
+ * <p>Invariant: {@link #prepare(Path)} is written <em>before</em> the child starts and the launch
+ * aborts if it cannot be written. A missing record therefore proves the child never started;
+ * anything recorded but not positively matched is {@link ReapOutcome#UNKNOWN} and must keep the
+ * slot quarantined.</p>
  */
 @Component
 public class AttemptProcessRegistry {
 
     private static final Logger log = LoggerFactory.getLogger(AttemptProcessRegistry.class);
     private static final String RECORD = "process.json";
+    private static final String CHILDREN = "python-children.json";
 
     private final Path workspace;
     private final ObjectMapper objectMapper;
@@ -36,12 +44,22 @@ public class AttemptProcessRegistry {
         this.workspace = Paths.get(workspace).toAbsolutePath().normalize();
     }
 
+    /** Write the pre-start marker; throws so the caller does not start a process it cannot trace. */
+    public void prepare(Path taskDir) throws IOException {
+        ObjectNode node = objectMapper.createObjectNode();
+        node.put("state", "starting");
+        node.put("recorded_at", Instant.now().toString());
+        Files.writeString(taskDir.resolve(RECORD),
+                objectMapper.writeValueAsString(node), StandardCharsets.UTF_8);
+    }
+
     public void record(Path taskDir, Process process) {
         if (taskDir == null || process == null) {
             return;
         }
         try {
             ObjectNode node = objectMapper.createObjectNode();
+            node.put("state", "running");
             node.put("pid", process.pid());
             node.put("command", process.info().command().orElse(""));
             node.put("started_at", process.info().startInstant().map(Instant::toString).orElse(null));
@@ -53,81 +71,128 @@ public class AttemptProcessRegistry {
         }
     }
 
-    /** Outcome of the pre-recovery probe. Only {@link #KILL_FAILED} forbids releasing the lease. */
+    /** Outcome of the pre-recovery probe. Only EXITED, REAPED and NOT_STARTED allow releasing. */
     public enum ReapOutcome {
-        NO_RECORD, EXITED, REAPED, KILL_FAILED
+        /** No pre-start record: the child never started (prepare precedes start). */
+        NOT_STARTED,
+        /** Process identity positively checked and confirmed gone. */
+        EXITED,
+        /** Live process with matching identity was killed and is confirmed gone. */
+        REAPED,
+        /** Live process could not be killed; the slot must stay quarantined. */
+        KILL_FAILED,
+        /** Identity or children cannot be verified; do not kill, do not release. */
+        UNKNOWN
     }
 
     public ReapOutcome reapIfOrphaned(Long taskId, Integer attempt) {
-        Path recordFile = locateRecord(taskId, attempt);
+        Path recordFile = locate(taskId, attempt, RECORD);
         if (recordFile == null) {
-            return ReapOutcome.NO_RECORD;
+            return ReapOutcome.NOT_STARTED;
         }
-        JsonNode record;
-        try {
-            record = objectMapper.readTree(Files.readString(recordFile, StandardCharsets.UTF_8));
-        } catch (IOException | RuntimeException exception) {
-            log.warn("Unreadable executor process record, treat as unknown: file={}, reason={}",
-                    recordFile, exception.getMessage());
-            return ReapOutcome.NO_RECORD;
+        JsonNode record = readJson(recordFile);
+        if (record == null) {
+            return ReapOutcome.UNKNOWN;
         }
         long pid = record.path("pid").asLong(-1);
         if (pid <= 0) {
-            return ReapOutcome.NO_RECORD;
+            // "starting" marker without a pid: the child may have started before the crash.
+            return ReapOutcome.UNKNOWN;
         }
         Optional<ProcessHandle> handle = ProcessHandle.of(pid);
+        List<ProcessHandle> recordedChildren = readChildren(taskId, attempt);
+        if (recordedChildren == null) {
+            return ReapOutcome.UNKNOWN;
+        }
         if (handle.isEmpty() || !handle.get().isAlive()) {
-            return ReapOutcome.EXITED;
+            return anyAlive(recordedChildren) ? ReapOutcome.UNKNOWN : ReapOutcome.EXITED;
         }
         Instant recordedStart = parseInstant(record.path("started_at").asText(null));
         Instant actualStart = handle.get().info().startInstant().orElse(null);
-        if (recordedStart != null && actualStart != null && !recordedStart.equals(actualStart)) {
+        if (recordedStart == null || actualStart == null) {
+            return ReapOutcome.UNKNOWN;
+        }
+        if (!recordedStart.equals(actualStart)) {
             // The pid was reused by an unrelated process: our child is gone, do not kill.
             log.warn("Executor pid reused by another process, skip kill: taskId={}, attempt={}, pid={}",
                     taskId, attempt, pid);
-            return ReapOutcome.EXITED;
+            return anyAlive(recordedChildren) ? ReapOutcome.UNKNOWN : ReapOutcome.EXITED;
         }
-        handle.get().descendants().forEach(ProcessHandle::destroyForcibly);
+        List<ProcessHandle> tree = new ArrayList<>(handle.get().descendants().toList());
+        tree.addAll(recordedChildren);
+        tree.forEach(ProcessHandle::destroyForcibly);
         handle.get().destroyForcibly();
-        if (waitForExit(handle.get(), 2000)) {
-            log.warn("Killed orphaned executor process: taskId={}, attempt={}, pid={}",
-                    taskId, attempt, pid);
+        if (waitForAll(tree, handle.get(), 3000)) {
+            log.warn("Killed orphaned executor process tree: taskId={}, attempt={}, pid={}, known={}",
+                    taskId, attempt, pid, tree.size());
             return ReapOutcome.REAPED;
         }
-        log.error("Orphaned executor process still alive after kill: taskId={}, attempt={}, pid={}",
+        log.error("Orphaned executor process tree still alive after kill: taskId={}, attempt={}, pid={}",
                 taskId, attempt, pid);
         return ReapOutcome.KILL_FAILED;
     }
 
-    private Path locateRecord(Long taskId, Integer attempt) {
-        if (taskId == null || attempt == null || workspace.toString().isEmpty()) {
+    private List<ProcessHandle> readChildren(Long taskId, Integer attempt) {
+        Path file = locate(taskId, attempt, CHILDREN);
+        if (file == null) {
+            return List.of();
+        }
+        JsonNode node = readJson(file);
+        if (node == null) {
             return null;
         }
-        Path record = workspace.resolve("pre_defense-" + taskId)
-                .resolve("attempt-" + attempt)
-                .resolve(RECORD)
-                .toAbsolutePath()
-                .normalize();
-        if (!record.startsWith(workspace) || !Files.isRegularFile(record)) {
-            return null;
+        List<ProcessHandle> handles = new ArrayList<>();
+        for (JsonNode item : node.path("pids")) {
+            long pid = item.asLong(-1);
+            if (pid > 0) {
+                ProcessHandle.of(pid).ifPresent(handles::add);
+            }
         }
-        return record;
+        return handles;
     }
 
-    private boolean waitForExit(ProcessHandle handle, long timeoutMillis) {
+    private boolean anyAlive(List<ProcessHandle> handles) {
+        return handles.stream().anyMatch(ProcessHandle::isAlive);
+    }
+
+    private boolean waitForAll(List<ProcessHandle> tree, ProcessHandle root, long timeoutMillis) {
         long deadline = System.currentTimeMillis() + timeoutMillis;
         while (System.currentTimeMillis() < deadline) {
-            if (!handle.isAlive()) {
+            if (!root.isAlive() && !anyAlive(tree)) {
                 return true;
             }
             try {
                 Thread.sleep(100);
             } catch (InterruptedException exception) {
                 Thread.currentThread().interrupt();
-                return !handle.isAlive();
+                return !root.isAlive() && !anyAlive(tree);
             }
         }
-        return !handle.isAlive();
+        return !root.isAlive() && !anyAlive(tree);
+    }
+
+    private JsonNode readJson(Path file) {
+        try {
+            return objectMapper.readTree(Files.readString(file, StandardCharsets.UTF_8));
+        } catch (IOException | RuntimeException exception) {
+            log.warn("Unreadable executor process metadata: file={}, reason={}", file, exception.getMessage());
+            return null;
+        }
+    }
+
+    private Path locate(Long taskId, Integer attempt, String fileName) {
+        if (taskId == null || attempt == null || workspace.toString().isEmpty()) {
+            return null;
+        }
+        Path file = workspace.resolve("pre_defense-" + taskId)
+                .resolve("attempt-" + attempt)
+                .resolve(fileName)
+                .toAbsolutePath()
+                .normalize();
+        if (!file.startsWith(workspace) || !Files.isRegularFile(file)) {
+            return null;
+        }
+        return file;
     }
 
     private Instant parseInstant(String value) {

@@ -28,7 +28,7 @@ class TaskRecoveryRunnerTest {
         when(taskMapper.selectList(any())).thenReturn(List.of(task));
         when(taskMapper.failOrphanedForRun(
                 eq(21L), eq("run-21"), any(), any())).thenReturn(1);
-        when(processRegistry.reapIfOrphaned(21L, null)).thenReturn(AttemptProcessRegistry.ReapOutcome.NO_RECORD);
+        when(processRegistry.reapIfOrphaned(21L, null)).thenReturn(AttemptProcessRegistry.ReapOutcome.NOT_STARTED);
 
         recoveryRunner.recoverOrphanedTasks();
 
@@ -75,6 +75,21 @@ class TaskRecoveryRunnerTest {
         recoveryRunner.recoverOrphanedTasks();
 
         verify(gpuLeaseService, never()).releaseByRun(23L, "run-23");
+        verify(gpuLeaseService).markBlocked(23L, "run-23", "ORPHANED_PROCESS_KILL_FAILED");
+    }
+
+    @Test
+    void quarantinesSlotWhenProcessIdentityIsUnknown() {
+        PreDefenseTask task = runningTask(24L, "run-24");
+        when(taskMapper.selectList(any())).thenReturn(List.of(task));
+        when(taskMapper.failOrphanedForRun(any(), any(), any(), any())).thenReturn(1);
+        when(processRegistry.reapIfOrphaned(24L, null))
+                .thenReturn(AttemptProcessRegistry.ReapOutcome.UNKNOWN);
+
+        recoveryRunner.recoverOrphanedTasks();
+
+        verify(gpuLeaseService, never()).releaseByRun(24L, "run-24");
+        verify(gpuLeaseService).markBlocked(24L, "run-24", "ORPHANED_PROCESS_UNKNOWN");
     }
 
     private PreDefenseTask runningTask(Long taskId, String runId) {

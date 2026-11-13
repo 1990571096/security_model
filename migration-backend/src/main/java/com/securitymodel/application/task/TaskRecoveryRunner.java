@@ -37,8 +37,16 @@ public class TaskRecoveryRunner {
             // A crashed JVM may leave its Python child alive on Windows. Never release the GPU
             // lease until that child is verified dead, or a new task could enter CUDA concurrently.
             var outcome = processRegistry.reapIfOrphaned(task.getTaskId(), task.getCurrentAttempt());
+            if (outcome == null) {
+                outcome = com.securitymodel.infrastructure.executor.AttemptProcessRegistry.ReapOutcome.UNKNOWN;
+            }
+            // Unknown (including a null probe result) is treated as "not proven gone".
             boolean processGone = outcome
-                    != com.securitymodel.infrastructure.executor.AttemptProcessRegistry.ReapOutcome.KILL_FAILED;
+                    == com.securitymodel.infrastructure.executor.AttemptProcessRegistry.ReapOutcome.NOT_STARTED
+                    || outcome
+                    == com.securitymodel.infrastructure.executor.AttemptProcessRegistry.ReapOutcome.EXITED
+                    || outcome
+                    == com.securitymodel.infrastructure.executor.AttemptProcessRegistry.ReapOutcome.REAPED;
             String reason = "应用重启后未恢复的执行任务，可安全重试";
             recovered += taskMapper.failOrphanedForRun(
                     task.getTaskId(), task.getCurrentRunId(),
@@ -51,8 +59,11 @@ public class TaskRecoveryRunner {
             if (processGone) {
                 gpuLeaseService.releaseByRun(task.getTaskId(), task.getCurrentRunId());
             } else {
-                log.error("遗留 Python 进程未能终止，保留 GPU 租约直到过期: taskId={}, runId={}",
-                        task.getTaskId(), task.getCurrentRunId());
+                // TTL expiry proves nothing about a possibly still-running Python process.
+                gpuLeaseService.markBlocked(task.getTaskId(), task.getCurrentRunId(),
+                        "ORPHANED_PROCESS_" + outcome.name());
+                log.error("遗留执行进程状态未确认，GPU 槽位已隔离: taskId={}, runId={}, outcome={}",
+                        task.getTaskId(), task.getCurrentRunId(), outcome);
             }
         }
         if (!running.isEmpty()) {

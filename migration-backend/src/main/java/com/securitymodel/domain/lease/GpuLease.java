@@ -22,4 +22,8 @@ public class GpuLease {
     private LocalDateTime heartbeatAt;
     private LocalDateTime expiresAt;
     private LocalDateTime releasedAt;
+    /** Non-null means the slot is quarantined: no acquisition is allowed, even after TTL expiry. */
+    private LocalDateTime blockedAt;
+    /** Why the slot was quarantined, e.g. {@code ORPHANED_PROCESS_UNKNOWN}. */
+    private String blockedReason;
 }

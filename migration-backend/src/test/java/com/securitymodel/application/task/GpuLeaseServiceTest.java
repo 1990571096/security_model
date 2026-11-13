@@ -69,6 +69,21 @@ class GpuLeaseServiceTest {
     }
 
     @Test
+    void reportsQuarantinedSlotDistinctlyFromBusy() {
+        when(mapper.acquire(eq("default-gpu-0"), any(), eq(7L), eq("run-7"), eq(1), any(), any()))
+                .thenReturn(0);
+        GpuLease blocked = lease(null);
+        blocked.setBlockedAt(LocalDateTime.now());
+        blocked.setBlockedReason("ORPHANED_PROCESS_UNKNOWN");
+        when(mapper.findBySlot("default-gpu-0")).thenReturn(blocked);
+
+        TaskCommandException exception = assertThrows(TaskCommandException.class,
+                () -> service.acquire(7L, "run-7", 1));
+
+        assertTrue(exception.getMessage().contains("GPU_LEASE_BLOCKED"));
+    }
+
+    @Test
     void heartbeatRenewsOnlyLeasesOwnedByThisJvm() {
         String[] acquiredToken = new String[1];
         when(mapper.acquire(eq("default-gpu-0"), any(), eq(7L), eq("run-7"), eq(1), any(), any()))

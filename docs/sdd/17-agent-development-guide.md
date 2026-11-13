@@ -105,9 +105,9 @@ mvn -B -f migration-backend/pom.xml verify -Pmysql-it
 > 第一切片：MySQL 单槽 GPU 租约（条件更新 + 续租 + fencing + 过期接管）、租约与任务领取同事务、启动恢复释放租约、导出台账重启收敛、导出超时进程树回收。
 > 第二切片：适配器陈旧锁接管（pid 存活判定 + token 校验接管/释放）、失败码 `GPU_LOCK_BUSY`/`GPU_OOM`/`CUDA_UNAVAILABLE` 细分、Java 无结果时 stderr 兜底归类。
 > 第三切片：attempt 级日志截断（保留尾部 + 截断标记）、SHA-256 清单、保留期清理（默认关闭，仅删终态任务的非当前 attempt）。
-> 证据：Java 80 项单元测试 + 29 项 MySQL IT（`GpuLeaseMySqlIT` 5/5），适配器 Python 单测 11/11；**未跑真实 LDD，生产库未建表**。
-> 恢复护栏：执行器写 `process.json`，重启恢复先确认/终止遗留 Python，再决定是否释放租约（ADR-017）。
-> 未完成：自动重试队列（D5）、真实 6GB 显存实测。R3 契约见 ADR-018（设计冻结、未实施）。详见 `09` §5.3–§5.5、`05` ADR-014/015/016/017。
+> 证据：Java 85 项单元测试 + 30 项 MySQL IT（`GpuLeaseMySqlIT` 6/6），适配器 Python 单测 11/11；**未跑真实 LDD，生产库未建表**。
+> 恢复护栏：启动前写 `process.json`，启动后写 pid/启动时间，适配器写 `python-children.json`；只有确认整棵树退出才释放租约，否则隔离槽位（`GPU_LEASE_BLOCKED`，60s 重探）。
+> 未完成：自动重试队列（D5）、真实 6GB 显存实测。R3 契约见 ADR-018（已按评审修订：条件抢占 `pending→submitting`、单一恢复协调器、GPU_BUSY 失败收敛，仍未实施）。详见 `09` §5.3–§5.5、`05` ADR-014–018。
 
 **配额**：`TaskExecutionQuotaPolicy.validateAndBuildSnapshot()` 的 JVM `synchronized` 只保护该方法内部、只在单实例生效，锁结束后才 `claimForExecution()`；设计 MySQL 资源槽位/计数行加锁，令配额检查与任务领取处于同一事务，或先明确单机单任务 GPU 并以数据库唯一活动租约实现。基于 RTX 2060 6GB / 内存 16GB 设保守默认并发，不以多用户数量作为 GPU 并发数；多实例不能依赖进程内锁。
 
@@ -121,7 +121,7 @@ mvn -B -f migration-backend/pom.xml verify -Pmysql-it
 
 ## 6. R3：持久调度与幂等
 
-> 第一增量契约见 `05` ADR-018（调度意图表 + “先标记后提交” + 启动重放），状态为**设计冻结、代码未实施**。
+> 第一增量契约见 `05` ADR-018（调度意图表 + 条件抢占 `pending→submitting` + 单一恢复协调器 + 派发不确定即失败），状态为**已按评审修订、代码未实施**。
 
 **目标**：先关闭“事务提交成功、JVM 派发前退出”的窗口，然后再决定 MQ。定义 `pending/queued/claimed/running/success/failed/canceled` 各状态及允许边；兼容现有 `pending -> running` 数据和 API，必要时先加可迁移状态列。
 
