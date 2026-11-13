@@ -161,7 +161,8 @@ class MySqlTaskPersistenceIT {
         AtomicInteger recoveryUpdateRows = new AtomicInteger(-1);
         PreDefenseTaskMapper racingMapper = interceptRecoverySnapshot(
                 taskMapper, recoveryReadSnapshot, allowRecoveryUpdate, recoveryUpdateRows);
-        TaskRecoveryRunner recoveryRunner = new TaskRecoveryRunner(racingMapper, mock(GpuLeaseService.class));
+        TaskRecoveryRunner recoveryRunner = new TaskRecoveryRunner(racingMapper, mock(GpuLeaseService.class),
+                mock(com.securitymodel.infrastructure.executor.AttemptProcessRegistry.class));
         ExecutorService worker = Executors.newSingleThreadExecutor();
         try {
             Future<?> recovery = worker.submit(recoveryRunner::recoverOrphanedTasks);
@@ -185,7 +186,8 @@ class MySqlTaskPersistenceIT {
     void recoveryFailsOnlyOrphanedRunningTasks() {
         long orphanedId = insertTask("running", "orphan-run");
         long pendingId = insertTask("pending", null);
-        TaskRecoveryRunner recoveryRunner = new TaskRecoveryRunner(taskMapper, mock(GpuLeaseService.class));
+        TaskRecoveryRunner recoveryRunner = new TaskRecoveryRunner(taskMapper, mock(GpuLeaseService.class),
+                mock(com.securitymodel.infrastructure.executor.AttemptProcessRegistry.class));
 
         recoveryRunner.recoverOrphanedTasks();
 

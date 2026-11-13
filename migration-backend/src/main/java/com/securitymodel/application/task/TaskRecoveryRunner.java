@@ -18,10 +18,13 @@ public class TaskRecoveryRunner {
     private static final Logger log = LoggerFactory.getLogger(TaskRecoveryRunner.class);
     private final PreDefenseTaskMapper taskMapper;
     private final GpuLeaseService gpuLeaseService;
+    private final com.securitymodel.infrastructure.executor.AttemptProcessRegistry processRegistry;
 
-    public TaskRecoveryRunner(PreDefenseTaskMapper taskMapper, GpuLeaseService gpuLeaseService) {
+    public TaskRecoveryRunner(PreDefenseTaskMapper taskMapper, GpuLeaseService gpuLeaseService,
+                              com.securitymodel.infrastructure.executor.AttemptProcessRegistry processRegistry) {
         this.taskMapper = taskMapper;
         this.gpuLeaseService = gpuLeaseService;
+        this.processRegistry = processRegistry;
     }
 
     @EventListener(ApplicationReadyEvent.class)
@@ -31,6 +34,11 @@ public class TaskRecoveryRunner {
                         .eq(com.securitymodel.domain.task.PreDefenseTask::getStatus, "running"));
         int recovered = 0;
         for (var task : running) {
+            // A crashed JVM may leave its Python child alive on Windows. Never release the GPU
+            // lease until that child is verified dead, or a new task could enter CUDA concurrently.
+            var outcome = processRegistry.reapIfOrphaned(task.getTaskId(), task.getCurrentAttempt());
+            boolean processGone = outcome
+                    != com.securitymodel.infrastructure.executor.AttemptProcessRegistry.ReapOutcome.KILL_FAILED;
             String reason = "应用重启后未恢复的执行任务，可安全重试";
             recovered += taskMapper.failOrphanedForRun(
                     task.getTaskId(), task.getCurrentRunId(),
@@ -40,7 +48,12 @@ public class TaskRecoveryRunner {
                     LocalDateTime.now());
             // The JVM that owned the GPU lease is gone; release it so a retry does not wait
             // for the TTL. The call is keyed by task+run, so it cannot clear a newer lease.
-            gpuLeaseService.releaseByRun(task.getTaskId(), task.getCurrentRunId());
+            if (processGone) {
+                gpuLeaseService.releaseByRun(task.getTaskId(), task.getCurrentRunId());
+            } else {
+                log.error("遗留 Python 进程未能终止，保留 GPU 租约直到过期: taskId={}, runId={}",
+                        task.getTaskId(), task.getCurrentRunId());
+            }
         }
         if (!running.isEmpty()) {
             log.info("任务恢复扫描完成: scanned={}, recovered={}", running.size(), recovered);

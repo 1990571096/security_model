@@ -1,6 +1,7 @@
 package com.securitymodel.application.task;
 
 import com.securitymodel.domain.task.PreDefenseTask;
+import com.securitymodel.infrastructure.executor.AttemptProcessRegistry;
 import com.securitymodel.infrastructure.persistence.mapper.PreDefenseTaskMapper;
 import org.junit.jupiter.api.Test;
 
@@ -17,7 +18,9 @@ class TaskRecoveryRunnerTest {
 
     private final PreDefenseTaskMapper taskMapper = mock(PreDefenseTaskMapper.class);
     private final GpuLeaseService gpuLeaseService = mock(GpuLeaseService.class);
-    private final TaskRecoveryRunner recoveryRunner = new TaskRecoveryRunner(taskMapper, gpuLeaseService);
+    private final AttemptProcessRegistry processRegistry = mock(AttemptProcessRegistry.class);
+    private final TaskRecoveryRunner recoveryRunner =
+            new TaskRecoveryRunner(taskMapper, gpuLeaseService, processRegistry);
 
     @Test
     void marksInterruptedRunningTaskAsRetryableFailure() {
@@ -25,6 +28,7 @@ class TaskRecoveryRunnerTest {
         when(taskMapper.selectList(any())).thenReturn(List.of(task));
         when(taskMapper.failOrphanedForRun(
                 eq(21L), eq("run-21"), any(), any())).thenReturn(1);
+        when(processRegistry.reapIfOrphaned(21L, null)).thenReturn(AttemptProcessRegistry.ReapOutcome.NO_RECORD);
 
         recoveryRunner.recoverOrphanedTasks();
 
@@ -53,10 +57,24 @@ class TaskRecoveryRunnerTest {
         when(taskMapper.selectList(any())).thenReturn(List.of(task));
         when(taskMapper.failOrphanedForRun(
                 eq(22L), eq("stale-run"), any(), any())).thenReturn(0);
+        when(processRegistry.reapIfOrphaned(22L, null)).thenReturn(AttemptProcessRegistry.ReapOutcome.EXITED);
 
         recoveryRunner.recoverOrphanedTasks();
 
         verify(taskMapper).failOrphanedForRun(eq(22L), eq("stale-run"), any(), any());
+    }
+
+    @Test
+    void keepsLeaseWhenOrphanedPythonCannotBeKilled() {
+        PreDefenseTask task = runningTask(23L, "run-23");
+        when(taskMapper.selectList(any())).thenReturn(List.of(task));
+        when(taskMapper.failOrphanedForRun(any(), any(), any(), any())).thenReturn(1);
+        when(processRegistry.reapIfOrphaned(23L, null))
+                .thenReturn(AttemptProcessRegistry.ReapOutcome.KILL_FAILED);
+
+        recoveryRunner.recoverOrphanedTasks();
+
+        verify(gpuLeaseService, never()).releaseByRun(23L, "run-23");
     }
 
     private PreDefenseTask runningTask(Long taskId, String runId) {

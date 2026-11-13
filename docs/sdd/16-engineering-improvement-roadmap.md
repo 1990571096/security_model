@@ -137,10 +137,10 @@ mvn -B -f migration-backend/pom.xml verify
 
 ### R2 第二切片实施记录（2026-11-13）
 
-- 范围：适配器陈旧锁接管、失败码细分、Java 无结果时 stderr 兜底归类、attempt 级日志截断/SHA-256 清单/保留期。
+- 范围：适配器陈旧锁接管、失败码细分、Java 无结果时 stderr 兜底归类、attempt 级日志截断/SHA-256 清单/保留期、恢复前确认执行子进程已退出（ADR-017）。
 - 锁：锁文件改为 JSON（`pid/host/task_id/run_id/token/acquired_at`）；只有 pid 不存活才接管，接管前后比对 token 防止误删新锁；释放校验 token；Windows 用 `OpenProcess`/`GetExitCodeProcess` 探测存活（不使用会误杀进程的 `os.kill(pid,0)`）。
 - 失败码：`GPU_LOCK_BUSY`（锁被活进程占用，稍后重试）、`GPU_OOM`（OOM/CUBLAS/CUDNN 分配失败，人工调小 batch）、`CUDA_UNAVAILABLE`（无设备/驱动不符，不自动重试）；其余仍 `VAB_INTEGRATION_ERROR`。Java 仅在子进程没写 `result.json` 时按 stderr 兜底，有结果时以适配器写入的 `error_code` 为准。
-- 验证：Java **76 项单元测试 + 29 项 MySQL IT** 全绿（新增 `ExecutorArtifactPolicyTest` 3 项、`ExecutorArtifactRetentionJobTest` 4 项）；适配器 `python -m unittest` **11 项**全绿。**未跑真实 CUDA/LDD**。
+- 验证：Java **80 项单元测试 + 29 项 MySQL IT** 全绿（新增 `ExecutorArtifactPolicyTest` 3 项、`ExecutorArtifactRetentionJobTest` 4 项、`AttemptProcessRegistryTest` 3 项、恢复 1 项）；适配器 `python -m unittest` **11 项**全绿。**未跑真实 CUDA/LDD**。
 - 未实现：自动重试队列（D5）、真实 LDD 显存实测；保留期默认关闭，需按磁盘情况显式开启。
 
 ## 文档同步规则

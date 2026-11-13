@@ -273,6 +273,11 @@ enabled (`retention-days > 0`), the task exists with status `success|failed|canc
 is not `current_attempt`, the directory is older than the retention window, and the path stays
 inside the configured workspace. All other directories are left untouched.
 
+The executor also writes `process.json` (`pid`, `command`, `started_at`) right after starting the
+child. On restart, recovery probes that pid and kills it only when its start time matches the
+record; the GPU lease is released only after the child is confirmed gone (ADR-017). If the kill
+fails, the lease is kept until its TTL expires.
+
 
 
 Concurrency is enforced by the MySQL single-slot lease (`sys_gpu_lease`, see ADR-014). The adapter

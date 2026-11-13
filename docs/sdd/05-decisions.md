@@ -309,4 +309,42 @@ Agent 采用外部大模型 API，本机不部署大模型。生成模型和 emb
 - 清单只覆盖顶层文件，不含子目录递归哈希；导出 ZIP 不在该目录内，走既有导出校验。
 - 保留期开启后，历史答辩演示所依赖的旧产物可能被清理，启用前需确认保留天数与备份。
 
+## ADR-017：恢复前必须确认执行子进程已退出
+
+日期：2026-11-13；状态：**已实施并通过单元测试；未跑真实 LDD**。
+
+背景：R2 的启动恢复会把所有 `running` 任务置失败并释放 GPU 租约。但 Windows 上 JVM 被硬杀不会自动终止它的 Python 子进程：遗留进程可能仍在 CUDA 中训练，而租约已被释放，下一个任务会认为自己独占 GPU 并进入同一张卡，导致显存竞争或 OOM。
+
+决策：
+
+1. **记录子进程**：`PythonLddTaskExecutor` 在 `ProcessBuilder.start()` 之后立即把 `pid`、`command`、`startInstant` 写入 attempt 目录的 `process.json`；写失败只 warn，不影响执行。
+2. **恢复前探测并终止**：`TaskRecoveryRunner` 对每个 `running` 任务调用 `AttemptProcessRegistry.reapIfOrphaned(taskId, currentAttempt)`：无记录 → `NO_RECORD`；进程已不存在 → `EXITED`；`startInstant` 与记录不一致 → 视为 pid 被复用，`EXITED`（不杀无关进程）；仍存活且启动时间一致 → 先杀后代再杀自身，2 秒内退出为 `REAPED`，否则 `KILL_FAILED`。
+3. **只有确认进程已消失才释放租约**：`NO_RECORD/EXITED/REAPED` 才调用 `releaseByRun`；`KILL_FAILED` 保留租约（任务仍标失败），让租约按 TTL 自然过期并记录 error 日志，避免“进程还活着但槽位已放开”。
+4. **不凭 pid 直接杀**：pid 复用检查以 `startInstant` 相等为前提；记录缺失或不可解析时不杀进程、按 `NO_RECORD` 处理并释放租约（此时无证据表明本平台曾启动该进程）。
+
+原因：GPU 独占是设备级事实，不能因为“数据库里任务已失败”就推断进程已退出；必须在释放槽位前取得进程已死的证据。
+
+影响／残余风险：
+
+- `KILL_FAILED` 时租约最多再占用 300 秒（TTL），期间新任务收到 `GPU_BUSY`；这是有意的保守行为。
+- `process.json` 只用于恢复判定，不对外提供下载；不写入 `result.json`。
+- 单元测试 3 项（无记录、已退出、存活进程被杀）与恢复用例 1 项（杀不掉时不释放租约）；**未在真实崩溃场景演练**。
+
+## ADR-018：调度意图与重启语义（R3 第一增量，设计冻结、未实施）
+
+日期：2026-11-13；状态：**仅设计，代码未实施**。不得在状态文档中写成已实现。
+
+背景：当前 `launchTask` 在事务内完成租约 + 领取，事务提交后才派发执行；若 JVM 在提交成功、派发之前退出，任务停在 `running` 且没有任何执行证据，重启恢复只能统一置失败，无法判断“从未派发”还是“执行到一半”。
+
+决策（待实施）：
+
+1. **调度意图与领取同事务**：新增 `sys_task_dispatch_intent`（`task_id`、`run_id`、`attempt`、`status`（`pending`/`dispatched`/`abandoned`）、`request_json`、`created_at`、`dispatched_at`，唯一键 `(task_id, run_id, attempt)`）。`request_json` 保存本次执行请求（`gpuLeaseToken` 已被 `@JsonIgnore` 排除），用于精确重放。
+2. **先标记后提交执行**：事务提交后，先把意图置 `dispatched`，再调用执行器。`pending` 因此只可能表示“从未提交给执行器”。
+3. **重启语义**：启动时先做 ADR-017 的进程确认；对 `pending` 且任务仍 `running`、`current_run_id` 匹配的意图，重新获取租约（`GPU_BUSY` 则保留待下次），成功后重放 `request_json`、置 `dispatched`；对 `dispatched` 的 running 任务置 `EXECUTOR_RESTARTED` 失败；任务失败时把对应意图置 `abandoned`。
+4. **不做无限重派**：第一增量只在启动时重放一次，不引入周期扫描器；周期扫描与幂等键留 R3 后续。
+5. **状态词汇不变**：对外仍只用 `pending/running/success/failed/canceled`，不改 API 与前端；意图状态是内部审计维度。
+
+验收计划：模拟“提交后、标记前”退出 → 重启后重放且只执行一次；`dispatched` 意图不重放；`GPU_BUSY` 时保留意图不执行；孤儿 Python 未死时不释放租约；意图表唯一键阻止同一 `run_id` 二次派发。以上均需真实 MySQL IT，未完成前不声称 R3 已交付。
+
+
 

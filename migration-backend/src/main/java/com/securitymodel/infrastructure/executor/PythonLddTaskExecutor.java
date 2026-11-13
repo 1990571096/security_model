@@ -37,6 +37,7 @@ public class PythonLddTaskExecutor implements DefenseTaskExecutor {
     private final ExecutionFingerprintService fingerprintService;
     private final com.securitymodel.application.task.GpuLeaseService gpuLeaseService;
     private final ExecutorArtifactPolicy artifactPolicy;
+    private final AttemptProcessRegistry processRegistry;
     private final String pythonExecutable;
     private final String pythonScript;
     private final long timeoutSeconds;
@@ -49,6 +50,7 @@ public class PythonLddTaskExecutor implements DefenseTaskExecutor {
             ExecutionFingerprintService fingerprintService,
             com.securitymodel.application.task.GpuLeaseService gpuLeaseService,
             ExecutorArtifactPolicy artifactPolicy,
+            AttemptProcessRegistry processRegistry,
             @Value("${security-model.executor.python.executable:python}") String pythonExecutable,
             @Value("${security-model.executor.python.script:}") String pythonScript,
             @Value("${security-model.executor.python.timeout-seconds:3600}") long timeoutSeconds) {
@@ -57,6 +59,7 @@ public class PythonLddTaskExecutor implements DefenseTaskExecutor {
         this.fingerprintService = fingerprintService;
         this.gpuLeaseService = gpuLeaseService;
         this.artifactPolicy = artifactPolicy;
+        this.processRegistry = processRegistry;
         this.pythonExecutable = pythonExecutable;
         this.pythonScript = pythonScript;
         this.timeoutSeconds = timeoutSeconds;
@@ -139,6 +142,7 @@ public class PythonLddTaskExecutor implements DefenseTaskExecutor {
                 .redirectError(context.stderrFile.toFile());
         builder.directory(Paths.get(fingerprintService.getWorkspace()).toFile());
         Process process = builder.start();
+        processRegistry.record(context.taskDir, process);
         activeProcesses.put(request.getRunId(), process);
         try {
             PythonProcessWaiter.Outcome outcome = new PythonProcessWaiter()

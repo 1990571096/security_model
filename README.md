@@ -242,8 +242,9 @@ mvn -pl eladmin-system -am test "-Denforcer.skip=true" "-Dsecurity-model.skip-te
 
 - 当前真实运行和答辩展示只覆盖 LDD 训练前数据清洗。
 - 训练中、训练后和其他对比算法暂不接入主流程。
-- **多用户隔离已在 R1 落地**：任务归属以 `owner_user_id` 为准，任务/报告/日志/产物/导出/审计均做 owner 校验；跨用户读对管理员默认关闭（`SECURITY_MODEL_ADMIN_CROSS_USER_READ`），且任何角色都不能跨用户写。R1 为**有条件通过**：隔离库迁移与双账号端到端验收已实跑通过（76 单测 + 29 项 MySQL IT），但生产库迁移尚未执行，不能表述为“生产级权限体系已完成”。
-- **R2 第三切片已落地**：attempt 目录内日志超过 `max-log-bytes`（默认 20 MiB）只保留尾部并写截断标记；每次执行写 `manifest.json`（文件名/字节数/SHA-256）；`retention-days` 默认 0（不删除），开启后只清理“终态任务 + 非当前 attempt + 超期”的目录。Java 76 单测 + 29 IT 全绿；未跑真实 LDD。
+- **多用户隔离已在 R1 落地**：任务归属以 `owner_user_id` 为准，任务/报告/日志/产物/导出/审计均做 owner 校验；跨用户读对管理员默认关闭（`SECURITY_MODEL_ADMIN_CROSS_USER_READ`），且任何角色都不能跨用户写。R1 为**有条件通过**：隔离库迁移与双账号端到端验收已实跑通过（80 单测 + 29 项 MySQL IT），但生产库迁移尚未执行，不能表述为“生产级权限体系已完成”。
+- **恢复护栏（ADR-017）**：执行器把 pid/启动时间写入 `process.json`；重启恢复先确认遗留 Python 已退出（启动时间匹配才杀），只有确认进程消失才释放 GPU 租约；杀不掉则保留租约到 300s TTL。R3 调度意图见 ADR-018（设计冻结、未实施）。
+- **R2 第三切片已落地**：attempt 目录内日志超过 `max-log-bytes`（默认 20 MiB）只保留尾部并写截断标记；每次执行写 `manifest.json`（文件名/字节数/SHA-256）；`retention-days` 默认 0（不删除），开启后只清理“终态任务 + 非当前 attempt + 超期”的目录。Java 80 单测 + 29 IT 全绿；未跑真实 LDD。
 - 升级到 R1 必须执行 `sql/security_model_ownership.sql`（先跑只读段，审核后写入 `sys_pre_defense_ownership_decision` 决策行，再在同一 MySQL 会话里 `SET @apply_backfill = 1` 重跑）；未执行迁移时任务接口会显式失败。升级前签发的旧 token 没有 `userId`，需重新登录后才能执行任务写操作。
 - 令牌不可单独撤销，但每次请求都会回查 `sys_user.enabled` 与 `is_admin`：禁用账号或撤销管理员后，已签发 token 立即失去权限，无需等 8 小时过期；代价是每个认证请求一次主键查询。
 - 共享数据集/算法/超参数模板的写操作仅管理员；普通用户只读。数据集登记后需管理员调用 `POST /api/dataset/{id}/validate` 才会变为可用（`parse_status='success'`）。
