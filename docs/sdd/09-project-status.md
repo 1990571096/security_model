@@ -139,7 +139,7 @@ Vue 2 工程继续作为业务回归和回滚基线，不参与迁移版主流�
 | 共享资源 | 数据集/算法/超参写操作仅管理员，越权 403 `ADMIN_REQUIRED` | `ResourceCommandService`、`ApiExceptionHandler` |
 | 数据集验证 | 新增管理员验证接口，失败不抛 500，写 `failed` 与原因 | `ResourceCommandService.verifyDataset` |
 | 配额 | 单用户并发按 `owner_user_id` 计数，历史无 owner 行不占配额 | `TaskExecutionQuotaPolicy` |
-| 迁移脚本 | 改为两段式：默认只读审核（`@apply_backfill=0`），确认 `@demo_task_ids` / `@reject_task_ids` 后再回填；不再按快照启发式判 demo | `sql/security_model_ownership.sql` |
+| 迁移脚本 | 两段式 + 结构化决策表 `sys_pre_defense_ownership_decision`（`demo`/`assign`/`reject`）；删除用户名自动匹配与快照启发式；非法决策整批中止 | `sql/security_model_ownership.sql` |
 | 未做 | GPU 单槽租约、导出启动恢复、日志限额；真实 MySQL 双账号端到端 IT 已写但**未执行**（本机缺 `MYSQL_IT_PASSWORD`），迁移脚本实机执行同样未完成 | 见 `18` §9 证据矩阵 |
 | 接口审计 | 逐一核对任务、报告、日志、产物、导出、审计、统计、执行器状态、系统版本、共享资源入口，规则统一，无控制器可调用的无保护内部查询 | `18` §8 |
 
@@ -198,17 +198,17 @@ Vue 2 工程继续作为业务回归和回滚基线，不参与迁移版主流�
 
 ## 9. 迁移版质量门禁现状
 
-- `migration-backend` 现有 **12 个单元测试类、57 项单元测试**（2026-11-13 R1+评审修正后实测），以及 4 个 MySQL 集成测试类共 17 项场景：`MySqlTaskPersistenceIT` 5 项、`OwnershipMigrationScriptIT` 3 项、`OwnershipEndToEndIT` 6 项、`OwnershipEndToEndCrossReadIT` 3 项，均属 `mysql-it` profile。
+- `migration-backend` 现有 **12 个单元测试类、57 项单元测试**（2026-11-13 R1+评审修正后实测），以及 4 个 MySQL 集成测试类共 **24 项**场景：`MySqlTaskPersistenceIT` 5 项、`OwnershipMigrationScriptIT` 6 项、`OwnershipEndToEndIT` 9 项、`OwnershipEndToEndCrossReadIT` 4 项，均属 `mysql-it` profile。
 - R1 新增覆盖：`TaskAccessGuardTest` 8 项（owner/管理员/无 owner/demo 读与**demo 写拒绝**/跨用户）、`TaskExecutionQuotaPolicyTest` 4 项（按 owner 计数、跨用户不互相占用、全局上限、线程池关闭）、`OwnershipHttpContractTest` 8 项（真实 Security 过滤器链 + 真实控制器，持久层为 mock）、资源命令新增管理员拒绝与数据集验证 4 项、进度查询越权与统计 scope 3 项、集成测试新增 owner 范围查询与 demo 排除 2 项。
 - 端到端 IT（`OwnershipEndToEndIT` / `OwnershipEndToEndCrossReadIT`）使用真实 `@SpringBootTest` 上下文、真实 Security 过滤器、真实服务、真实隔离库：`OwnershipE2ESupport` 每轮创建随机 schema 并种入 admin/alice/bob 三个账号与四条归属状态不同的任务，两个账号各自 `/auth/code`→`/auth/login` 登录后访问同一任务，覆盖 403、demo 隔离、登录后禁用立即失效、无 `userId` 旧 token、伪造 `adm`、管理员开关 false/true 两种结果。**本机已执行通过（9/9）**。
-- 集成测试执行情况（2026-11-13 本机实测，`MYSQL_IT_PASSWORD` 由本机环境提供）：`mvn -B -f migration-backend/pom.xml verify -Pmysql-it` → **57 项单元测试 + 17 项 MySQL 集成测试全部通过，BUILD SUCCESS**。分布：`MySqlTaskPersistenceIT` 5、`OwnershipMigrationScriptIT` 3、`OwnershipEndToEndIT` 6、`OwnershipEndToEndCrossReadIT` 3。每个 IT 都用随机 schema，结束后删除。
-- 迁移脚本实机执行（隔离库）发现并修复两处缺陷：① 脚本把 `@apply_backfill` 重置为 0，导致“审核后重跑”永远退化为只读段；② 匹配条件 `data_origin <> 'demo'` 遇到历史行 `data_origin IS NULL` 结果为 NULL，按用户名匹配一行都写不进。修复后 `OwnershipMigrationScriptIT` 3/3 通过（只读段不改行、`@demo_task_ids` 隔离、`@reject_task_ids` 撤回、未知作者保持 `unattributed`）。
+- 集成测试执行情况（2026-11-13 本机实测，`MYSQL_IT_PASSWORD` 由本机环境提供）：`mvn -B -f migration-backend/pom.xml verify -Pmysql-it` → **57 项单元测试 + 24 项 MySQL 集成测试全部通过，BUILD SUCCESS**。分布：`MySqlTaskPersistenceIT` 5、`OwnershipMigrationScriptIT` 6、`OwnershipEndToEndIT` 9、`OwnershipEndToEndCrossReadIT` 4。每个 IT 都用随机 schema，结束后删除。
+- 迁移脚本实机执行（隔离库，`OwnershipMigrationScriptIT` 6/6）：①只读段加列加索引建决策表、不改业务行；②无决策时即使 `create_by` 命中真实账号也不认领；③1–4 标 `demo`、12 号 `assign user_id=1` 后为 `matched/legacy`；④`reject` 能撤回旧的自动匹配；⑤未知任务 ID 整批中止；⑥未知用户/非法决策值整批中止。旧版字符串开关的两处缺陷（开关被重置、`data_origin IS NULL` 使用户名匹配失效）随设计替换消失。
 - **仍未完成**：生产库 `eladmin` 上的实际迁移执行与逐行核对记录。隔离库通过只证明脚本行为正确，不等于生产数据已迁移；`sql/security_model_ownership.sql` 不得表述为“已在生产验证”。
-- 真实库只读核对（2026-11-13）：`eladmin.sys_pre_defense` 实际 **9 行**、无 `owner_user_id` 列；3、4 号已被恢复线程收敛为 `failed`（结果非空），8–12 为真实跑批，其中 12 号作者 `system` 在 `sys_user` 中不存在。用 `eladmin` 副本演练确认：按 `@demo_task_ids='3,4'` 回填后 12 号会变 `unattributed`，普通账号看不到这条真实实验，需人工决定归属。详见 `18` §4.1。
+- 真实库只读核对（2026-11-13）：`eladmin.sys_pre_defense` 实际 **9 行**、无 `owner_user_id` 列；3、4 号已被恢复线程收敛为 `failed`（结果非空），8–12 为真实跑批，其中 12 号作者 `system` 在 `sys_user` 中不存在。裁定：1–4 号 `demo`、12 号 `assign user_id=1`（理由：system 为平台批处理作者）、8–11 号待审保持 `unattributed`。详见 `18` §4、§4.1。
 - MySQL 集成测试使用唯一随机 schema，验证并发领取仅一个成功、完成操作胜过已读取恢复快照、恢复只收敛孤儿 `running` 任务、owner 范围查询只返回本人行且 demo 行被排除；清理后断言 schema 已删除。
 - `.github/workflows/migration-quality.yml` 配置了迁移版 Maven `verify` 和 Vue 3 生产构建。工作流配置存在不代表远端 Actions 已成功，远端状态需以 GitHub Actions 记录为准。
 - `mysql-it` Maven profile 通过 Failsafe 启动 MySQL 集成测试；GitHub Actions 配置 MySQL 8.4 service。远端 Actions 尚未确认时，不将本地通过表述为远端通过。
-- 2026-11-13 R1 实测：`mvn -B -f migration-backend/pom.xml test` 通过 57 项单元测试（0 失败）；同日 `verify -Pmysql-it` 通过 57 项单测 + 17 项数据库 IT（含迁移脚本与两个端到端类）。
+- 2026-11-13 R1 实测：`mvn -B -f migration-backend/pom.xml test` 通过 57 项单元测试（0 失败）；同日 `verify -Pmysql-it` 通过 57 项单测 + 24 项数据库 IT（含迁移脚本、导出/下载/预览/审计端到端与跨用户开关）。
 - 迁移脚本已在随机隔离 schema 实跑通过，但**生产库尚未执行**；不得写成“迁移已完成/已验证生产”。
 - Redis 已进入迁移版依赖和运行配置，用于可重建资源目录；任务状态、报告和执行快照仍由 MySQL 保存。Redis 故障时缓存层降级回源 MySQL。
 - CI 工作流包含 MySQL 8.4 集成测试和前端生产构建；本次未查询 GitHub Actions 运行记录，不能据配置推断远端已通过。

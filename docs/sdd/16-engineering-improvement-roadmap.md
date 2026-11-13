@@ -118,12 +118,12 @@ mvn -B -f migration-backend/pom.xml verify
 - 授权：`TaskAccessGuard` 统一判定；写=仅 owner，读=owner 或开关开启的管理员；demo 行与无 owner 行对普通用户不可写、demo 行任何人不可写；越权返回 403（`ACCESS_DENIED` / `ADMIN_REQUIRED`）。
 - 身份撤销（评审修正）：JWT 只证明登录主体，`enabled`/`is_admin` 每次请求回查 `sys_user`；禁用账号、撤销管理员后旧令牌立即失效，令牌内 `adm` 不参与授权。
 - 资源：数据集/算法/超参数写操作仅管理员；新增 `POST /api/dataset/{id}/validate`，校验路径存在、可读、非空后置 `parse_status='success'`，失败写 `failed` 与原因。
-- 迁移（评审修正）：脚本改为两段式，默认 `@apply_backfill=0` 只读审核；确认演示行 ID（`@demo_task_ids`）与错误匹配（`@reject_task_ids`）后才回填，不再按“无快照 + 有结果”启发式判 demo。
+- 迁移（评审第三轮）：脚本改为两段式 + 结构化决策表 `sys_pre_defense_ownership_decision`（`demo`/`assign`/`reject`，含理由与决策人）；删除用户名自动匹配与“无快照 + 有结果”启发式；未知任务/未知用户/非法决策会让整批回填中止。真实库裁定：1–4 号 `demo`、12 号 `assign user_id=1`、8–11 号待审核。
 - 配额：单用户并发改为按 `owner_user_id` 计数，历史无 owner 任务不占配额。
 - 未实现（保留在 R2）：GPU 单槽数据库租约、导出任务启动恢复、日志与产物限额、配额与领取同事务。
-- 验收补充（评审第二轮）：新增 `OwnershipE2ESupport` 与 `OwnershipEndToEndIT`(6 项)、`OwnershipEndToEndCrossReadIT`(3 项)，用 `@SpringBootTest` + 真实 Security 链 + 真实隔离库跑双账号登录后访问同一任务，覆盖 403、demo/无 owner 隔离、登录后禁用立即失效、旧 token 无 `userId`、伪造 `adm`、管理员开关两种取值。**这些用例只完成编译，尚未执行**（本机 MySQL 拒绝无密码连接）。同时按 `18` §8 逐入口核对归属规则，按 §9 区分单元/契约/端到端证据等级，按 §10 固化迁移执行记录模板。
+- 验收补充：`OwnershipE2ESupport` 与 `OwnershipEndToEndIT`(9 项)、`OwnershipEndToEndCrossReadIT`(4 项)，用 `@SpringBootTest` + 真实 Security 链 + 真实隔离库跑双账号登录后访问同一任务，覆盖 403、demo/无 owner 隔离、登录后禁用立即失效、旧 token 无 `userId`、伪造 `adm`、管理员开关两种取值，以及导出详情/下载、PNG 预览、导出提交鉴权、审计查询。同时按 `18` §8 逐入口核对归属规则，按 §9 区分单元/契约/端到端证据等级，按 §10 固化迁移执行记录模板。
 - 状态口径：R1 为“有条件通过”。已完成归属模型、服务端访问控制、账号状态实时校验与迁移审核机制；真实数据库迁移执行、迁移脚本实机验证与双账号数据库链路仍待补证，不得表述为“多用户生产级权限体系已完成”。
-- 验证（2026-11-13 本机实测）：`mvn -B -f migration-backend/pom.xml verify -Pmysql-it` 通过 **57 项单元测试 + 17 项 MySQL 集成测试**（`MySqlTaskPersistenceIT` 5、`OwnershipMigrationScriptIT` 3、`OwnershipEndToEndIT` 6、`OwnershipEndToEndCrossReadIT` 3），BUILD SUCCESS。迁移脚本在隔离库实跑时暴露并修复了两处缺陷（开关被重置为 0、`data_origin IS NULL` 导致用户名匹配全部失效）。**生产库迁移仍未执行**，不能据此宣称生产已迁移。
+- 验证（2026-11-13 本机实测）：`mvn -B -f migration-backend/pom.xml verify -Pmysql-it` 通过 **57 项单元测试 + 24 项 MySQL 集成测试**（`MySqlTaskPersistenceIT` 5、`OwnershipMigrationScriptIT` 6、`OwnershipEndToEndIT` 9、`OwnershipEndToEndCrossReadIT` 4），BUILD SUCCESS。迁移脚本在隔离库 6/6 通过（只读段、无决策不认领、demo/assign/reject、未知任务与非法决策中止）。**生产库迁移仍未执行**，不能据此宣称生产已迁移。
 - 未触碰：LDD 128 batch / 5 epochs 配置、算法执行器、既有工程验证结果。
 
 ## 文档同步规则

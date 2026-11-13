@@ -88,6 +88,31 @@ class OwnershipEndToEndCrossReadIT {
                 .andExpect(status().isOk());
     }
 
+    @Test
+    void adminReadsExportsArtifactsAndAuditButStillCannotSubmit() throws Exception {
+        String admin = login("admin");
+
+        mockMvc.perform(get("/api/pre-defense/cleaned-dataset/exports/" + OwnershipE2ESupport.EXPORT_ID)
+                        .header("Authorization", admin))
+                .andExpect(status().isOk());
+        mockMvc.perform(get("/api/pre-defense/cleaned-dataset/exports/" + OwnershipE2ESupport.EXPORT_ID + "/download")
+                        .header("Authorization", admin))
+                .andExpect(status().isOk());
+        mockMvc.perform(get("/api/pre-defense/artifact-preview/" + OwnershipE2ESupport.ARTIFACT_TASK)
+                        .param("artifactPath", OwnershipE2ESupport.PREVIEW_PNG.toString())
+                        .header("Authorization", admin))
+                .andExpect(status().isOk());
+        mockMvc.perform(get("/api/audit/task/" + OwnershipE2ESupport.ARTIFACT_TASK)
+                        .header("Authorization", admin))
+                .andExpect(status().isOk());
+
+        // Cross-user read never grants writes: submitting an export for another user's task is still forbidden.
+        mockMvc.perform(post("/api/pre-defense/cleaned-dataset/exports/" + OwnershipE2ESupport.ARTIFACT_TASK)
+                        .param("isolationRatio", String.valueOf(OwnershipE2ESupport.EXPORT_RATIO))
+                        .header("Authorization", admin))
+                .andExpect(status().isForbidden());
+    }
+
     private String login(String username) throws Exception {
         String codeResponse = mockMvc.perform(get("/auth/code"))
                 .andExpect(status().isOk())

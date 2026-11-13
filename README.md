@@ -103,15 +103,28 @@ SOURCE sql/security_model_ownership.sql;
 1. **第一段（默认，只读）**：直接执行。它只新增 `owner_user_id`、`data_origin`、
    `owner_backfill_status` 三列与 `idx_owner_status`，然后打印逐行清单、疑似演示行、
    `running` 但无 `run_id` 的行、按作者分组计数。**不修改任何业务行**（`@apply_backfill = 0`）。
-2. **审核后第二段**：把确认的演示任务 ID 填入 `@demo_task_ids`、把“同名但非本人”的匹配填入
-   `@reject_task_ids`，把 `@apply_backfill` 改为 `1`，再执行一次（幂等）。确认的演示行变为
-   `owner_user_id=NULL` + `unattributed` + `demo`；其余按用户名精确匹配写 `matched`；仍无法匹配的
-   写 `unattributed`，对普通用户不可见。
+2. **审核后第二段**：把审核结论写进决策表 `sys_pre_defense_ownership_decision`（一行一个任务，
+   `decision` 取 `demo`/`assign`/`reject`，必须写 `reason` 与 `decided_by`；`assign` 必须给存在的
+   `user_id`），再把 `@apply_backfill` 改为 `1` 重新执行（幂等）。脚本**不再按用户名自动匹配**：
+   `demo` → `owner_user_id=NULL` + `unattributed` + `demo`；`assign` → 指定 owner + `matched` + `legacy`；
+   `reject` → 撤回；没有决策的行一律 `unattributed`，对普通用户不可见。未知任务 ID、未知用户或非法
+   决策值会让整批回填在写入前中止。
+
+```sql
+-- 例：仓库真实库的裁定（8–11 号待审核，先不写决策）
+INSERT INTO sys_pre_defense_ownership_decision
+  (task_id, decision, user_id, reason, decided_by, decided_at) VALUES
+  (1,  'demo',   NULL, '2025-07 种子模拟 zscore 结果，无执行快照', 'reviewer', NOW()),
+  (2,  'demo',   NULL, '2025-07 种子模拟 isolation 结果，无执行快照', 'reviewer', NOW()),
+  (3,  'demo',   NULL, '恢复线程写入的失败结果，不代表真实执行', 'reviewer', NOW()),
+  (4,  'demo',   NULL, '恢复线程写入的失败结果，不代表真实执行', 'reviewer', NOW()),
+  (12, 'assign', 1,    'system 为平台批处理作者，人工确认归属 admin', 'reviewer', NOW());
+```
 
 脚本不改状态、结果 JSON、run id 或执行快照；回滚脚本为
-`sql/security_model_ownership_rollback.sql`。执行前请先 `mysqldump` 备份 `sys_pre_defense`。
-本仓库种子库中的 3、4 号任务（`test` 名下、`running`、无快照无结果）已核实为演示行，
-应放入 `@demo_task_ids`，不要作为真实实验认领。
+`sql/security_model_ownership_rollback.sql`（只删三列，决策表保留为审计证据）。执行前请先
+`mysqldump` 备份 `sys_pre_defense`，备份放在仓库外。**生产库 `eladmin` 尚未执行迁移**，
+执行前需另行确认时间窗口、备份绝对路径、库名、执行人与回滚方式。
 
 列出的 migration 脚本可重复执行。`execution_snapshot` 保存每次启动时冻结的资源和参数，
 `current_run_id` 与 `current_attempt` 用于校验异步执行器回调是否属于当前运行；
@@ -225,8 +238,8 @@ mvn -pl eladmin-system -am test "-Denforcer.skip=true" "-Dsecurity-model.skip-te
 
 - 当前真实运行和答辩展示只覆盖 LDD 训练前数据清洗。
 - 训练中、训练后和其他对比算法暂不接入主流程。
-- **多用户隔离已在 R1 落地**：任务归属以 `owner_user_id` 为准，任务/报告/日志/产物/导出/审计均做 owner 校验；跨用户读对管理员默认关闭（`SECURITY_MODEL_ADMIN_CROSS_USER_READ`），且任何角色都不能跨用户写。R1 为**有条件通过**：隔离库迁移与双账号端到端验收已实跑通过（57 单测 + 17 项 MySQL IT），但生产库迁移尚未执行，不能表述为“生产级权限体系已完成”。
-- 升级到 R1 必须执行 `sql/security_model_ownership.sql`（先跑只读段，审核后在同一 MySQL 会话里 `SET @apply_backfill = 1, @demo_task_ids = '...', @reject_task_ids = '...'` 再跑回填段）；未执行迁移时任务接口会显式失败。升级前签发的旧 token 没有 `userId`，需重新登录后才能执行任务写操作。
+- **多用户隔离已在 R1 落地**：任务归属以 `owner_user_id` 为准，任务/报告/日志/产物/导出/审计均做 owner 校验；跨用户读对管理员默认关闭（`SECURITY_MODEL_ADMIN_CROSS_USER_READ`），且任何角色都不能跨用户写。R1 为**有条件通过**：隔离库迁移与双账号端到端验收已实跑通过（57 单测 + 24 项 MySQL IT），但生产库迁移尚未执行，不能表述为“生产级权限体系已完成”。
+- 升级到 R1 必须执行 `sql/security_model_ownership.sql`（先跑只读段，审核后写入 `sys_pre_defense_ownership_decision` 决策行，再在同一 MySQL 会话里 `SET @apply_backfill = 1` 重跑）；未执行迁移时任务接口会显式失败。升级前签发的旧 token 没有 `userId`，需重新登录后才能执行任务写操作。
 - 令牌不可单独撤销，但每次请求都会回查 `sys_user.enabled` 与 `is_admin`：禁用账号或撤销管理员后，已签发 token 立即失去权限，无需等 8 小时过期；代价是每个认证请求一次主键查询。
 - 共享数据集/算法/超参数模板的写操作仅管理员；普通用户只读。数据集登记后需管理员调用 `POST /api/dataset/{id}/validate` 才会变为可用（`parse_status='success'`）。
 - 任务产物默认写在系统临时目录（`<tmp>/security-model-executor`），尚未迁到受控数据根目录（R2）。

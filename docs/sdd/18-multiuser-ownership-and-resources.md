@@ -82,16 +82,15 @@
 
 现状（事实）：`sys_pre_defense` 只有 `create_by`；种子数据 1–4 号是演示行（模拟 zscore/isolation 结果、无 `execution_snapshot`、其中两行 `running` 且无 `run_id`）；`create_by` 实际取值只有 `admin`、`test`（`sys_user` 里另有从未创建任务的账号 `12`）。用户名不是稳定身份：可改名、可复用，且平台未把 JWT 里的 `userId` 落到业务行。
 
-推荐迁移方案（评审后已改为**两段式，脚本自己不猜归属**；R0 只冻结规则）：
+迁移方案（评审后两次收紧：**结构化决策表** + **不再按 `create_by` 自动匹配**）：
 
-1. 新增 `owner_user_id BIGINT NULL`、`data_origin VARCHAR(16) NULL`、`owner_backfill_status VARCHAR(16) NULL` 三列，均允许 NULL，先不改既有查询。
-2. **第一段（默认，只读）**：脚本 `@apply_backfill = 0`，只加列/加索引并打印审核查询——逐行清单、疑似演示行、`running` 但无 `run_id` 的行、按作者分组计数。**不写任何业务行**。
-3. **第二段（审核后，显式）**：在**同一个 MySQL 会话**里先 `SET @apply_backfill = 1, @demo_task_ids = '<已确认 ID>', @reject_task_ids = '<要撤回的匹配 ID>';` 再重跑脚本（脚本用 `IFNULL` 补齐未设置的开关，不会把已设置的值重置为 0；幂等，只填 NULL 标记）：
-   - 确认的演示行 → `owner_user_id=NULL`、`owner_backfill_status='unattributed'`、`data_origin='demo'`；
-   - 其余按 `create_by` 与 `sys_user.username` 精确匹配 → `matched` + `data_origin='legacy'`；
-   - `@reject_task_ids` 命中的匹配 → 改回 `unattributed`；
-   - 仍无法匹配的行 → `unattributed`，**不授予任何普通用户访问权**。
-4. **不再按“无快照 + 有结果”自动判 demo**（评审结论：该启发式会把早期真实实验误标成演示数据）。是否 demo 只能由人按任务 ID 决定；脚本只负责把候选行列出来。
+1. 新增 `owner_user_id BIGINT NULL`、`data_origin VARCHAR(16) NULL`、`owner_backfill_status VARCHAR(16) NULL` 三列与 `idx_owner_status`，均允许 NULL，先不改既有查询。
+2. **第一段（默认，只读）**：`@apply_backfill = 0`，加列/加索引、建决策表并打印审核查询——逐行清单、疑似演示行、`running` 但无 `run_id` 的行、按作者分组计数、已登记的决策。**不写任何业务行**。
+3. **决策表**：`sys_pre_defense_ownership_decision(task_id PK, decision, user_id, reason, decided_by, decided_at)`，`decision` 仅取 `demo` / `assign` / `reject`。`task_id` 是主键，重复或冲突映射在插入时即失败；`assign` 必须带存在的 `user_id`，`demo`/`reject` 不得带 `user_id`；每行必须有 `reason` 与 `decided_by`。
+4. **第二段（审核后）**：同一会话里 `SET @apply_backfill = 1` 后重跑。脚本先校验决策（未知任务 ID、未知用户、非法决策值、字段缺失），任一非法就打印明细并**整批中止**（用故意非法列引用触发失败，因为 MySQL 不允许在 PREPARE 中执行 SIGNAL），不会写半批。
+5. **应用顺序**：`demo` → `assign` → `reject` → 剩余无决策行 `unattributed` → `data_origin='legacy'`（NULL 时）。**脚本不再按 `create_by` 与用户名自动认领任何行**：没有决策就只能是 `unattributed`。
+6. 幂等：重复执行只补 NULL 标记。回滚：三列可 `DROP COLUMN`；决策表保留为审计证据，不随回滚删除。迁移前对 `sys_pre_defense`、`sys_pre_defense_export` 做 `mysqldump` 备份并记录文件名。
+
 5. `running` 但 `current_run_id IS NULL` 的历史行：脚本仍不改状态（避免迁移顺带改业务语义），只输出计数与清单，由人工决定是否按 `EXECUTOR_RESTARTED` 收敛为 `failed`。未收敛的行会以“运行中”出现在其 owner 列表里，这是已知残留，必须人工处理。
 6. 回滚：三列均为新增且可为空，回滚只需 `DROP COLUMN`；回填脚本不改 `create_by`/`cleaning_result`/`status`，因此回滚不丢原始证据。迁移前对 `sys_pre_defense`、`sys_pre_defense_export` 做 `mysqldump` 备份，并在文档记录备份文件名。
 
@@ -99,19 +98,21 @@
 注意：以上是 `eladmin.sql` 种子文件的 4 行；当前真实库已演化为 9 行（3、4 被恢复线程改为 failed，新增 8–12 号真实跑批），逐行现状见 §4.1，不要拿种子文件当生产现状。
 
 风险：
-- 用户名复用会把旧实验错绑到新账号。`matched` 只证明“当时那个用户名现在仍属于这个账号”，不证明实验归属；所以第二段必须人工审阅逐行清单，必要时用 `@reject_task_ids` 撤回。
-- 回填前若把 `test` 名下 3、4 号当成真实实验，`test` 会看到两个永远“运行中”的假任务，并且（修复前）还能编辑/启动/删除它们。现在的规则是：这两条进 `@demo_task_ids`，标 `demo` + `unattributed`；即使漏标，`TaskAccessGuard` 也禁止任何角色写 demo 行。
+- 用户名复用会把旧实验错绑到新账号。这里已经不靠用户名匹配：`assign` 必须由人写进决策表并给出理由，`matched` 的含义是“人工确认”，不是“同名推断”。
+- 回填前若把 `test` 名下 3、4 号当成真实实验，`test` 会看到两个永远“运行中/失败但从未执行”的假任务，并且（修复前）还能编辑/启动/删除它们。现在的规则是：这两条在决策表里标 `demo`；即使漏标，`TaskAccessGuard` 也禁止任何角色写 demo 行。
+- 8–11 号是 `create_by='admin'` 的工程烟测，但**没有逐条证据时不得自动认领**：脚本会一律置为 `unattributed`，由人工核对后再写 `assign` 决策。
 
-**实机执行结果（2026-11-13，随机隔离 schema `security_model_owner_it_*`，`OwnershipMigrationScriptIT` 3/3 通过）**：只读段确认“加列加索引但不改任何行”；回填段按 `@demo_task_ids=3,4` 把 3、4 隔离为 `demo` + `unattributed`，1、2 号按用户名匹配为 `matched` + `legacy`，`@reject_task_ids=2` 能把 2 号改回 `unattributed`，作者不存在的 5 号保持 `unattributed`。
+**实机执行结果（2026-11-13，随机隔离 schema `security_model_owner_it_*`，`OwnershipMigrationScriptIT` 6/6 通过）**：
 
-真实执行暴露出两处脚本缺陷，均已修复（这也是“必须实跑”的直接证据）：
+- 只读段：加列、加索引、建决策表，任何业务行不被修改，决策为空。
+- 无决策段：即使 `create_by='admin'` 对应真实账号，行仍保持 `owner NULL + unattributed`——验证“不自动认领”。
+- 决策段：1–4 标 `demo`，12 号 `assign user_id=1` → `owner=1 / matched / legacy`；5 号未知作者保持 `unattributed`；重复执行结果不变（幂等）。
+- 撤回段：先用 SQL 模拟旧版自动匹配，再把 2 号标 `reject`，回填后回到 `owner NULL + unattributed`。
+- 校验段：未知任务 ID、未知用户、非法决策值三种情况都在写入前中止，合法决策也一并不写（整批失败）。
 
-| 缺陷 | 现象 | 后果 | 修复 |
-| --- | --- | --- | --- |
-| 开关被脚本重置 | 第二段先 `SET @apply_backfill=1` 再跑脚本，脚本开头又执行 `SET @apply_backfill = 0` | 第二段永远退化为只读段，回填永不发生 | 改为 `SET @apply_backfill = IFNULL(@apply_backfill, 0)`，只补未设置值，并打印生效值 |
-| NULL 比较吞掉匹配 | 匹配条件 `t.data_origin <> 'demo'`，而历史行 `data_origin` 全为 NULL | `NULL <> 'demo'` 结果为 NULL，按用户名匹配一行都写不进，真实任务全部变 `unattributed` | 改为 `(t.data_origin IS NULL OR t.data_origin <> 'demo')` |
+上一版（字符串开关 `@demo_task_ids`/`@reject_task_ids`）在实跑中暴露过两处缺陷，现已随设计替换而消失，记录保留：① 开关被脚本重置为 0，第二段退化为只读；② `data_origin <> 'demo'` 遇 NULL 使用户名匹配全部失效。新设计不再解析 ID 字符串、也不做用户名匹配，这两类问题没有复发路径。
 
-仍未做：生产库 `eladmin` 上的实跑。隔离库证明的是脚本行为正确，不等于生产数据已迁移；生产执行仍须按 §10 记录备份、审核 ID、变量值与逐行核对。
+仍未做：生产库 `eladmin` 上的实跑。隔离库证明的是脚本行为正确，不等于生产数据已迁移；生产执行仍须按 §10 记录备份、决策表快照与逐行核对。
 
 ### 4.1 真实库现状（2026-11-13 只读核对 `eladmin`，未写入）
 
@@ -131,11 +132,20 @@
 
 账号现状：admin(1, 管理员, enabled)、test(2, **enabled=0**)、12(3, 非管理员, enabled=0)。
 
-两点必须写入迁移审核记录：
-- 3、4 号不再是“running 且无结果”。它们有恢复线程写入的失败结果，**用“无结果”判定 demo 的旧依据已失效**；是否仍按 demo 隔离只能由人确认。
-- 12 号是真实实验但作者 `system` 无对应账号，按规定会回填成 `unattributed` + `legacy`，**迁移后任何普通账号都看不到它**（包括 admin，除非开启跨用户读）。需要在回填前人工决定是否显式指定 owner，并在记录里写明理由。
+**裁定结果（2026-11-13 评审，已据此实现脚本）**：
 
-**副本演练（`mysqldump` 克隆 `eladmin` 到随机 schema，源库只读，演练后已 DROP）**：只读段加列加索引、9 行不动；回填段按 `@demo_task_ids='3,4'` 实跑结果为——1/2/8/9/10/11 → `owner_user_id=1 matched legacy`；3/4 → `demo + unattributed + owner NULL`；**12 → `unattributed legacy + owner NULL`**（即上文风险在真实数据上复现）。演练 schema 与导出文件已删除，生产库未做任何写入。
+| 任务 | 决策 | 落库结果 |
+| --- | --- | --- |
+| 1、2 | `demo` | owner NULL / unattributed / demo；模拟结果不作为真实实验展示 |
+| 3、4 | `demo` | 同上；恢复线程写的 `failed` 不代表真实执行 |
+| 8–11 | **待审，不自动认领** | 无决策时保持 unattributed；确认后由人工写 `assign` 决策并留痕 |
+| 12 | `assign user_id=1` | owner=admin / matched / legacy；理由“system 为平台批处理作者，人工确认归属 admin”，**不加永久 `system → admin` 规则** |
+
+两点必须写入迁移审核记录：
+- 3、4 号不再是“running 且无结果”。它们有恢复线程写入的失败结果，**用“无结果”判定 demo 的旧依据已失效**；按裁定仍以 `demo` 隔离，理由必须写清“失败结果由恢复线程生成”。
+- 12 号是真实实验但作者 `system` 无对应账号；若不做 `assign`，它会变成 `unattributed`，**任何普通账号都看不到**。裁定为显式归属 admin，不能靠脚本猜测。
+
+**副本演练（`mysqldump` 克隆 `eladmin` 到随机 schema，源库只读，演练后已 DROP）**：上一版脚本按 `@demo_task_ids='3,4'` 的回填结果为 1/2/8/9/10/11 → admin matched、3/4 → demo、12 → unattributed（风险在真实数据上复现）。新决策表版本在隔离库验证了“12 显式 assign admin、其余无决策保持 unattributed”的行为；生产库未做任何写入。
 
 
 ## 5. GPU 并发：事实、推荐与风险
@@ -164,7 +174,7 @@
 | --- | --- | --- | --- | --- | --- |
 | D1 | 共享数据集/算法/超参谁可写 | 方案 A：管理员维护、用户只读 | 用户不能自助登记数据集，需要管理员流程 | R1 | **已采纳并实现**（`ResourceCommandService.requireAdmin`） |
 | D2 | 历史 `create_by` 回填口径 | 两段式：先只读审核，再按确认的演示 ID/驳回 ID 回填；不可匹配隔离为 `unattributed` | 用户名复用导致错绑；启发式误判真实实验为演示 | R1 | **已采纳并实现**（`sql/security_model_ownership.sql`，默认 `@apply_backfill=0`） |
-| D3 | 历史数据是否给现有 `test` 账号 | 3、4 号（`test` 名下、无快照、无结果、`running`）判为演示行，进 `@demo_task_ids` 标 `demo` + `unattributed`；`admin` 名下 1、2 号是否为真实实验仍待核实 | 一旦放权无法收回 | R1 | 规则已实现；**`admin` 名下 2 条的真实性仍待你确认** |
+| D3 | 历史数据是否给现有 `test` 账号 | 1–4 号标 `demo` + `unattributed`（模拟结果/恢复线程结果均不算真实执行）；12 号 `assign user_id=1` 并写明“system 为平台批处理作者”；8–11 号进审核清单，确认后才显式 `assign` | 一旦放权无法收回 | R1 | 规则与隔离库验证已完成；**生产执行待授权，8–11 号待逐条证据** |
 | D4 | LDD 同机并发上限 | 1（数据库单槽租约 + 适配器锁兜底） | 与现有配额默认值冲突，需连测试一起改 | R2 | 未实现 |
 | D5 | 人工/有限自动重试策略 | 只允许人工重试；`GPU_OOM`/`RESULT_PROTOCOL_ERROR` 不自动重试，`GPU_LOCK_BUSY` 进队列 | 自动重试会在显存不足时反复失败 | R2 | 未实现 |
 | D6 | 路径登记是否仍是唯一输入 | 保留路径登记，但增加“管理员验证后才可用”的状态推进（当前缺口） | 若不补，用户/管理员都登记出不可用数据集 | R1 | **已采纳并实现**（`POST /api/dataset/{id}/validate`） |
@@ -223,9 +233,12 @@
 | demo 行不可读、不可写（含 owner 与管理员） | 单元 + 契约 | `TaskAccessGuardTest`、`OwnershipHttpContractTest` | 通过 |
 | 禁用账号、删除账号、降权、旧 token、伪造 `adm` | 契约（真实过滤器 + mock 持久层） | `OwnershipHttpContractTest` 8 项 | 通过 |
 | 双账号登录后访问同一任务 | 契约（MockMvc + mock mapper） | `OwnershipHttpContractTest` | 通过，但**持久层是 mock** |
-| 双账号 + 真实 MySQL + 真实 Security 链路 | 端到端 IT（`@SpringBootTest` + 真实库） | `OwnershipEndToEndIT`（6 项）、`OwnershipEndToEndCrossReadIT`（3 项） | **已执行通过**（本机 MySQL，2026-11-13） |
+| 双账号 + 真实 MySQL + 真实 Security 链路 | 端到端 IT（`@SpringBootTest` + 真实库） | `OwnershipEndToEndIT`（9 项）、`OwnershipEndToEndCrossReadIT`（4 项） | **已执行通过**（本机 MySQL，2026-11-13；共 13 项） |
+| 导出详情/下载/PNG 预览的跨用户隔离 | 端到端 IT（真实文件 + 真实库） | `OwnershipEndToEndIT.exportDownloadAndArtifactPreviewAreOwnerScoped` | 通过：owner 200，他人 403 |
+| 导出提交先鉴权、后校验比例 | 端到端 IT | `OwnershipEndToEndIT.exportSubmitChecksOwnershipBeforeRatioValidation` | 通过：他人 403，owner 非法比例 400 |
+| 审计查询跨用户隔离、管理员开关两种取值 | 端到端 IT | `auditQueryIsOwnerScoped`、`adminReadsExportsArtifactsAndAuditButStillCannotSubmit` | 通过：普通用户 403；开关 false 时管理员 403，true 时管理员可读但不可提交 |
 | 数据库层 owner 范围查询、demo 排除 | 隔离库 IT | `MySqlTaskPersistenceIT` 5 项 | 已执行通过 |
-| 迁移脚本两段式行为（只读段、按 ID 隔离、驳回） | 隔离库 IT，真实执行 SQL | `OwnershipMigrationScriptIT` 3 项 | **已执行通过**（并修出两处脚本缺陷） |
+| 迁移脚本：只读段、决策表、显式 assign、reject、非法决策中止 | 隔离库 IT，真实执行 SQL | `OwnershipMigrationScriptIT` 6 项 | **已执行通过**（6/6，2026-11-13） |
 | 账号状态不依赖 Redis/本地缓存 | 代码核对 | 过滤器只查 `sys_user`；Redis 仅缓存资源目录 | 通过（静态核对） |
 
 ## 10. 迁移执行记录模板（生产操作必须留档）
@@ -236,8 +249,8 @@
 | 脚本版本 | `sql/security_model_ownership.sql` 的 commit 或文件摘要 |
 | 备份 | `mysqldump` 文件名、大小、存放位置，恢复演练结果 |
 | 审核依据 | 逐行清单（task_id / status / create_by / 是否演示）与判断人 |
-| `@demo_task_ids` | 最终填写值，逐条列出确认理由 |
-| `@reject_task_ids` | 撤回的错误匹配及原因 |
+| 决策表快照 | 迁移前 `SELECT task_id, decision, user_id, reason, decided_by, decided_at FROM sys_pre_defense_ownership_decision ORDER BY task_id` 的完整导出（含 12 号 `assign user_id=1` 的理由） |
+| 决策校验输出 | 脚本打印的非法/冲突决策明细（应为空）与实际应用条数 |
 | 执行前后核对 | 逐行 owner/origin 对比与聚合计数（不能只看脚本末尾聚合查询） |
 | 回滚预案 | 回滚脚本路径、触发条件、负责人 |
 

@@ -149,6 +149,74 @@ class OwnershipEndToEndIT {
                 .andExpect(jsonPath("$.scope").value("current-user"));
     }
 
+    @Test
+    void exportDownloadAndArtifactPreviewAreOwnerScoped() throws Exception {
+        String alice = login("alice");
+        String bob = login("bob");
+
+        mockMvc.perform(get("/api/pre-defense/cleaned-dataset/exports/" + OwnershipE2ESupport.EXPORT_ID)
+                        .header("Authorization", alice))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.exportId").value((int) OwnershipE2ESupport.EXPORT_ID));
+
+        mockMvc.perform(get("/api/pre-defense/cleaned-dataset/exports/" + OwnershipE2ESupport.EXPORT_ID + "/download")
+                        .header("Authorization", alice))
+                .andExpect(status().isOk())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers
+                        .header().string("Content-Type", "application/zip"));
+
+        mockMvc.perform(get("/api/pre-defense/artifact-preview/" + OwnershipE2ESupport.ARTIFACT_TASK)
+                        .param("artifactPath", OwnershipE2ESupport.PREVIEW_PNG.toString())
+                        .header("Authorization", alice))
+                .andExpect(status().isOk())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers
+                        .header().string("Content-Type", "image/png"));
+
+        mockMvc.perform(get("/api/pre-defense/cleaned-dataset/exports/" + OwnershipE2ESupport.EXPORT_ID)
+                        .header("Authorization", bob))
+                .andExpect(status().isForbidden());
+        mockMvc.perform(get("/api/pre-defense/cleaned-dataset/exports/" + OwnershipE2ESupport.EXPORT_ID + "/download")
+                        .header("Authorization", bob))
+                .andExpect(status().isForbidden());
+        mockMvc.perform(get("/api/pre-defense/artifact-preview/" + OwnershipE2ESupport.ARTIFACT_TASK)
+                        .param("artifactPath", OwnershipE2ESupport.PREVIEW_PNG.toString())
+                        .header("Authorization", bob))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void exportSubmitChecksOwnershipBeforeRatioValidation() throws Exception {
+        String alice = login("alice");
+        String bob = login("bob");
+
+        mockMvc.perform(post("/api/pre-defense/cleaned-dataset/exports/" + OwnershipE2ESupport.ARTIFACT_TASK)
+                        .param("isolationRatio", String.valueOf(OwnershipE2ESupport.EXPORT_RATIO))
+                        .header("Authorization", bob))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("ACCESS_DENIED"));
+
+        // Alice passes the ownership gate and then fails ratio validation: 400, not 403.
+        mockMvc.perform(post("/api/pre-defense/cleaned-dataset/exports/" + OwnershipE2ESupport.ARTIFACT_TASK)
+                        .param("isolationRatio", "999")
+                        .header("Authorization", alice))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void auditQueryIsOwnerScoped() throws Exception {
+        String alice = login("alice");
+        String bob = login("bob");
+
+        mockMvc.perform(get("/api/audit/task/" + OwnershipE2ESupport.ARTIFACT_TASK)
+                        .header("Authorization", alice))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].action").value("TASK_START"));
+
+        mockMvc.perform(get("/api/audit/task/" + OwnershipE2ESupport.ARTIFACT_TASK)
+                        .header("Authorization", bob))
+                .andExpect(status().isForbidden());
+    }
+
     private String login(String username) throws Exception {
         String codeResponse = mockMvc.perform(get("/auth/code"))
                 .andExpect(status().isOk())

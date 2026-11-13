@@ -80,9 +80,9 @@ R6/R7 不能因简历需要跳过安全依赖，但不以 R4 消息队列为前�
 > 实施记录见 `09-project-status.md` §5.2、`16-engineering-improvement-roadmap.md` 的 R1 实施记录、`05-decisions.md` ADR-013。
 > 已落地：稳定 `owner_user_id` 归属、`TaskAccessGuard` 服务端校验、共享资源写操作仅管理员、历史数据迁移脚本、
 > 数据集验证入口、按 owner 的配额计数、令牌每请求回查账号状态。
-> **验收证据（2026-11-13 本机实跑）**：57 项单元测试 + 17 项 MySQL 集成测试全部通过，含真实 Security 链 +
-> 真实隔离库的双账号端到端（`OwnershipEndToEndIT` 6 项、`OwnershipEndToEndCrossReadIT` 3 项）与迁移脚本两段式
-> 实跑（`OwnershipMigrationScriptIT` 3 项，并修出两处脚本缺陷）。**仍未完成**：生产库迁移执行与留档、GPU 单槽租约（R2）。
+> **验收证据（2026-11-13 本机实跑）**：57 项单元测试 + 24 项 MySQL 集成测试全部通过，含真实 Security 链 +
+> 真实隔离库的双账号端到端（`OwnershipEndToEndIT` 9 项、`OwnershipEndToEndCrossReadIT` 4 项，含导出/下载/PNG 预览/审计）与
+> 迁移脚本决策表实跑（`OwnershipMigrationScriptIT` 6 项）。**仍未完成**：生产库迁移执行与留档、GPU 单槽租约（R2）。
 
 **R1 收尾命令（本机执行，密码只走环境变量，不写入仓库/命令历史/文档）**：
 
@@ -91,7 +91,7 @@ $env:MYSQL_IT_PASSWORD = '<本机 MySQL 密码>'
 mvn -B -f migration-backend/pom.xml verify -Pmysql-it
 ```
 
-迁移脚本先在隔离库跑只读段，填 `@demo_task_ids`/`@reject_task_ids` 后再跑回填段，并保存逐行与聚合核对结果；
+迁移脚本先在隔离库跑只读段，按 `18` §4.1 的裁定把 1–4 号与 12 号写成 `demo` / `assign` 决策行（8–11 号确认后再补 `assign`），再跑回填段，并保存决策表快照与逐行核对结果；
 记录字段与模板见 `18` §10，证据分级见 `18` §9。
 
 **设计**：支持多个真实登录用户分别创建、管理、查看自己的实验；确定最小角色（管理员、实验用户、只读观察者）及任务归属（建议稳定 user ID 而不是仅用户名）；按数据集、任务、报告、日志、导出、审计动作列权限矩阵。列表查询、ID 直取、重试/取消、报告、进度、日志、图片及 ZIP 下载均在服务端校验归属，不要只依赖前端隐藏按钮。管理员跨用户查看须明确授权和审计；共享目录资源与私有实验分离。生产 profile 无 JWT 密钥则拒绝启动，开发 profile 可有显式本地设置；日志不打印密钥/令牌。若历史任务没有 owner ID，设计迁移映射与不可识别记录的隔离策略。

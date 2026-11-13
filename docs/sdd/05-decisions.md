@@ -215,13 +215,14 @@ Agent 采用外部大模型 API，本机不部署大模型。生成模型和 emb
 1. **归属键**：`sys_pre_defense` 新增 `owner_user_id BIGINT NULL`，作为唯一授权依据；`create_by` 只保留为用户名快照（展示与审计用），不再参与授权。新增 `data_origin`（`user` / `demo` / `legacy`）与 `owner_backfill_status`（`matched` / `unattributed`）。
 2. **身份**：JWT 增加 `adm` 声明，签发时来自 `sys_user.is_admin`；`JwtAuthenticationFilter` 把 `(userId, username, admin)` 作为 principal 注入 SecurityContext。旧 token 没有 `userId`（升级前签发），视为无归属身份：可登录态访问资源共享目录，但任何任务写操作返回“登录状态无效，请重新登录”。不引入单独的会话表，刷新令牌不在本轮范围。
 3. **共享资源（D1 = 方案 A）**：数据集/算法/超参数模板的写操作仅管理员；普通用户只读。`ResourceCommandService` 在入口校验，越权返回 403 `ADMIN_REQUIRED`。
-4. **历史数据（D2/D3）**：按用户名精确匹配回填；不匹配标 `unattributed`，仅管理员（且仅当跨用户读开关开启）可读，任何用户不可写。**演示行判定改为人工按任务 ID 指定**（`@demo_task_ids`），不再使用“无快照 + 有结果”启发式；脚本默认只读审核，确认后才回填。**迁移不修改任何业务字段**，只写三列标记。
+4. **历史数据（D2/D3）**：新增决策表 `sys_pre_defense_ownership_decision`，一行一个任务，`decision` 只能取 `demo` / `assign` / `reject`，必须填 `reason` 与 `decided_by`；`assign` 必须指定存在的 `sys_user.user_id`。**脚本不再按用户名自动匹配、也不解析 ID 字符串**：没有决策的历史行一律 `unattributed`。非法决策（未知任务/未知用户/非法取值/字段缺失）会让整批回填在写入前中止。**迁移不修改任何业务字段**，只写三列标记。
 5. **管理员跨用户读（默认关闭）**：配置项 `security-model.ownership.admin-cross-user-read=false`。开启后管理员可读他人任务、报告、日志、产物与导出，并写审计；**任何角色都不能跨用户写**（编辑/启动/重试/取消/删除/导出提交）。
 6. **数据集验证入口（D6）**：新增 `POST /api/dataset/{id}/validate`（仅管理员），校验路径存在、可读、非空后把 `parse_status` 推进为 `success` 并写 `parse_message`/`parse_time`；失败写 `failed` 与原因，不抛 500。这是消除“登记即死路”的最小实现，不做内容级解析。
 7. **配额口径**：单用户运行任务数按 `owner_user_id` 计数；`owner_user_id IS NULL` 的历史任务不占配额，也不会被新逻辑认领。
 8. **R1 不做**：GPU 单槽租约、导出启动恢复、日志/产物限额、消息队列、RAG、Agent。这些仍在 R2/R3/R4+。
 9. **令牌不撤销，但权限每次请求重算（评审后补充）**：JWT 只证明“谁登录过”，`enabled` 与 `is_admin` 以 `sys_user` 当前行为准。`JwtAuthenticationFilter` 每个请求按 `userId` 读取账号状态：账号被禁用或删除则本次请求不认证；管理员降权后 `ROLE_ADMIN` 立即消失，令牌里的 `adm` 声明不参与授权。代价是每个认证请求一次主键读，换取“禁用/降权无需等 8 小时令牌过期”，也不引入令牌黑名单或权限版本表。旧 token（无 `userId`）不查询、不认证为可写身份。
 10. **demo 行任何人不可写（评审后补充）**：迁移会给演示行回填 owner 以便追溯，但 `TaskAccessGuard.requireOwner` 先判 `data_origin='demo'` 并直接拒绝。写规则与读规则（非跨用户管理员不可见）保持一致，避免“能按 ID 改一条自己看不到的行”。
+11. **历史归属只能显式决定，禁止隐式认领（评审第二轮补充）**：删除按 `create_by` 的自动匹配；`matched` 只表示“人工确认”。`create_by='system'` 这类无账号作者不得设永久映射规则，需要归属时写一条 `assign` 决策并说明理由。仓库真实库的裁定：1–4 号 `demo`；12 号 `assign user_id=1`（system 为平台批处理作者）；8–11 号进入审核清单，未确认前保持 `unattributed`。
 
 原因：R0 已证明当前实现是“单库共享语义”，任何多用户验收都会失败；而单机、少量真实用户的场景下，方案 A 能以最小改动把“各自管理和查看实验”变得可测，同时不把历史演示数据误当真实实验。
 
@@ -231,4 +232,4 @@ Agent 采用外部大模型 API，本机不部署大模型。生成模型和 emb
 - 资源写操作从“任意登录用户”收紧为“管理员”，前端非管理员保存按钮会收到 403；R1 不改前端交互，只在接口层强制。
 - 回滚：`sql/security_model_ownership_rollback.sql` 删除三列即可恢复旧语义；代码回滚需同步回滚 jar，但**不要**删列后再跑旧代码前恢复备份，避免 owner 数据丢失后无法追溯。
 
-实施结果（2026-11-13）：决策 1–10 已落地；`TaskAccessGuard` 为核心判定点，`owner_user_id` 是唯一授权键；单元测试 57 项通过、`verify -Pmysql-it` 的 17 项 MySQL 集成测试通过（迁移脚本、双账号端到端、持久层）。评审后的三处修正：①令牌权限改为每请求回查 `sys_user`（禁用/降权立即生效）；②demo 行任何人不可写；③迁移脚本改为“默认只读审核、确认任务 ID 后才回填”，不再用快照启发式判 demo。第二轮补充：`OwnershipEndToEndIT` 与 `OwnershipEndToEndCrossReadIT` 用真实 Security 链 + 真实隔离库完成双账号验收；迁移脚本在隔离库实跑时发现两处缺陷（开关被重置、`data_origin IS NULL` 使用户名匹配全部失效）并修复。**生产库尚未执行迁移**，不得表述为生产已验证。前端未做交互改动，非管理员保存资源会直接收到 403。决策 8 的范围仍未越界（无 MQ/RAG/Agent、无 GPU 租约）。
+实施结果（2026-11-13）：决策 1–11 已落地；`TaskAccessGuard` 为核心判定点，`owner_user_id` 是唯一授权键；单元测试 57 项通过、`verify -Pmysql-it` 的 24 项 MySQL 集成测试通过（持久层 5、迁移脚本 6、双账号端到端 9、跨用户开关 4）。评审后的修正：①令牌权限改为每请求回查 `sys_user`（禁用/降权立即生效）；②demo 行任何人不可写；③迁移改为结构化决策表，删除用户名自动匹配与快照启发式，非法决策整批中止。第三轮按裁定：1–4 号 `demo`、12 号 `assign user_id=1`、8–11 号待审核保持 `unattributed`；`OwnershipMigrationScriptIT` 实跑 6/6（含“system 任务显式归属 admin”“无决策不认领”“非法决策中止”）。**生产库尚未执行迁移**，不得表述为生产已验证。前端未做交互改动，非管理员保存资源会直接收到 403。决策 8 的范围仍未越界（无 MQ/RAG/Agent、无 GPU 租约）。
