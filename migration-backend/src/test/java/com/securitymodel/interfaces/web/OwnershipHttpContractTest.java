@@ -8,6 +8,7 @@ import com.securitymodel.application.task.AfterCommitTaskDispatcher;
 import com.securitymodel.application.task.ExecutionFingerprintService;
 import com.securitymodel.application.task.LddConfigurationPolicy;
 import com.securitymodel.application.task.PreDefenseTaskCommandService;
+import com.securitymodel.application.task.RequestIdempotencyService;
 import com.securitymodel.application.task.TaskAccessGuard;
 import com.securitymodel.application.task.TaskExecutionQuotaPolicy;
 import com.securitymodel.application.task.TaskProgressQueryService;
@@ -255,10 +256,15 @@ class OwnershipHttpContractTest {
                 mock(OperationAuditService.class),
                 currentUserService,
                 guard,
-                readinessGate);
+                readinessGate,
+                mock(com.securitymodel.application.task.TaskDispatchIntentService.class),
+                mock(com.securitymodel.application.task.TaskDispatchCoordinator.class));
+        RequestIdempotencyService idempotencyService = new RequestIdempotencyService(
+                mock(com.securitymodel.application.task.IdempotencyRecordStore.class),
+                currentUserService, objectMapper);
         JwtAuthenticationFilter filter = new JwtAuthenticationFilter(tokenService, userMapper);
         return MockMvcBuilders.standaloneSetup(
-                        new PreDefenseTaskController(commandService),
+                        new PreDefenseTaskController(commandService, idempotencyService, objectMapper),
                         new TaskProgressController(queryService, executor, quotaPolicy,
                                 mock(com.securitymodel.application.task.GpuLeaseService.class),
                                 mock(com.securitymodel.application.task.GpuLeaseBlockedProbe.class)),

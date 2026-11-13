@@ -249,7 +249,7 @@ Java 的 `PythonProcessWaiter` 等待外层适配器进程时关注该文件的�
 
 ### 如何证明项目经过测试？
 
-截至 2026-11-13（R1 及评审三轮修正、R2 收尾与恢复护栏），`mvn -B -f migration-backend/pom.xml verify -Pmysql-it` 实测迁移版 **104 项单元测试（0 失败、0 跳过）+ 33 项 MySQL 集成测试**通过，打包成功；适配器 `python -m unittest` 11 项为上一轮记录，本轮未重跑。单测覆盖资源命令/查询、缓存 TTL 与故障降级、事务提交后派发、任务重试快照、进度等待与查询、启动恢复、YAML 配置解析，以及 R1 新增的任务归属守卫（8 项，含 demo 写拒绝）、按 owner 配额（4 项）、资源管理员权限与数据集验证（4 项）、进度查询越权与统计 scope（3 项）、真实登录取证后的双账号 HTTP 契约（8 项，含禁用账号与令牌 `adm` 不被信任）、R2 的 GPU 租约语义（8 项）、适配器失败码兜底（7 项）、attempt 产物截断/清单/保留期（6 项）、恢复前子进程五态/整树确认（11 项）、隔离槽位探测（3 项）、真实短进程超时/取消（2 项）、导出失败收敛（3 项）、独立 JVM 崩溃演练（1 项）。集成测试 33 项分五个类：`MySqlTaskPersistenceIT` 6 项（并发领取原子性、完成与恢复的条件更新竞争、孤儿恢复边界、owner 范围查询、demo 排除、导出 pending/running 真实库收敛）、`OwnershipMigrationScriptIT` 6 项、`OwnershipEndToEndIT` 9 项、`OwnershipEndToEndCrossReadIT` 4 项、`GpuLeaseMySqlIT` 8 项（并发唯一、过期接管、fencing、按 run 释放、事务回滚、隔离槽位 TTL 过期仍不可接管、重建实例仍隔离），均在本机 MySQL 实跑通过。命令为 `mvn -B -f migration-backend/pom.xml test` 和 `mvn -B -f migration-backend/pom.xml verify -Pmysql-it`（`mysql-it` 需 `MYSQL_IT_PASSWORD`）。**生产库 `eladmin` 迁移仍未执行，`sys_gpu_lease` 未在生产库建表，也未跑真实 LDD**；GitHub Actions 配置了 MySQL 8.4 service，远端结果仍以 Actions 页面为准。旧 ELADMIN 的测试不计入迁移版覆盖；LDD 工程链路验证也不等于论文正式实验。
+截至 2026-11-13（R1 及评审三轮修正、R2 收尾与恢复护栏），`mvn -B -f migration-backend/pom.xml verify -Pmysql-it` 实测迁移版 **120 项单元测试（0 失败、0 跳过）+ 40 项 MySQL 集成测试**通过，打包成功；适配器 `python -m unittest` 11 项为上一轮记录，本轮未重跑。单测覆盖资源命令/查询、缓存 TTL 与故障降级、事务提交后派发、任务重试快照、进度等待与查询、启动恢复、YAML 配置解析，以及 R1 新增的任务归属守卫（8 项，含 demo 写拒绝）、按 owner 配额（4 项）、资源管理员权限与数据集验证（4 项）、进度查询越权与统计 scope（3 项）、真实登录取证后的双账号 HTTP 契约（8 项，含禁用账号与令牌 `adm` 不被信任）、R2 的 GPU 租约语义（8 项）、适配器失败码兜底（7 项）、attempt 产物截断/清单/保留期（6 项）、恢复前子进程五态/整树确认（11 项）、隔离槽位探测（3 项）、真实短进程超时/取消（2 项）、导出失败收敛（3 项）、独立 JVM 崩溃演练（1 项）。集成测试 40 项分五个类：`MySqlTaskPersistenceIT` 13 项（并发领取原子性、完成与恢复的条件更新竞争、孤儿恢复边界、owner 范围查询、demo 排除、导出 pending/running 真实库收敛、R3 意图唯一键/条件抢占/事务回滚/pending 扫描、幂等键隔离与过期、SQL 脚本重复执行与回滚）、`OwnershipMigrationScriptIT` 6 项、`OwnershipEndToEndIT` 9 项、`OwnershipEndToEndCrossReadIT` 4 项、`GpuLeaseMySqlIT` 8 项（并发唯一、过期接管、fencing、按 run 释放、事务回滚、隔离槽位 TTL 过期仍不可接管、重建实例仍隔离），均在本机 MySQL 实跑通过。命令为 `mvn -B -f migration-backend/pom.xml test` 和 `mvn -B -f migration-backend/pom.xml verify -Pmysql-it`（`mysql-it` 需 `MYSQL_IT_PASSWORD`）。**生产库 `eladmin` 迁移仍未执行，`sys_gpu_lease` 未在生产库建表，也未跑真实 LDD**；GitHub Actions 配置了 MySQL 8.4 service，远端结果仍以 Actions 页面为准。旧 ELADMIN 的测试不计入迁移版覆盖；LDD 工程链路验证也不等于论文正式实验。
 
 ## 8. 代码追问导航
 
@@ -270,7 +270,7 @@ Java 的 `PythonProcessWaiter` 等待外层适配器进程时关注该文件的�
 3. 按某个隔离比例导出的 ZIP，能解释其中的索引、标签和图片文件。
 4. 当前本机 VaB 路径、Python 环境、PyTorch/CUDA 和 GPU 信息。
 5. 一个失败或取消/重试案例，说明状态如何变化、`run_id` 如何变化、旧回调如何被隔离。
-6. 构建和测试命令输出，以及 Surefire/Failsafe 报告。明确迁移版实测 104 项单元测试（0 跳过）+ 33 项 MySQL 集成测试（2026-11-13，本机环境变量提供密码），以及旧模块历史定向测试的区别；生产库迁移与 GPU 租约建表尚未执行，也未跑真实 LDD，不能拿隔离库结果冒充生产验证。
+6. 构建和测试命令输出，以及 Surefire/Failsafe 报告。明确迁移版实测 120 项单元测试（0 跳过）+ 40 项 MySQL 集成测试（2026-11-13，本机环境变量提供密码），以及旧模块历史定向测试的区别；生产库迁移与 GPU 租约建表尚未执行，也未跑真实 LDD，不能拿隔离库结果冒充生产验证。
 
 不要把 `migration-frontend/src/data/demoData.js` 中的任务数字、统计百分比、模拟案例或演示模式页面作为真实实验数据。也不要把页面出现“已接入运行”的静态标签当作后端算法接入证据。
 

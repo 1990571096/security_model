@@ -30,8 +30,10 @@ export function getCleaningReport(taskId) {
   return http.get(`/api/pre-defense/report/${taskId}`)
 }
 
-export function retryTask(taskId) {
-  return http.post(`/api/pre-defense/retry/${taskId}`)
+export function retryTask(taskId, idempotencyKey) {
+  return http.post(`/api/pre-defense/retry/${taskId}`, null, idempotencyKey ? {
+    headers: { 'Idempotency-Key': idempotencyKey }
+  } : undefined)
 }
 
 export function cancelTask(taskId) {

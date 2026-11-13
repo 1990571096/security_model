@@ -42,6 +42,8 @@ public class PreDefenseTaskCommandService {
     private final CurrentUserService currentUserService;
     private final TaskAccessGuard taskAccessGuard;
     private final SchedulingReadinessGate readinessGate;
+    private final TaskDispatchIntentService dispatchIntentService;
+    private final TaskDispatchCoordinator dispatchCoordinator;
 
     public PreDefenseTaskCommandService(
             PreDefenseTaskMapper taskMapper,
@@ -56,7 +58,9 @@ public class PreDefenseTaskCommandService {
             OperationAuditService operationAuditService,
             CurrentUserService currentUserService,
             TaskAccessGuard taskAccessGuard,
-            SchedulingReadinessGate readinessGate) {
+            SchedulingReadinessGate readinessGate,
+            TaskDispatchIntentService dispatchIntentService,
+            TaskDispatchCoordinator dispatchCoordinator) {
         this.taskMapper = taskMapper;
         this.resourceQueryService = resourceQueryService;
         this.defenseTaskExecutor = defenseTaskExecutor;
@@ -70,6 +74,8 @@ public class PreDefenseTaskCommandService {
         this.currentUserService = currentUserService;
         this.taskAccessGuard = taskAccessGuard;
         this.readinessGate = readinessGate;
+        this.dispatchIntentService = dispatchIntentService;
+        this.dispatchCoordinator = dispatchCoordinator;
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -182,6 +188,8 @@ public class PreDefenseTaskCommandService {
         if (updated != 1) {
             throw new TaskCommandException("任务状态已变化，请刷新后重试");
         }
+        dispatchIntentService.abandon(taskId, task.getCurrentRunId(), task.getCurrentAttempt(),
+                "TASK_CANCELED", LocalDateTime.now());
         afterCommitTaskDispatcher.dispatch(
                 () -> defenseTaskExecutor.cancelPreDefense(taskId, task.getCurrentRunId()),
                 null);
@@ -284,9 +292,12 @@ public class PreDefenseTaskCommandService {
         if (claimed != 1) {
             throw new TaskCommandException("任务状态已变化，请刷新后重试");
         }
+        ObjectNode runtime = executionFingerprintService.buildRuntimeSnapshot(request);
+        dispatchIntentService.createPending(request,
+                executionFingerprintService.sha256(runtime.toString()), startTime);
         afterCommitTaskDispatcher.dispatch(
-                () -> defenseTaskExecutor.runPreDefense(request),
-                error -> markDispatchFailure(request, error));
+                () -> dispatchCoordinator.dispatchAfterCommit(request),
+                null);
     }
 
     private void validateTaskForLaunch(PreDefenseTask task) {
@@ -407,27 +418,6 @@ public class PreDefenseTaskCommandService {
                 .configJson(hyper.getParameterConfig())
                 .schemaJson(hyper.getParameterSchema())
                 .build();
-    }
-
-    private void markDispatchFailure(DefenseTaskRequest request, RuntimeException error) {
-        LocalDateTime endTime = LocalDateTime.now();
-        Map<String, Object> result = new LinkedHashMap<>();
-        result.put("executor", "spring-taskAsync");
-        result.put("stage", "dispatch");
-        result.put("status", "failed");
-        result.put("message", "任务提交执行池失败");
-        result.put("run_id", request.getRunId());
-        result.put("attempt", request.getAttempt());
-        result.put("error_code", "TASK_QUEUE_FULL");
-        result.put("failure_reason", error.getMessage());
-        result.put("finished_at", endTime.toString());
-        result.put("artifacts", Map.of());
-        try {
-            taskMapper.failBeforeExecution(request.getTaskId(), request.getRunId(), request.getAttempt(),
-                    objectMapper.writeValueAsString(result), endTime);
-        } catch (Exception ignored) {
-            // Nothing more useful can be done from the rejection callback.
-        }
     }
 
     private String buildCanceledResult(PreDefenseTask task, LocalDateTime endTime) {

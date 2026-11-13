@@ -27,7 +27,7 @@
 | LDD 任务与执行 | `PreDefenseTaskCommandService`、`PythonLddTaskExecutor`、`algorithm-runtime/vab/algorithm_entry.py` | 本地进程/磁盘，非独立 Worker |
 | 进度 | `PythonProcessWaiter`、`TaskCenterView.vue`、`07-executor-contract.md` | 已有阶段、epoch、心跳；需验证陈旧判定、过程可观测性，不能写成从零开发 |
 | 任务竞争 | `PreDefenseTaskMapper`、`MySqlTaskPersistenceIT`、`GpuLeaseService` | 原子领取与 GPU 单槽租约已有实现；设备独占和故障恢复须按 R2 矩阵验证，不能仅凭租约推断 |
-| 启动恢复 | `TaskRecoveryRunner`、`GpuLeaseBlockedProbe` | 已有恢复及隔离探测代码；新修补尚需独立验收，R3 统一恢复协调尚未交付 |
+| 启动恢复 | `TaskRecoveryRunner`、`DispatchRecoveryCoordinator`、`GpuLeaseBlockedProbe` | R3 统一恢复协调器已实现；启动测试与真实 MySQL IT 已通过，生产迁移未执行 |
 | 导出 | `CleanSubsetExportService`、`CleanSubsetExportExecutor`、`ExportRecoveryRunner` | 已有去重、重启失败收敛与超时逻辑；进程树和文件边界继续回归 |
 | 安全 | `TaskAccessGuard`、`JwtAuthenticationFilter`、`OwnershipEndToEndIT` | 已有 owner 授权、账号状态回查和隔离库 HTTP 测试；业务库迁移与测试证据独立记录 |
 | Redis | `ResourceCatalogCache`、ADR-010 | 资源目录缓存已落地，不是分布式锁或任务状态存储 |
@@ -108,8 +108,8 @@ mvn -B -f migration-backend/pom.xml verify -Pmysql-it
 > 第二切片：适配器陈旧锁接管（pid 存活判定 + token 校验接管/释放）、失败码 `GPU_LOCK_BUSY`/`GPU_OOM`/`CUDA_UNAVAILABLE` 细分、Java 无结果时 stderr 兜底归类。
 > 第三切片：attempt 级日志截断（保留尾部 + 截断标记）、SHA-256 清单、保留期清理（默认关闭，仅删终态任务的非当前 attempt）。
 > 第四切片（收口）：进程记录 `schema_version=2` + 原子写；无记录/旧协议/损坏/启动时间缺失一律 `UNKNOWN`；`ExecutorProcessGuard` 整树回收；执行器/导出超时/取消/中断只有确认整树退出才释放；启动就绪门 `SCHEDULING_NOT_READY`；隔离槽位对管理员可见；保留期 real-path 边界。
-> 证据：Java **104 项单元测试（0 失败、0 跳过）+ 33 项 MySQL IT**（`GpuLeaseMySqlIT` 8/8）；`OrphanProcessCrashDrillTest` 独立 JVM 崩溃演练通过；前端 `npm run build` 通过；适配器 Python 单测 11/11 为上一轮记录，本轮未重跑；**未跑真实 LDD，生产库未建表**。
-> 验收待完成：真实 6GB 显存实测未做且不作为无授权阶段门槛；日志截断只约束归档大小，不是运行期磁盘硬上限。自动算法重试队列不在当前范围。R3-A 契约见 ADR-018，R3-B 的命令幂等与有界扫描见 20 号文档，均不因本次文档修改视为已实施。
+> 证据（R2 收口时）：Java **104 项单元测试（0 失败、0 跳过）+ 33 项 MySQL IT**（`GpuLeaseMySqlIT` 8/8）；`OrphanProcessCrashDrillTest` 独立 JVM 崩溃演练通过；前端 `npm run build` 通过；适配器 Python 单测 11/11 为上一轮记录，本轮未重跑；**未跑真实 LDD，生产库未建表**。R3 后计数为 120 + 40，见 `09` §5.7。
+> 验收待完成：真实 6GB 显存实测未做且不作为无授权阶段门槛；日志截断只约束归档大小，不是运行期磁盘硬上限。自动算法重试队列不在当前范围。R3-A/R3-B 契约与实施记录见 ADR-018；代码和自动化测试已完成，但外部评审、生产库建表与真实故障演练仍是未完成项。
 
 **配额**：`TaskExecutionQuotaPolicy.validateAndBuildSnapshot()` 的 JVM `synchronized` 只保护该方法内部、只在单实例生效，锁结束后才 `claimForExecution()`；设计 MySQL 资源槽位/计数行加锁，令配额检查与任务领取处于同一事务，或先明确单机单任务 GPU 并以数据库唯一活动租约实现。基于 RTX 2060 6GB / 内存 16GB 设保守默认并发，不以多用户数量作为 GPU 并发数；多实例不能依赖进程内锁。
 
@@ -123,11 +123,11 @@ mvn -B -f migration-backend/pom.xml verify -Pmysql-it
 
 ## 6. R3：持久调度与幂等
 
-> 第一增量契约见 `05` ADR-018（调度意图表 + 条件抢占 `pending→submitting` + 单一恢复协调器 + 派发不确定即失败），状态为**已按评审修订、代码未实施**。
+> 契约见 `05` ADR-018（调度意图表 + 条件抢占 `pending→submitting` + 单一恢复协调器 + 派发不确定即失败 + 有界扫描 + 请求幂等），状态为**R3-A/R3-B 代码已实施并通过自动化测试，等待外部评审；生产库迁移未执行**。
 
 **目标**：对提交后未派发的任务提供有条件恢复，对派发不确定的任务明确失败；不承诺每个任务必然执行。对外保留 `pending/running/success/failed/canceled`，调度内部状态独立存储，不新增 queued/claimed 等 API 状态。
 
-**实施顺序**：R3-A 先交付 ADR-018 的调度意图、条件抢占和单一启动恢复协调器，不加周期扫描。R3-B 再加有界周期扫描与创建/启动/重试的请求幂等；两者均按 20 号契约完成，全部验收后才标 R3 完成。执行由 `taskId + runId + attempt` 标识，所有进度和终态写入校验当前身份；单 GPU 的物理独占仍由 R2 进程证据与隔离策略保证，不能用防旧回调替代。
+**实施顺序**：R3-A 已交付调度意图、条件抢占和单一启动恢复协调器；R3-B 已交付有界周期扫描与创建/启动/重试的请求幂等。执行由 `taskId + runId + attempt` 标识，所有进度和终态写入校验当前身份；单 GPU 的物理独占仍由 R2 进程证据与隔离策略保证，不能用防旧回调替代。
 
 **幂等**：现有领取、导出唯一键和 run ID 防旧回调要保留；需要新增的操作优先是创建任务、启动请求和调度事件。`Idempotency-Key + operator + operation` 唯一，同 key 不同请求哈希返回冲突，同 key 同请求返回稳定结果；不要盲目对所有查询建幂等表。GPU 互斥需用数据库租约或有 fencing 的资源槽；Redis 锁只能辅助限流，不能独自保证恰好一次 GPU 执行。
 

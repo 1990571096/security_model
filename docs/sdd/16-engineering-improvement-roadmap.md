@@ -152,7 +152,7 @@ mvn -B -f migration-backend/pom.xml verify
 - 整树回收：新增 `ExecutorProcessGuard`，同时检查 root、`descendants()`、`python-children.json`；执行器 `finally`、训练超时/取消/中断、导出超时只有确认整树退出才释放租约，否则 `markBlocked("EXECUTOR_TREE_ALIVE")`。
 - 启动门与可见性：恢复完成前 `SCHEDULING_NOT_READY`；`executor-status` 返回 `gpuSlot` 的 blocked/leased/idle/unknown、原因、隔离时间、最近探测时间与指引；前端任务中心展示。
 - 边界：保留期删除前要求 `toRealPath()` 位于 workspace 且等于自身归一化路径；日志截断明确为“归档上限”，不限制运行期增长。
-- 验证：**104 项单元测试（0 跳过）+ 33 项 MySQL IT**，`OrphanProcessCrashDrillTest` 独立 JVM 演练通过；前端 `npm run build` 通过；未跑真实 LDD。
+- 验证（R2 收口时）：**104 项单元测试（0 跳过）+ 33 项 MySQL IT**，`OrphanProcessCrashDrillTest` 独立 JVM 演练通过；前端 `npm run build` 通过；未跑真实 LDD。R3 实施后为 120 单测 + 40 IT，见 `09` §5.7。
 
 ## 文档同步规则
 

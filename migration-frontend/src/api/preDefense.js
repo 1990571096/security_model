@@ -1,7 +1,9 @@
 import http from './http'
 
-export function createTask(data) {
-  return http.post('/api/pre-defense', data)
+export function createTask(data, idempotencyKey) {
+  return http.post('/api/pre-defense', data, idempotencyKey ? {
+    headers: { 'Idempotency-Key': idempotencyKey }
+  } : undefined)
 }
 
 export function updateTask(data) {
@@ -12,8 +14,10 @@ export function deleteTasks(taskIds) {
   return http.delete('/api/pre-defense', { data: taskIds })
 }
 
-export function startTask(taskId) {
-  return http.post(`/api/pre-defense/start/${taskId}`)
+export function startTask(taskId, idempotencyKey) {
+  return http.post(`/api/pre-defense/start/${taskId}`, null, idempotencyKey ? {
+    headers: { 'Idempotency-Key': idempotencyKey }
+  } : undefined)
 }
 
 export function startBatchTasks(taskIds) {

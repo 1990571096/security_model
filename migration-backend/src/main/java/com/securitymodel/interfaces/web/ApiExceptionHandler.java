@@ -29,6 +29,14 @@ public class ApiExceptionHandler {
                 "message", exception.getMessage()));
     }
 
+    @ExceptionHandler(com.securitymodel.application.task.IdempotencyConflictException.class)
+    public ResponseEntity<Map<String, Object>> handleIdempotencyConflict(
+            com.securitymodel.application.task.IdempotencyConflictException exception) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(Map.of(
+                "code", exception.getCode(),
+                "message", exception.getMessage()));
+    }
+
     @ExceptionHandler(ResourceConflictException.class)
     public ResponseEntity<Map<String, Object>> handleConflict(ResourceConflictException exception) {
         return ResponseEntity.status(HttpStatus.CONFLICT).body(Map.of("code", "RESOURCE_CONFLICT",

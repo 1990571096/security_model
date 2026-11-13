@@ -43,3 +43,11 @@ security-model:
     admin-cross-user-read: ${SECURITY_MODEL_ADMIN_CROSS_USER_READ:false}
   legacy:
     base-url: ${SECURITY_MODEL_LEGACY_BASE_URL:http://localhost:8000}
+  dispatch:
+    # Persistent dispatch intent recovery (R3). Only intents older than the age threshold
+    # are scanned; a pending intent older than the expiry is failed explicitly.
+    pending-scan-age-seconds: ${SECURITY_MODEL_DISPATCH_PENDING_SCAN_AGE_SECONDS:30}
+    pending-expire-seconds: ${SECURITY_MODEL_DISPATCH_PENDING_EXPIRE_SECONDS:300}
+    scan-batch-size: ${SECURITY_MODEL_DISPATCH_SCAN_BATCH_SIZE:20}
+    scan-interval-ms: ${SECURITY_MODEL_DISPATCH_SCAN_INTERVAL_MS:10000}
+    scan-initial-delay-ms: ${SECURITY_MODEL_DISPATCH_SCAN_INITIAL_DELAY_MS:30000}

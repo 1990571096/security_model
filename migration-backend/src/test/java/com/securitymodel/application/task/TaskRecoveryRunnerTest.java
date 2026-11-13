@@ -20,8 +20,12 @@ class TaskRecoveryRunnerTest {
     private final GpuLeaseService gpuLeaseService = mock(GpuLeaseService.class);
     private final AttemptProcessRegistry processRegistry = mock(AttemptProcessRegistry.class);
     private final SchedulingReadinessGate readinessGate = new SchedulingReadinessGate();
-    private final TaskRecoveryRunner recoveryRunner =
-            new TaskRecoveryRunner(taskMapper, gpuLeaseService, processRegistry, readinessGate);
+    private final TaskDispatchIntentService intentService = mock(TaskDispatchIntentService.class);
+    private final TaskDispatchCoordinator dispatchCoordinator = mock(TaskDispatchCoordinator.class);
+    private final DispatchRecoveryCoordinator coordinator = new DispatchRecoveryCoordinator(
+            taskMapper, intentService, processRegistry, gpuLeaseService, dispatchCoordinator,
+            readinessGate, 30, 300, 20);
+    private final TaskRecoveryRunner recoveryRunner = new TaskRecoveryRunner(coordinator);
 
     @Test
     void marksInterruptedRunningTaskAsRetryableFailure() {

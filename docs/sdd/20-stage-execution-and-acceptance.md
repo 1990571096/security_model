@@ -153,7 +153,7 @@ R2 送审必须包含无需 GPU 的真实崩溃演练：独立 Java/启动器启
 
 - 崩溃演练 `OrphanProcessCrashDrillTest`：独立 JVM `CrashLauncherMain` 启动短 Python 父子并写 `process.json`，强杀启动器后由 `AttemptProcessRegistry` 判定 `REAPED`，断言父子均死。**未与真实 MySQL 租约的“隔离→解除”串联**；槽位前后状态由 `GpuLeaseMySqlIT` 单独覆盖，两者合起来构成 R2 送审证据。
 - 日志截断发生在进程结束后，只约束归档文件大小，不能限制运行期磁盘增长。
-- 本机实测命令：`mvn -B -f migration-backend/pom.xml test` → 104 项（0 跳过）；`verify -Pmysql-it` → 104 + 33 全绿；`migration-frontend && npm run build` 通过。未执行真实 LDD、未对生产库 `eladmin` 做任何写操作。
+- 本机实测命令（R2 收口时）：`mvn -B -f migration-backend/pom.xml test` → 104 项（0 跳过）；`verify -Pmysql-it` → 104 + 33 全绿；`migration-frontend && npm run build` 通过。未执行真实 LDD、未对生产库 `eladmin` 做任何写操作。R3 后为 120 + 40，见 §6.5。
 
 ## 6. R3：持久调度、命令幂等与有限扫描
 
@@ -203,6 +203,16 @@ R2 送审必须包含无需 GPU 的真实崩溃演练：独立 Java/启动器启
 | R3-10 | 新库/升级/重复脚本/停机回滚 | schema 与数据约束正确，业务数据不被误删 |
 
 R3-01/02/03/05/06/07/08/09/10 必须含真实 MySQL 证据；R3-04 包含短进程崩溃演练。失败窗口用可注入派发器/屏障控制；既有 HTTP 双账号回归必跑。
+
+### 6.5 R3 实施记录（2026-11-13，待外部评审）
+
+已落地代码：`TaskDispatchIntent`、`TaskDispatchIntentMapper`、`TaskDispatchIntentService`、`TaskDispatchCoordinator`、`DispatchRecoveryCoordinator`、`RequestIdempotencyRecord`、`RequestIdempotencyMapper`、`IdempotencyRecordStore`、`RequestIdempotencyService`；`PreDefenseTaskCommandService` 在领取事务内写 pending 意图，提交后条件抢占；`TaskRecoveryRunner` 只委托统一协调器；三个命令接口支持可选 `Idempotency-Key`。SQL：`sql/security_model_task_dispatch.sql`、`sql/security_model_request_idempotency.sql` 及对应回滚脚本。
+
+自动化证据（本机 `mvn verify -Pmysql-it`）：**120 项单元测试，0 失败/0 跳过；40 项 MySQL IT 全绿**，其中 `MySqlTaskPersistenceIT` 13 项新增覆盖意图唯一键、条件抢占、事务回滚后任务/租约/意图无残留、pending 扫描筛选、幂等键 owner 隔离与过期、SQL 脚本重复执行/回滚。前端 `npm run build` 通过。
+
+逐项对应：R3-01 用真实 JDBC 事务回滚证明任务领取、租约、意图三行均不残留（原始 SQL 层，不是完整命令服务回归）；R3-02 用真实库中的 pending 行 + mock 重放验证启动不会先失败；R3-03 单元与真实库条件更新均证明只有一个抢占者；R3-05/06 单元覆盖执行器拒绝、GPU_BUSY、接受后记账失败；R3-08 单元覆盖同体复用、异体 409、进行中 409、失败释放，真实库覆盖跨用户唯一键；R3-09 单元覆盖 5 分钟超时显式失败；R3-10 通过脚本重复执行与回滚表断言。
+
+仍未完成、不得据此宣称 R3 全部验收：R3-02 的“真实 JVM 重启 + 重放执行一次”端到端、R3-04 带意图的短进程崩溃演练、R3-07 新 attempt 覆盖旧 run 的真实库竞争用例、R3-05 取消与瞬时完成全链路，以及生产库 `eladmin` 建表。R3-01 的服务层事务回归也仍需补；当前证据只到数据库事务与单元 mock。
 
 ## 7. R4：可选 RabbitMQ 与单机独立 Worker
 

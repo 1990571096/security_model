@@ -41,6 +41,8 @@ class PreDefenseTaskCommandServiceTest {
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final ThreadPoolTaskExecutor taskExecutor = new ThreadPoolTaskExecutor();
     private final SchedulingReadinessGate readinessGate = new SchedulingReadinessGate();
+    private final TaskDispatchIntentService intentService = mock(TaskDispatchIntentService.class);
+    private final TaskDispatchCoordinator dispatchCoordinator = mock(TaskDispatchCoordinator.class);
     private PreDefenseTaskCommandService commandService;
 
     @BeforeEach
@@ -67,7 +69,9 @@ class PreDefenseTaskCommandServiceTest {
                 operationAuditService,
                 currentUserService,
                 taskAccessGuard,
-                readinessGate);
+                readinessGate,
+                intentService,
+                dispatchCoordinator);
         readinessGate.markReady();
 
         when(taskMapper.selectList(any())).thenReturn(List.of());
@@ -115,7 +119,7 @@ class PreDefenseTaskCommandServiceTest {
                 : -1);
         assertEquals(2, attempts.get(1).path("attempt").asInt());
         assertNotEquals("previous-run", attempts.get(1).path("runId").asText());
-        verify(defenseTaskExecutor).runPreDefense(any(DefenseTaskRequest.class));
+        verify(dispatchCoordinator).dispatchAfterCommit(any(DefenseTaskRequest.class));
     }
 
     @Test
@@ -131,28 +135,6 @@ class PreDefenseTaskCommandServiceTest {
                 exception.getMessage().contains("SCHEDULING_NOT_READY"));
         verify(gpuLeaseService, org.mockito.Mockito.never()).acquire(any(), any(), any());
         verify(taskMapper, org.mockito.Mockito.never()).claimForExecution(any(), any(), any(), any(), any());
-    }
-
-    @Test
-    void rejectedExecutorDispatchMarksOnlyTheCurrentAttemptFailed() throws Exception {
-        PreDefenseTask pending = task(32L, "pending", null);
-        when(taskAccessGuard.requireOwned(32L)).thenReturn(pending);
-        when(taskMapper.claimForExecution(eq(32L), any(), eq(1), any(), any())).thenReturn(1);
-        doThrow(new RejectedExecutionException("queue full"))
-                .when(defenseTaskExecutor).runPreDefense(any(DefenseTaskRequest.class));
-        when(taskMapper.failBeforeExecution(eq(32L), any(), eq(1), any(), any())).thenReturn(1);
-
-        commandService.start(32L);
-
-        ArgumentCaptor<String> runIdCaptor = ArgumentCaptor.forClass(String.class);
-        ArgumentCaptor<String> failureCaptor = ArgumentCaptor.forClass(String.class);
-        verify(taskMapper).failBeforeExecution(
-                eq(32L), runIdCaptor.capture(), eq(1), failureCaptor.capture(), any());
-        JsonNode failure = objectMapper.readTree(failureCaptor.getValue());
-        assertEquals("failed", failure.path("status").asText());
-        assertEquals("TASK_QUEUE_FULL", failure.path("error_code").asText());
-        assertEquals(runIdCaptor.getValue(), failure.path("run_id").asText());
-        assertEquals(1, failure.path("attempt").asInt());
     }
 
     private PreDefenseTask task(Long taskId, String status, String executionSnapshot) {

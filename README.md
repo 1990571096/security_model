@@ -244,9 +244,9 @@ mvn -pl eladmin-system -am test "-Denforcer.skip=true" "-Dsecurity-model.skip-te
 
 - 当前真实运行和答辩展示只覆盖 LDD 训练前数据清洗。
 - 训练中、训练后和其他对比算法暂不接入主流程。
-- **多用户隔离已在 R1 落地**：任务归属以 `owner_user_id` 为准，任务/报告/日志/产物/导出/审计均做 owner 校验；跨用户读对管理员默认关闭（`SECURITY_MODEL_ADMIN_CROSS_USER_READ`），且任何角色都不能跨用户写。R1 为**有条件通过**：隔离库迁移与双账号端到端验收已实跑通过（104 单测 + 33 项 MySQL IT），但生产库迁移尚未执行，不能表述为“生产级权限体系已完成”。
-- **恢复护栏（ADR-017）**：`process.json` 使用 `schema_version=2` 与临时文件原子替换；启动前写 `state:starting`，启动后写 pid/启动时间；无记录、旧协议、损坏或启动时间缺失一律 `UNKNOWN`，不误杀。执行器 `finally`、超时、取消、中断和导出超时都由 `ExecutorProcessGuard` 确认整棵树（含 `descendants()` 与 `python-children.json`）退出后才释放租约，否则 `markBlocked("EXECUTOR_TREE_ALIVE")`。隔离槽位 TTL 过期仍返回 `GPU_LEASE_BLOCKED`，60s 重探确认退出才解除；执行器状态 API 和前端展示槽位原因/时间/指引。恢复完成前 `launchTask` 返回 `SCHEDULING_NOT_READY`。Java 104 单测（0 跳过）+ 33 IT 全绿，含独立 JVM 崩溃演练；未跑真实 LDD。R3 调度意图见 ADR-018（已按评审修订、未实施）。
-- **R2 产物治理已落地**：attempt 目录内日志超过 `max-log-bytes`（默认 20 MiB）只在**执行结束后**保留尾部并写截断标记；每次执行写 `manifest.json`（文件名/字节数/SHA-256）；`retention-days` 默认 0（不删除），开启后只清理“终态任务 + 非当前 attempt + 超期 + real-path 在 workspace 内”的目录。日志截断只约束归档大小，**不限制运行期间的磁盘增长**。Java 104 单测（0 跳过）+ 33 IT 全绿；未跑真实 LDD。
+- **多用户隔离已在 R1 落地**：任务归属以 `owner_user_id` 为准，任务/报告/日志/产物/导出/审计均做 owner 校验；跨用户读对管理员默认关闭（`SECURITY_MODEL_ADMIN_CROSS_USER_READ`），且任何角色都不能跨用户写。R1 为**有条件通过**：隔离库迁移与双账号端到端验收已实跑通过（120 单测 + 40 项 MySQL IT，含 R3），但生产库迁移尚未执行，不能表述为“生产级权限体系已完成”。
+- **恢复护栏（ADR-017）**：`process.json` 使用 `schema_version=2` 与临时文件原子替换；启动前写 `state:starting`，启动后写 pid/启动时间；无记录、旧协议、损坏或启动时间缺失一律 `UNKNOWN`，不误杀。执行器 `finally`、超时、取消、中断和导出超时都由 `ExecutorProcessGuard` 确认整棵树（含 `descendants()` 与 `python-children.json`）退出后才释放租约，否则 `markBlocked("EXECUTOR_TREE_ALIVE")`。隔离槽位 TTL 过期仍返回 `GPU_LEASE_BLOCKED`，60s 重探确认退出才解除；执行器状态 API 和前端展示槽位原因/时间/指引。恢复完成前 `launchTask` 返回 `SCHEDULING_NOT_READY`。Java 120 单测（0 跳过）+ 40 IT 全绿，含独立 JVM 崩溃演练；未跑真实 LDD。R3 调度意图与幂等见 ADR-018，代码已实施，生产迁移未执行。
+- **R2 产物治理已落地**：attempt 目录内日志超过 `max-log-bytes`（默认 20 MiB）只在**执行结束后**保留尾部并写截断标记；每次执行写 `manifest.json`（文件名/字节数/SHA-256）；`retention-days` 默认 0（不删除），开启后只清理“终态任务 + 非当前 attempt + 超期 + real-path 在 workspace 内”的目录。日志截断只约束归档大小，**不限制运行期间的磁盘增长**。Java 120 单测（0 跳过）+ 40 IT 全绿；未跑真实 LDD。
 - 升级到 R1 必须执行 `sql/security_model_ownership.sql`（先跑只读段，审核后写入 `sys_pre_defense_ownership_decision` 决策行，再在同一 MySQL 会话里 `SET @apply_backfill = 1` 重跑）；未执行迁移时任务接口会显式失败。升级前签发的旧 token 没有 `userId`，需重新登录后才能执行任务写操作。
 - 令牌不可单独撤销，但每次请求都会回查 `sys_user.enabled` 与 `is_admin`：禁用账号或撤销管理员后，已签发 token 立即失去权限，无需等 8 小时过期；代价是每个认证请求一次主键查询。
 - 共享数据集/算法/超参数模板的写操作仅管理员；普通用户只读。数据集登记后需管理员调用 `POST /api/dataset/{id}/validate` 才会变为可用（`parse_status='success'`）。

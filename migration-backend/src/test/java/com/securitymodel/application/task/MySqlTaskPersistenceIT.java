@@ -1,6 +1,7 @@
 package com.securitymodel.application.task;
 
 import com.securitymodel.domain.task.PreDefenseTask;
+import com.securitymodel.domain.task.TaskDispatchIntent;
 import com.securitymodel.infrastructure.persistence.mapper.PreDefenseTaskMapper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import org.junit.jupiter.api.AfterAll;
@@ -41,6 +42,8 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 @SpringJUnitConfig(MySqlTaskPersistenceIT.PersistenceTestConfiguration.class)
 @Transactional(propagation = Propagation.NOT_SUPPORTED)
@@ -64,6 +67,12 @@ class MySqlTaskPersistenceIT {
 
     @Autowired
     private com.securitymodel.infrastructure.persistence.mapper.CleanSubsetExportTaskMapper exportMapper;
+
+    @Autowired
+    private com.securitymodel.infrastructure.persistence.mapper.TaskDispatchIntentMapper intentMapper;
+
+    @Autowired
+    private com.securitymodel.infrastructure.persistence.mapper.RequestIdempotencyMapper idempotencyMapper;
 
     @Autowired
     private JdbcTemplate jdbc;
@@ -131,6 +140,47 @@ class MySqlTaskPersistenceIT {
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
                 """);
         jdbc.update("DELETE FROM sys_pre_defense_export");
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS sys_task_dispatch_intent (
+                  intent_id BIGINT NOT NULL AUTO_INCREMENT,
+                  task_id BIGINT NOT NULL,
+                  run_id VARCHAR(64) NOT NULL,
+                  attempt INT NOT NULL,
+                  status VARCHAR(20) NOT NULL,
+                  schema_version INT NOT NULL DEFAULT 1,
+                  request_json LONGTEXT NOT NULL,
+                  request_hash CHAR(64) NOT NULL,
+                  runtime_hash CHAR(64) NULL,
+                  error_code VARCHAR(64) NULL,
+                  created_at DATETIME(3) NOT NULL,
+                  updated_at DATETIME(3) NOT NULL,
+                  submitted_at DATETIME(3) NULL,
+                  PRIMARY KEY (intent_id),
+                  UNIQUE KEY uk_dispatch_intent_run (task_id, run_id, attempt),
+                  KEY idx_dispatch_intent_status (status, updated_at)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                """);
+        jdbc.update("DELETE FROM sys_task_dispatch_intent");
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS sys_request_idempotency (
+                  record_id BIGINT NOT NULL AUTO_INCREMENT,
+                  owner_user_id BIGINT NOT NULL,
+                  operation VARCHAR(64) NOT NULL,
+                  idempotency_key VARCHAR(128) NOT NULL,
+                  request_hash CHAR(64) NOT NULL,
+                  resource_id BIGINT NULL,
+                  status VARCHAR(20) NOT NULL,
+                  response_code INT NULL,
+                  response_body LONGTEXT NULL,
+                  created_at DATETIME(3) NOT NULL,
+                  updated_at DATETIME(3) NOT NULL,
+                  expires_at DATETIME(3) NOT NULL,
+                  PRIMARY KEY (record_id),
+                  UNIQUE KEY uk_request_idempotency (owner_user_id, operation, idempotency_key),
+                  KEY idx_request_idempotency_expiry (expires_at)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                """);
+        jdbc.update("DELETE FROM sys_request_idempotency");
     }
 
     @AfterAll
@@ -149,6 +199,225 @@ class MySqlTaskPersistenceIT {
             try (var result = statement.executeQuery()) {
                 assertTrue(result.next());
                 assertEquals(0, result.getInt(1), "Temporary integration schema must be removed");
+            }
+        }
+    }
+
+    @Test
+    void dispatchIntentUniqueKeyAndConditionalPromotionElectOneDispatcher() {
+        long taskId = insertTask("running", "run-intent");
+        insertIntent(taskId, "run-intent", 1, "pending", LocalDateTime.now().minusSeconds(60));
+
+        TaskDispatchIntent first = new TaskDispatchIntent();
+        first.setTaskId(taskId);
+        first.setRunId("run-intent");
+        first.setAttempt(1);
+        first.setStatus("pending");
+        first.setSchemaVersion(1);
+        first.setRequestJson("{}");
+        first.setRequestHash("0".repeat(64));
+        first.setCreatedAt(LocalDateTime.now());
+        first.setUpdatedAt(LocalDateTime.now());
+        org.junit.jupiter.api.Assertions.assertThrows(
+                org.springframework.dao.DuplicateKeyException.class, () -> intentMapper.insert(first));
+
+        LocalDateTime now = LocalDateTime.now();
+        assertEquals(1, intentMapper.markSubmitting(taskId, "run-intent", 1, now));
+        assertEquals(0, intentMapper.markSubmitting(taskId, "run-intent", 1, now));
+        assertEquals(1, intentMapper.markSubmitted(taskId, "run-intent", 1, now));
+        assertEquals(0, intentMapper.markSubmitted(taskId, "run-intent", 1, now));
+        assertEquals("submitted", intentMapper.findByRun(taskId, "run-intent", 1).getStatus());
+    }
+
+    @Test
+    void dispatchIntentRollbackLeavesNoRow() throws Exception {
+        long taskId = insertTask("running", "run-rollback");
+        var connection = jdbc.getDataSource().getConnection();
+        try (connection) {
+            connection.setAutoCommit(false);
+            try (var statement = connection.prepareStatement("""
+                    INSERT INTO sys_task_dispatch_intent
+                    (task_id, run_id, attempt, status, schema_version, request_json, request_hash,
+                     created_at, updated_at)
+                    VALUES (?, ?, ?, 'pending', 1, '{}', ?, NOW(3), NOW(3))
+                    """)) {
+                statement.setLong(1, taskId);
+                statement.setString(2, "run-rollback");
+                statement.setInt(3, 1);
+                statement.setString(4, "0".repeat(64));
+                statement.executeUpdate();
+            }
+            connection.rollback();
+        }
+        assertEquals(0, jdbc.queryForObject(
+                "SELECT COUNT(*) FROM sys_task_dispatch_intent WHERE task_id = ?",
+                Integer.class, taskId));
+    }
+
+    @Test
+    void pendingScanSelectsOnlyOldPendingRows() {
+        long taskId = insertTask("running", "run-scan");
+        LocalDateTime now = LocalDateTime.now();
+        insertIntent(taskId, "run-old", 1, "pending", now.minusSeconds(120));
+        insertIntent(taskId, "run-fresh", 2, "pending", now.minusSeconds(5));
+        insertIntent(taskId, "run-submitted", 3, "submitted", now.minusSeconds(120));
+
+        List<TaskDispatchIntent> selected = intentMapper.findPendingOlderThan(
+                now.minusSeconds(30), 20);
+        assertEquals(1, selected.size());
+        assertEquals("run-old", selected.get(0).getRunId());
+    }
+
+    @Test
+    void idempotencyKeyIsScopedByOwnerAndExpiry() {
+        LocalDateTime now = LocalDateTime.now();
+        com.securitymodel.domain.task.RequestIdempotencyRecord first = idempotency(7L, "task.start", "k1",
+                "hash-a", now, now.plusHours(24));
+        idempotencyMapper.insert(first);
+        org.junit.jupiter.api.Assertions.assertThrows(
+                org.springframework.dao.DuplicateKeyException.class,
+                () -> idempotencyMapper.insert(idempotency(7L, "task.start", "k1",
+                        "hash-b", now, now.plusHours(24))));
+
+        idempotencyMapper.insert(idempotency(8L, "task.start", "k1",
+                "hash-a", now, now.plusHours(24)));
+        assertEquals(2, jdbc.queryForObject(
+                "SELECT COUNT(*) FROM sys_request_idempotency WHERE idempotency_key = 'k1'",
+                Integer.class));
+
+        assertNull(idempotencyMapper.findByKey(7L, "task.start", "k1", now.plusHours(25)));
+        assertEquals(1, idempotencyMapper.deleteExpired(7L, "task.start", "k1", now.plusHours(25)));
+    }
+
+    @Test
+    void launchTransactionRollbackLeavesNoTaskLeaseOrIntent() throws Exception {
+        long taskId = insertTask("pending", null);
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS sys_gpu_lease (
+                  slot_id VARCHAR(32) NOT NULL PRIMARY KEY,
+                  lease_token CHAR(36) NULL,
+                  task_id BIGINT NULL,
+                  run_id VARCHAR(64) NULL,
+                  attempt INT NULL,
+                  fencing_token BIGINT NOT NULL DEFAULT 0,
+                  acquired_at DATETIME(3) NULL,
+                  heartbeat_at DATETIME(3) NULL,
+                  expires_at DATETIME(3) NULL,
+                  released_at DATETIME(3) NULL,
+                  blocked_at DATETIME(3) NULL,
+                  blocked_reason VARCHAR(64) NULL
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                """);
+        var connection = jdbc.getDataSource().getConnection();
+        try (connection) {
+            connection.setAutoCommit(false);
+            try (var statement = connection.prepareStatement("""
+                    UPDATE sys_pre_defense
+                    SET status = 'running', current_run_id = 'run-tx', current_attempt = 1
+                    WHERE task_id = ? AND status = 'pending'
+                    """)) {
+                statement.setLong(1, taskId);
+                assertEquals(1, statement.executeUpdate());
+            }
+            try (var statement = connection.prepareStatement("""
+                    INSERT INTO sys_gpu_lease (slot_id, lease_token, task_id, run_id, attempt,
+                      fencing_token, acquired_at, expires_at)
+                    VALUES ('tx-slot', 'tx-token', ?, 'run-tx', 1, 1, NOW(3), NOW(3) + INTERVAL 5 MINUTE)
+                    """)) {
+                statement.setLong(1, taskId);
+                assertEquals(1, statement.executeUpdate());
+            }
+            insertIntentOnConnection(connection, taskId, "run-tx", 1);
+            connection.rollback();
+        }
+        assertEquals("pending", taskMapper.selectById(taskId).getStatus());
+        assertEquals(0, jdbc.queryForObject(
+                "SELECT COUNT(*) FROM sys_gpu_lease WHERE slot_id = 'tx-slot'", Integer.class));
+        assertEquals(0, jdbc.queryForObject(
+                "SELECT COUNT(*) FROM sys_task_dispatch_intent WHERE task_id = ?",
+                Integer.class, taskId));
+    }
+
+    @Test
+    void pendingIntentIsReplayedFromRealDatabaseWithoutBeingFailed() {
+        long taskId = insertTask("running", "run-replay");
+        insertIntent(taskId, "run-replay", 1, "pending", LocalDateTime.now().minusSeconds(10));
+        PreDefenseTask task = taskMapper.selectById(taskId);
+        TaskDispatchIntent intent = intentMapper.findByRun(taskId, "run-replay", 1);
+        TaskDispatchCoordinator replay = mock(TaskDispatchCoordinator.class);
+        when(replay.replayPending(intent, task)).thenReturn(true);
+        TaskDispatchIntentService realIntents = new TaskDispatchIntentService(
+                intentMapper, new com.fasterxml.jackson.databind.ObjectMapper());
+        DispatchRecoveryCoordinator coordinator = new DispatchRecoveryCoordinator(
+                taskMapper, realIntents, mock(com.securitymodel.infrastructure.executor.AttemptProcessRegistry.class),
+                mock(GpuLeaseService.class), replay, new SchedulingReadinessGate(), 30, 300, 20);
+
+        coordinator.recoverAtStartup();
+
+        verify(replay).replayPending(intent, task);
+        assertEquals("running", taskMapper.selectById(taskId).getStatus());
+    }
+
+    @Test
+    void r3SqlScriptsAreReRunnableAndRollbackOnlyOwnTables() throws Exception {
+        jdbc.execute("DROP TABLE IF EXISTS sys_task_dispatch_intent");
+        jdbc.execute("DROP TABLE IF EXISTS sys_request_idempotency");
+        runSqlScript("sql/security_model_task_dispatch.sql");
+        runSqlScript("sql/security_model_request_idempotency.sql");
+        assertEquals(1, jdbc.queryForObject("""
+                SELECT COUNT(*) FROM information_schema.tables
+                WHERE table_schema = DATABASE() AND table_name = 'sys_task_dispatch_intent'
+                """, Integer.class));
+        // Re-running the forward script must not fail or duplicate constraints.
+        runSqlScript("sql/security_model_task_dispatch.sql");
+        runSqlScript("sql/security_model_request_idempotency_rollback.sql");
+        assertEquals(0, jdbc.queryForObject("""
+                SELECT COUNT(*) FROM information_schema.tables
+                WHERE table_schema = DATABASE() AND table_name = 'sys_request_idempotency'
+                """, Integer.class));
+        runSqlScript("sql/security_model_task_dispatch_rollback.sql");
+        assertEquals(0, jdbc.queryForObject("""
+                SELECT COUNT(*) FROM information_schema.tables
+                WHERE table_schema = DATABASE() AND table_name = 'sys_task_dispatch_intent'
+                """, Integer.class));
+        // Restore the schema used by the remaining test setup.
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS sys_task_dispatch_intent (
+                  intent_id BIGINT NOT NULL AUTO_INCREMENT, task_id BIGINT NOT NULL,
+                  run_id VARCHAR(64) NOT NULL, attempt INT NOT NULL, status VARCHAR(20) NOT NULL,
+                  schema_version INT NOT NULL DEFAULT 1, request_json LONGTEXT NOT NULL,
+                  request_hash CHAR(64) NOT NULL, runtime_hash CHAR(64) NULL, error_code VARCHAR(64) NULL,
+                  created_at DATETIME(3) NOT NULL, updated_at DATETIME(3) NOT NULL,
+                  submitted_at DATETIME(3) NULL, PRIMARY KEY (intent_id),
+                  UNIQUE KEY uk_dispatch_intent_run (task_id, run_id, attempt),
+                  KEY idx_dispatch_intent_status (status, updated_at)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                """);
+    }
+
+    private void insertIntentOnConnection(java.sql.Connection connection, long taskId,
+                                           String runId, int attempt) throws Exception {
+        try (var statement = connection.prepareStatement("""
+                INSERT INTO sys_task_dispatch_intent
+                (task_id, run_id, attempt, status, schema_version, request_json, request_hash,
+                 created_at, updated_at)
+                VALUES (?, ?, ?, 'pending', 1, '{}', ?, NOW(3), NOW(3))
+                """)) {
+            statement.setLong(1, taskId);
+            statement.setString(2, runId);
+            statement.setInt(3, attempt);
+            statement.setString(4, "0".repeat(64));
+            statement.executeUpdate();
+        }
+    }
+
+    private void runSqlScript(String path) throws Exception {
+        String script = java.nio.file.Files.readString(java.nio.file.Paths.get("..", path))
+                .replaceAll("(?m)^\\s*--.*$", "");
+        for (String statement : script.split(";")) {
+            String sql = statement.trim();
+            if (!sql.isEmpty()) {
+                jdbc.execute(sql);
             }
         }
     }
@@ -186,9 +455,7 @@ class MySqlTaskPersistenceIT {
         AtomicInteger recoveryUpdateRows = new AtomicInteger(-1);
         PreDefenseTaskMapper racingMapper = interceptRecoverySnapshot(
                 taskMapper, recoveryReadSnapshot, allowRecoveryUpdate, recoveryUpdateRows);
-        TaskRecoveryRunner recoveryRunner = new TaskRecoveryRunner(racingMapper, mock(GpuLeaseService.class),
-                mock(com.securitymodel.infrastructure.executor.AttemptProcessRegistry.class),
-                new SchedulingReadinessGate());
+        TaskRecoveryRunner recoveryRunner = recoveryRunner(racingMapper);
         ExecutorService worker = Executors.newSingleThreadExecutor();
         try {
             Future<?> recovery = worker.submit(recoveryRunner::recoverOrphanedTasks);
@@ -212,9 +479,7 @@ class MySqlTaskPersistenceIT {
     void recoveryFailsOnlyOrphanedRunningTasks() {
         long orphanedId = insertTask("running", "orphan-run");
         long pendingId = insertTask("pending", null);
-        TaskRecoveryRunner recoveryRunner = new TaskRecoveryRunner(taskMapper, mock(GpuLeaseService.class),
-                mock(com.securitymodel.infrastructure.executor.AttemptProcessRegistry.class),
-                new SchedulingReadinessGate());
+        TaskRecoveryRunner recoveryRunner = recoveryRunner(taskMapper);
 
         recoveryRunner.recoverOrphanedTasks();
 
@@ -283,6 +548,33 @@ class MySqlTaskPersistenceIT {
         return taskId;
     }
 
+    private void insertIntent(long taskId, String runId, int attempt, String status,
+                              LocalDateTime updatedAt) {
+        jdbc.update("""
+                        INSERT INTO sys_task_dispatch_intent
+                          (task_id, run_id, attempt, status, schema_version, request_json, request_hash,
+                           created_at, updated_at)
+                        VALUES (?, ?, ?, ?, 1, '{}', ?, ?, ?)
+                        """,
+                taskId, runId, attempt, status, "0".repeat(64), updatedAt, updatedAt);
+    }
+
+    private com.securitymodel.domain.task.RequestIdempotencyRecord idempotency(
+            Long ownerUserId, String operation, String key, String hash,
+            LocalDateTime now, LocalDateTime expiresAt) {
+        com.securitymodel.domain.task.RequestIdempotencyRecord record =
+                new com.securitymodel.domain.task.RequestIdempotencyRecord();
+        record.setOwnerUserId(ownerUserId);
+        record.setOperation(operation);
+        record.setIdempotencyKey(key);
+        record.setRequestHash(hash);
+        record.setStatus("processing");
+        record.setCreatedAt(now);
+        record.setUpdatedAt(now);
+        record.setExpiresAt(expiresAt);
+        return record;
+    }
+
     private PreDefenseTaskMapper interceptRecoverySnapshot(
             PreDefenseTaskMapper delegate,
             CountDownLatch snapshotRead,
@@ -324,6 +616,14 @@ class MySqlTaskPersistenceIT {
                 "SELECT status FROM sys_pre_defense_export WHERE task_id=91", String.class));
         assertEquals("EXPORT_INTERRUPTED", jdbc.queryForObject(
                 "SELECT error_code FROM sys_pre_defense_export WHERE task_id=91", String.class));
+    }
+
+    private TaskRecoveryRunner recoveryRunner(PreDefenseTaskMapper mapper) {
+        return new TaskRecoveryRunner(new DispatchRecoveryCoordinator(
+                mapper, mock(TaskDispatchIntentService.class),
+                mock(com.securitymodel.infrastructure.executor.AttemptProcessRegistry.class),
+                mock(GpuLeaseService.class), mock(TaskDispatchCoordinator.class),
+                new SchedulingReadinessGate(), 30, 300, 20));
     }
 
     private static void createIsolatedSchema() {

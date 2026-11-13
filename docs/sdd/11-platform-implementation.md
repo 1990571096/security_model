@@ -143,6 +143,13 @@ security_model
 `run_id` 和递增 `attempt`，进度、结果和结束回调必须匹配当前运行标识，旧运行或超时
 运行的迟到回调会被数据库条件更新自动忽略。
 
+请求可能被客户端重试。`POST /api/pre-defense`、`POST /api/pre-defense/start/{taskId}`、
+`POST /api/pre-defense/retry/{taskId}` 接受可选 `Idempotency-Key`（1–128 字符，按 owner
+账号隔离）：同键同请求返回首次响应，同键不同请求返回 409 `IDEMPOTENCY_KEY_REUSED`，
+并发处理中返回 409 `REQUEST_IN_PROGRESS`。不传该头时保持旧行为。领取事务同时写
+`sys_task_dispatch_intent`，事务提交后只有条件抢占 `pending -> submitting` 成功的调用者
+才会提交执行器；派发状态不确定时任务以 `DISPATCH_UNCERTAIN` 失败，不承诺恰好执行一次。
+
 执行失败时，执行器将错误码、失败原因、任务专属产物目录以及 stdout/stderr 日志路径写入
 结果 JSON，供前端在任务详情中定位执行现场。失败任务可以重试：平台只允许 `failed ->
 pending` 的受控状态回退，并清除旧运行结果后生成一条新的执行参数快照和独立执行目录。
