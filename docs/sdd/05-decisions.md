@@ -232,4 +232,29 @@ Agent 采用外部大模型 API，本机不部署大模型。生成模型和 emb
 - 资源写操作从“任意登录用户”收紧为“管理员”，前端非管理员保存按钮会收到 403；R1 不改前端交互，只在接口层强制。
 - 回滚：`sql/security_model_ownership_rollback.sql` 删除三列即可恢复旧语义；代码回滚需同步回滚 jar，但**不要**删列后再跑旧代码前恢复备份，避免 owner 数据丢失后无法追溯。
 
-实施结果（2026-11-13）：决策 1–11 已落地；`TaskAccessGuard` 为核心判定点，`owner_user_id` 是唯一授权键；单元测试 57 项通过、`verify -Pmysql-it` 的 24 项 MySQL 集成测试通过（持久层 5、迁移脚本 6、双账号端到端 9、跨用户开关 4）。评审后的修正：①令牌权限改为每请求回查 `sys_user`（禁用/降权立即生效）；②demo 行任何人不可写；③迁移改为结构化决策表，删除用户名自动匹配与快照启发式，非法决策整批中止。第三轮按裁定：1–4 号 `demo`、12 号 `assign user_id=1`、8–11 号待审核保持 `unattributed`；`OwnershipMigrationScriptIT` 实跑 6/6（含“system 任务显式归属 admin”“无决策不认领”“非法决策中止”）。**生产库尚未执行迁移**，不得表述为生产已验证。前端未做交互改动，非管理员保存资源会直接收到 403。决策 8 的范围仍未越界（无 MQ/RAG/Agent、无 GPU 租约）。
+实施结果（2026-11-13，R1 阶段）：决策 1–11 已落地；`TaskAccessGuard` 为核心判定点，`owner_user_id` 是唯一授权键；R1 当时单元测试 57 项通过、`verify -Pmysql-it` 的 24 项 MySQL 集成测试通过（持久层 5、迁移脚本 6、双账号端到端 9、跨用户开关 4；R2 第一切片后为 62 + 29，见 ADR-014）。评审后的修正：①令牌权限改为每请求回查 `sys_user`（禁用/降权立即生效）；②demo 行任何人不可写；③迁移改为结构化决策表，删除用户名自动匹配与快照启发式，非法决策整批中止。第三轮按裁定：1–4 号 `demo`、12 号 `assign user_id=1`、8–11 号待审核保持 `unattributed`；`OwnershipMigrationScriptIT` 实跑 6/6（含“system 任务显式归属 admin”“无决策不认领”“非法决策中止”）。**生产库尚未执行迁移**，不得表述为生产已验证。前端未做交互改动，非管理员保存资源会直接收到 403。决策 8 的范围仍未越界（无 MQ/RAG/Agent、无 GPU 租约）。
+
+## ADR-014：R2 第一切片——MySQL 单槽 GPU 租约、fencing 与导出重启收敛
+
+日期：2026-11-13；状态：**已实施并通过隔离库测试；未修改/未重跑真实 LDD，未在生产库执行建表**。
+
+背景：适配器 `VAB_ROOT/.security-model-vab.lock` 是 `O_CREAT|O_EXCL` 文件锁，`SIGKILL`／断电后残留会让所有后续 LDD 永久失败；`TaskExecutionQuotaPolicy` 的 `synchronized` 只覆盖方法体，锁释放后才 `claimForExecution()`，并发下可越过配额。单机单 GPU 场景不需要 MQ 或分布式调度，需要的是数据库层的唯一活动租约。
+
+决策：
+
+1. **单槽表 `sys_gpu_lease`**：`slot_id` 主键（默认 `default-gpu-0`），记录 `lease_token`、`task_id`、`run_id`、`attempt`、`fencing_token`、`acquired_at`、`heartbeat_at`、`expires_at`、`released_at`。不按用户切分槽位——GPU 是设备级资源。
+2. **获取是单条条件 UPDATE**：`lease_token IS NULL OR expires_at < now` 时才允许覆盖，并 `fencing_token + 1`。获取与 `claimForExecution` 在**同一事务**：抢不到槽位抛 `GPU_BUSY` 并回滚任务领取；领取失败则回滚租约，不出现半占用。
+3. **租期与续租**：`lease-ttl-seconds=300`，`heartbeat-interval-ms=60000`；`GpuLeaseHeartbeat` 续租本 JVM 的活动租约。续租失败（租约已被接管）时取消本地 Python 进程并把任务标记为 `GPU_LEASE_LOST`，不静默继续占用 GPU。
+4. **释放**：执行器 `finally` 按 `lease_token` 释放（取消/超时/异常都走这条路）；启动恢复扫描按 `task_id + run_id` 释放（JVM 已死，token 不可知）。
+5. **Fencing**：每次获取令牌单调 +1；续租与释放都以 `lease_token` 为条件，旧 worker 既不能延长也不能释放新租约。任务状态更新继续用 `run_id + attempt` 条件更新，两套条件互不替代。租约 token 用 `@JsonIgnore` 排除在 `request.json` 与执行快照之外，快照只保留 `slotId`/`fencingToken`/`expiresAt` 供审计。
+6. **并发口径**：GPU 准入并发由数据库租约强制为 **1**；`max-running-tasks=4`、`max-running-tasks-per-user=2` 保留为“拒绝/排队”的业务上限，不再被当作 GPU 并发数。多用户不等于多 GPU 并发。
+7. **导出重启收敛**：`ExportRecoveryRunner` 在启动时把 `pending`/`running` 导出显式置为失败（`EXPORT_NOT_STARTED` / `EXPORT_INTERRUPTED`），不自动重派发——可能写到一半的 ZIP 不能标 success；用户通过既有失败详情重新提交。导出进程超时后先杀进程树再强杀，避免子进程继续写文件。
+8. **本轮不做**：适配器锁陈旧接管（pid + 启动时间）、`GPU_LOCK_BUSY/GPU_OOM/CUDA_UNAVAILABLE` 细分、自动重试队列、attempt 级产物限额（均留 R2 后续或 R3）。
+
+原因：文件锁和 JVM 锁都不能跨进程、不能抗硬杀；把“谁在用 GPU”落到 MySQL 的单一活动行，才能让两个请求、两个实例和重启后的回收都有同一事实源。
+
+影响：
+- 必须先执行 `sql/security_model_gpu_lease.sql`；未建表时任务启动会**显式失败**（`GPU_BUSY` 之外的 SQL 错误），不做静默降级。
+- 回滚 `sql/security_model_gpu_lease_rollback.sql` 会删除租约历史；只可在确认无任务执行后使用。
+- 租期 300 秒小于 Python `timeout-seconds=3600`，因此续租是正确性的一部分：JVM 卡死超过 TTL 时租约会过期，单机单实例下由人工确认进程后再启动新任务。
+- 未跑真实 LDD，因此“6GB 显存下的并发上限”仍无实测依据；本轮只把并发固定为 1。

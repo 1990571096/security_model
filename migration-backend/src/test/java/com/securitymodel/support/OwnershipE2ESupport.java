@@ -110,6 +110,7 @@ public final class OwnershipE2ESupport {
             createTaskTable(statement);
             createExportTable(statement);
             createAuditTable(statement);
+            createLeaseTable(statement);
             seedUsers(statement);
             seedTasks(statement);
             seedExport(statement);
@@ -207,6 +208,25 @@ public final class OwnershipE2ESupport {
                   PRIMARY KEY (audit_id)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
                 """);
+    }
+
+    private static void createLeaseTable(Statement statement) throws Exception {
+        statement.execute("""
+                CREATE TABLE `sys_gpu_lease` (
+                  slot_id VARCHAR(32) NOT NULL,
+                  lease_token CHAR(36) NULL,
+                  task_id BIGINT NULL,
+                  run_id VARCHAR(64) NULL,
+                  attempt INT NULL,
+                  fencing_token BIGINT NOT NULL DEFAULT 0,
+                  acquired_at DATETIME(3) NULL,
+                  heartbeat_at DATETIME(3) NULL,
+                  expires_at DATETIME(3) NULL,
+                  released_at DATETIME(3) NULL,
+                  PRIMARY KEY (slot_id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                """);
+        statement.execute("INSERT IGNORE INTO sys_gpu_lease (slot_id, fencing_token) VALUES ('default-gpu-0', 0)");
     }
 
     private static void seedUsers(Statement statement) throws Exception {

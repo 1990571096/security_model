@@ -85,6 +85,7 @@ SOURCE sql/security_model_task_run_context.sql;
 SOURCE sql/security_model_clean_subset_export.sql;
 SOURCE sql/security_model_operation_audit.sql;
 SOURCE sql/security_model_ownership.sql;
+SOURCE sql/security_model_gpu_lease.sql;
 ```
 
 已有开发库只需补充 MVP 数据：
@@ -96,7 +97,10 @@ SOURCE sql/security_model_task_run_context.sql;
 SOURCE sql/security_model_clean_subset_export.sql;
 SOURCE sql/security_model_operation_audit.sql;
 SOURCE sql/security_model_ownership.sql;
+SOURCE sql/security_model_gpu_lease.sql;
 ```
+
+`security_model_gpu_lease.sql` 创建单槽 GPU 租约表（`default-gpu-0`），任务启动前必须执行；未建表时启动任务会显式失败。它只保存租约，不改变 LDD 配置。
 
 `security_model_ownership.sql` 分两段使用：
 
@@ -238,7 +242,8 @@ mvn -pl eladmin-system -am test "-Denforcer.skip=true" "-Dsecurity-model.skip-te
 
 - 当前真实运行和答辩展示只覆盖 LDD 训练前数据清洗。
 - 训练中、训练后和其他对比算法暂不接入主流程。
-- **多用户隔离已在 R1 落地**：任务归属以 `owner_user_id` 为准，任务/报告/日志/产物/导出/审计均做 owner 校验；跨用户读对管理员默认关闭（`SECURITY_MODEL_ADMIN_CROSS_USER_READ`），且任何角色都不能跨用户写。R1 为**有条件通过**：隔离库迁移与双账号端到端验收已实跑通过（57 单测 + 24 项 MySQL IT），但生产库迁移尚未执行，不能表述为“生产级权限体系已完成”。
+- **多用户隔离已在 R1 落地**：任务归属以 `owner_user_id` 为准，任务/报告/日志/产物/导出/审计均做 owner 校验；跨用户读对管理员默认关闭（`SECURITY_MODEL_ADMIN_CROSS_USER_READ`），且任何角色都不能跨用户写。R1 为**有条件通过**：隔离库迁移与双账号端到端验收已实跑通过（62 单测 + 29 项 MySQL IT），但生产库迁移尚未执行，不能表述为“生产级权限体系已完成”。
+- **R2 第一切片已落地**：MySQL 单槽 GPU 租约（`sys_gpu_lease`，条件更新 + 300s 租期 + 60s 续租 + fencing token + 过期接管）、租约与任务领取同事务、导出 `pending`/`running` 重启收敛。GPU 准入并发由租约强制为 1；JVM 的 4/2 配额只作拒绝上限。适配器陈旧锁接管、失败码细分、日志/产物限额仍未做；未跑真实 LDD。
 - 升级到 R1 必须执行 `sql/security_model_ownership.sql`（先跑只读段，审核后写入 `sys_pre_defense_ownership_decision` 决策行，再在同一 MySQL 会话里 `SET @apply_backfill = 1` 重跑）；未执行迁移时任务接口会显式失败。升级前签发的旧 token 没有 `userId`，需重新登录后才能执行任务写操作。
 - 令牌不可单独撤销，但每次请求都会回查 `sys_user.enabled` 与 `is_admin`：禁用账号或撤销管理员后，已签发 token 立即失去权限，无需等 8 小时过期；代价是每个认证请求一次主键查询。
 - 共享数据集/算法/超参数模板的写操作仅管理员；普通用户只读。数据集登记后需管理员调用 `POST /api/dataset/{id}/validate` 才会变为可用（`parse_status='success'`）。

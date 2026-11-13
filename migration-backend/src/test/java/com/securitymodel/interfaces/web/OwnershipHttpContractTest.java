@@ -246,6 +246,7 @@ class OwnershipHttpContractTest {
                 mock(DefenseTaskExecutor.class),
                 mock(LddConfigurationPolicy.class),
                 quotaPolicy,
+                mock(com.securitymodel.application.task.GpuLeaseService.class),
                 mock(ExecutionFingerprintService.class),
                 mock(AfterCommitTaskDispatcher.class),
                 objectMapper,

@@ -16,7 +16,8 @@ import static org.mockito.Mockito.when;
 class TaskRecoveryRunnerTest {
 
     private final PreDefenseTaskMapper taskMapper = mock(PreDefenseTaskMapper.class);
-    private final TaskRecoveryRunner recoveryRunner = new TaskRecoveryRunner(taskMapper);
+    private final GpuLeaseService gpuLeaseService = mock(GpuLeaseService.class);
+    private final TaskRecoveryRunner recoveryRunner = new TaskRecoveryRunner(taskMapper, gpuLeaseService);
 
     @Test
     void marksInterruptedRunningTaskAsRetryableFailure() {
@@ -34,6 +35,7 @@ class TaskRecoveryRunnerTest {
                         result.contains("\"error_code\":\"EXECUTOR_RESTARTED\"")
                                 && result.contains("\"status\":\"failed\"")),
                 any());
+        verify(gpuLeaseService).releaseByRun(21L, "run-21");
     }
 
     @Test

@@ -10,6 +10,7 @@ import com.securitymodel.application.resource.ResourceQueryService;
 import com.securitymodel.domain.algorithm.Algorithm;
 import com.securitymodel.domain.dataset.Dataset;
 import com.securitymodel.domain.hyper.Hyper;
+import com.securitymodel.domain.lease.GpuLease;
 import com.securitymodel.domain.task.PreDefenseTask;
 import com.securitymodel.infrastructure.executor.DefenseTaskExecutor;
 import com.securitymodel.infrastructure.persistence.mapper.PreDefenseTaskMapper;
@@ -33,6 +34,7 @@ public class PreDefenseTaskCommandService {
     private final DefenseTaskExecutor defenseTaskExecutor;
     private final LddConfigurationPolicy lddConfigurationPolicy;
     private final TaskExecutionQuotaPolicy taskExecutionQuotaPolicy;
+    private final GpuLeaseService gpuLeaseService;
     private final ExecutionFingerprintService executionFingerprintService;
     private final AfterCommitTaskDispatcher afterCommitTaskDispatcher;
     private final ObjectMapper objectMapper;
@@ -46,6 +48,7 @@ public class PreDefenseTaskCommandService {
             DefenseTaskExecutor defenseTaskExecutor,
             LddConfigurationPolicy lddConfigurationPolicy,
             TaskExecutionQuotaPolicy taskExecutionQuotaPolicy,
+            GpuLeaseService gpuLeaseService,
             ExecutionFingerprintService executionFingerprintService,
             AfterCommitTaskDispatcher afterCommitTaskDispatcher,
             ObjectMapper objectMapper,
@@ -57,6 +60,7 @@ public class PreDefenseTaskCommandService {
         this.defenseTaskExecutor = defenseTaskExecutor;
         this.lddConfigurationPolicy = lddConfigurationPolicy;
         this.taskExecutionQuotaPolicy = taskExecutionQuotaPolicy;
+        this.gpuLeaseService = gpuLeaseService;
         this.executionFingerprintService = executionFingerprintService;
         this.afterCommitTaskDispatcher = afterCommitTaskDispatcher;
         this.objectMapper = objectMapper;
@@ -260,10 +264,15 @@ public class PreDefenseTaskCommandService {
 
     private void launchTask(PreDefenseTask task) {
         validateTaskForLaunch(task);
-        DefenseTaskRequest request = buildExecutionRequest(task);
+        int attempt = nextAttempt(task.getExecutionSnapshot());
+        String runId = UUID.randomUUID().toString();
+        // The lease and the task claim share one transaction: losing the GPU slot rolls the
+        // claim back, and a failed claim rolls the lease back, so neither can half-commit.
+        GpuLease lease = gpuLeaseService.acquire(task.getTaskId(), runId, attempt);
+        DefenseTaskRequest request = buildExecutionRequest(task, runId, attempt, lease);
         ObjectNode quota = taskExecutionQuotaPolicy.validateAndBuildSnapshot(task);
         LocalDateTime startTime = LocalDateTime.now();
-        String snapshot = appendExecutionSnapshot(task.getExecutionSnapshot(), request, startTime, quota);
+        String snapshot = appendExecutionSnapshot(task.getExecutionSnapshot(), request, startTime, quota, lease);
         int claimed = taskMapper.claimForExecution(
                 task.getTaskId(), request.getRunId(), request.getAttempt(), startTime, snapshot);
         if (claimed != 1) {
@@ -286,14 +295,15 @@ public class PreDefenseTaskCommandService {
         validateCommand(command);
     }
 
-    private DefenseTaskRequest buildExecutionRequest(PreDefenseTask task) {
+    private DefenseTaskRequest buildExecutionRequest(PreDefenseTask task, String runId, int attempt,
+                                                     GpuLease lease) {
         Dataset dataset = resourceQueryService.findDataset(task.getDatasetId());
         Algorithm algorithm = resourceQueryService.findAlgorithm(task.getAlgorithmId());
         Hyper hyper = task.getHyperId() == null ? null : resourceQueryService.findHyper(task.getHyperId());
         return DefenseTaskRequest.builder()
                 .taskId(task.getTaskId())
-                .attempt(nextAttempt(task.getExecutionSnapshot()))
-                .runId(UUID.randomUUID().toString())
+                .attempt(attempt)
+                .runId(runId)
                 .taskName(task.getTaskName())
                 .stage("pre_defense")
                 .description(task.getDescription())
@@ -302,6 +312,9 @@ public class PreDefenseTaskCommandService {
                 .dataset(toDatasetRef(dataset))
                 .algorithm(toAlgorithmRef(algorithm))
                 .hyperParameter(toHyperRef(hyper))
+                .gpuLeaseToken(lease.getLeaseToken())
+                .gpuSlotId(lease.getSlotId())
+                .gpuFencingToken(lease.getFencingToken())
                 .build();
     }
 
@@ -309,7 +322,8 @@ public class PreDefenseTaskCommandService {
             String existingSnapshot,
             DefenseTaskRequest request,
             LocalDateTime startTime,
-            ObjectNode quota) {
+            ObjectNode quota,
+            GpuLease lease) {
         ObjectNode snapshot = objectMapper.createObjectNode();
         ArrayNode attempts = objectMapper.createArrayNode();
         if (existingSnapshot != null && !existingSnapshot.isBlank()) {
@@ -329,6 +343,11 @@ public class PreDefenseTaskCommandService {
         attempt.set("request", objectMapper.valueToTree(request));
         attempt.set("runtime", executionFingerprintService.buildRuntimeSnapshot(request));
         attempt.set("quota", quota);
+        ObjectNode gpuLease = objectMapper.createObjectNode();
+        gpuLease.put("slotId", lease.getSlotId());
+        gpuLease.put("fencingToken", lease.getFencingToken());
+        gpuLease.put("expiresAt", lease.getExpiresAt() == null ? null : lease.getExpiresAt().toString());
+        attempt.set("gpuLease", gpuLease);
         attempt.put("snapshotHash", executionFingerprintService.sha256(attempt.toString()));
         attempts.add(attempt);
         snapshot.put("version", 2);

@@ -120,11 +120,21 @@ mvn -B -f migration-backend/pom.xml verify
 - 资源：数据集/算法/超参数写操作仅管理员；新增 `POST /api/dataset/{id}/validate`，校验路径存在、可读、非空后置 `parse_status='success'`，失败写 `failed` 与原因。
 - 迁移（评审第三轮）：脚本改为两段式 + 结构化决策表 `sys_pre_defense_ownership_decision`（`demo`/`assign`/`reject`，含理由与决策人）；删除用户名自动匹配与“无快照 + 有结果”启发式；未知任务/未知用户/非法决策会让整批回填中止。真实库裁定：1–4 号 `demo`、12 号 `assign user_id=1`、8–11 号待审核。
 - 配额：单用户并发改为按 `owner_user_id` 计数，历史无 owner 任务不占配额。
-- 未实现（保留在 R2）：GPU 单槽数据库租约、导出任务启动恢复、日志与产物限额、配额与领取同事务。
+- 未实现（保留到 R2 后续/R3）：日志与产物限额、适配器陈旧锁接管、失败码细分、自动重试队列。
 - 验收补充：`OwnershipE2ESupport` 与 `OwnershipEndToEndIT`(9 项)、`OwnershipEndToEndCrossReadIT`(4 项)，用 `@SpringBootTest` + 真实 Security 链 + 真实隔离库跑双账号登录后访问同一任务，覆盖 403、demo/无 owner 隔离、登录后禁用立即失效、旧 token 无 `userId`、伪造 `adm`、管理员开关两种取值，以及导出详情/下载、PNG 预览、导出提交鉴权、审计查询。同时按 `18` §8 逐入口核对归属规则，按 §9 区分单元/契约/端到端证据等级，按 §10 固化迁移执行记录模板。
 - 状态口径：R1 为“有条件通过”。已完成归属模型、服务端访问控制、账号状态实时校验与迁移审核机制；真实数据库迁移执行、迁移脚本实机验证与双账号数据库链路仍待补证，不得表述为“多用户生产级权限体系已完成”。
-- 验证（2026-11-13 本机实测）：`mvn -B -f migration-backend/pom.xml verify -Pmysql-it` 通过 **57 项单元测试 + 24 项 MySQL 集成测试**（`MySqlTaskPersistenceIT` 5、`OwnershipMigrationScriptIT` 6、`OwnershipEndToEndIT` 9、`OwnershipEndToEndCrossReadIT` 4），BUILD SUCCESS。迁移脚本在隔离库 6/6 通过（只读段、无决策不认领、demo/assign/reject、未知任务与非法决策中止）。**生产库迁移仍未执行**，不能据此宣称生产已迁移。
+- 验证（2026-11-13 本机实测，R1 阶段数量；R2 第一切片后为 62 + 29，见下条）：`mvn -B -f migration-backend/pom.xml verify -Pmysql-it` 通过 **57 项单元测试 + 24 项 MySQL 集成测试**（`MySqlTaskPersistenceIT` 5、`OwnershipMigrationScriptIT` 6、`OwnershipEndToEndIT` 9、`OwnershipEndToEndCrossReadIT` 4），BUILD SUCCESS。迁移脚本在隔离库 6/6 通过（只读段、无决策不认领、demo/assign/reject、未知任务与非法决策中止）。**生产库迁移仍未执行**，不能据此宣称生产已迁移。
 - 未触碰：LDD 128 batch / 5 epochs 配置、算法执行器、既有工程验证结果。
+
+### R2 第一切片实施记录（2026-11-13）
+
+- 范围：MySQL 单槽 GPU 租约（获取/续租/释放/fencing/过期接管）、启动恢复释放租约、导出 pending/running 重启收敛、导出超时进程树回收。
+- 数据：新增 `sys_gpu_lease`（`slot_id` 主键、`lease_token`、`task_id`、`run_id`、`attempt`、`fencing_token`、`expires_at`、`released_at`）；迁移 `sql/security_model_gpu_lease.sql`，回滚 `sql/security_model_gpu_lease_rollback.sql`。
+- 并发：GPU 准入由数据库租约强制为 1（`GPU_BUSY`），JVM 的 4/2 配额只作拒绝上限；租约与 `claimForExecution` 同一事务。
+- 续租：300s TTL、60s 心跳；续租失败取消进程并置 `GPU_LEASE_LOST`，不静默继续。
+- 导出：`ExportRecoveryRunner` 把 `pending`/`running` 显式置失败（`EXPORT_NOT_STARTED`/`EXPORT_INTERRUPTED`），不自动重派发；超时先杀进程树。
+- 验证：62 项单元测试 + 29 项 MySQL IT 全部通过；`GpuLeaseMySqlIT` 5/5（并发唯一、过期接管、fencing、按 run 释放、释放后可再获取）。**未跑真实 LDD**，生产库未建表。
+- 未实现：适配器陈旧锁接管、`GPU_LOCK_BUSY/GPU_OOM/CUDA_UNAVAILABLE` 细分、日志与产物限额、自动重试队列。
 
 ## 文档同步规则
 

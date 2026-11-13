@@ -140,8 +140,21 @@ Vue 2 工程继续作为业务回归和回滚基线，不参与迁移版主流�
 | 数据集验证 | 新增管理员验证接口，失败不抛 500，写 `failed` 与原因 | `ResourceCommandService.verifyDataset` |
 | 配额 | 单用户并发按 `owner_user_id` 计数，历史无 owner 行不占配额 | `TaskExecutionQuotaPolicy` |
 | 迁移脚本 | 两段式 + 结构化决策表 `sys_pre_defense_ownership_decision`（`demo`/`assign`/`reject`）；删除用户名自动匹配与快照启发式；非法决策整批中止 | `sql/security_model_ownership.sql` |
-| 未做 | GPU 单槽租约、导出启动恢复、日志限额；真实 MySQL 双账号端到端 IT 已写但**未执行**（本机缺 `MYSQL_IT_PASSWORD`），迁移脚本实机执行同样未完成 | 见 `18` §9 证据矩阵 |
+| 未做 | 日志限额、attempt 级产物策略；真实 LDD 未重跑（GPU 租约见 §5.3） | 见 `18` §9 证据矩阵 |
 | 接口审计 | 逐一核对任务、报告、日志、产物、导出、审计、统计、执行器状态、系统版本、共享资源入口，规则统一，无控制器可调用的无保护内部查询 | `18` §8 |
+
+## 5.3 R2 第一切片实施记录（2026-11-13）
+
+| 变更 | 事实 | 证据 |
+| --- | --- | --- |
+| GPU 单槽租约 | 新表 `sys_gpu_lease`（`slot_id` 主键，`lease_token`/`task_id`/`run_id`/`attempt`/`fencing_token`/`expires_at`）；默认为 `default-gpu-0` | `sql/security_model_gpu_lease.sql`、`GpuLeaseMapper` |
+| 原子获取 | 单条条件 UPDATE（空闲或过期才可覆盖）并在同一事务内 `claimForExecution`；抢不到返回 `GPU_BUSY`，任一步失败都会回滚另一半 | `GpuLeaseService.acquire`、`PreDefenseTaskCommandService.launchTask` |
+| 续租与 fencing | 租期 300s、60s 续租；每次获取 `fencing_token+1`，续租/释放以 `lease_token` 为条件；续租失败取消本地进程并置 `GPU_LEASE_LOST` | `GpuLeaseHeartbeat` |
+| 释放 | 执行器 `finally` 按 token 释放；启动恢复按 `task_id+run_id` 释放，不会清掉新租约 | `PythonLddTaskExecutor`、`TaskRecoveryRunner` |
+| 并发口径 | GPU 准入并发由数据库租约强制为 1；JVM 的 4/2 配额保留为拒绝/排队上限，不再当作 GPU 并发数 | 配置 `security-model.executor.gpu.*` |
+| 导出重启收敛 | 启动时把 `pending`/`running` 导出置为 `EXPORT_NOT_STARTED`/`EXPORT_INTERRUPTED`，不自动重派发；超时先杀进程树 | `ExportRecoveryRunner`、`CleanSubsetExportExecutor` |
+| 未做 | 适配器文件锁陈旧接管、`GPU_LOCK_BUSY`/`GPU_OOM`/`CUDA_UNAVAILABLE` 细分、自动重试队列、日志与产物限额 | 留 R2 后续 / R3 |
+| 验证 | 62 项单元测试 + 29 项 MySQL IT（持久层 5、迁移 6、端到端 9+4、GPU 租约 5） | 见 §9 |
 
 ## 6. 待完成与优化建议
 
@@ -154,7 +167,7 @@ Vue 2 工程继续作为业务回归和回滚基线，不参与迁移版主流�
 ### P1：平台工程完善
 
 1. **R1（下一个迭代）**：稳定用户 ID 归属、任务/报告/日志/产物/导出授权、共享资源写权限收敛、历史数据迁移。验收见 17 号指导书 R1。
-2. **R2**：配额与领取同事务、GPU 单槽租约、导出启动恢复、日志与产物限额、失败码细分。
+2. **R2（进行中）**：已完成 GPU 单槽租约（MySQL 条件更新 + 续租 + fencing + 重启释放）与导出重启收敛；剩余：适配器陈旧锁接管、失败码细分、日志与产物限额、自动重试策略。
 3. 持续补迁移版领域服务和 API 集成测试；现有 MySQL 集成测试仅覆盖任务原子领取、状态竞争和恢复扫描，不代表完整端到端覆盖。
 4. 补充 Python 依赖锁定、部署复现和应用重启演练。
 5. 继续补充 Redis 缓存命中率、失效和不可用降级的观测指标。
@@ -194,21 +207,23 @@ Vue 2 工程继续作为业务回归和回滚基线，不参与迁移版主流�
 - 三大防御阶段及算法卡片保留为完整展示架构，统一使用“展示占位”状态。
 - 工作台、案例库、运行监控为演示常量，不得作为真实运行数据或指标。
 - 当前不以工程验证结果替代论文正式实验结论。
-- 多用户隔离已在 R1 落地：任务归属以 `owner_user_id` 为准，服务端统一校验；R2 以后才补 GPU 单槽租约与导出恢复。
+- 多用户隔离已在 R1 落地：任务归属以 `owner_user_id` 为准，服务端统一校验；R2 第一切片已补 GPU 单槽租约与导出重启收敛，但适配器陈旧锁、失败码细分、日志/产物限额仍未做。
 
 ## 9. 迁移版质量门禁现状
 
-- `migration-backend` 现有 **12 个单元测试类、57 项单元测试**（2026-11-13 R1+评审修正后实测），以及 4 个 MySQL 集成测试类共 **24 项**场景：`MySqlTaskPersistenceIT` 5 项、`OwnershipMigrationScriptIT` 6 项、`OwnershipEndToEndIT` 9 项、`OwnershipEndToEndCrossReadIT` 4 项，均属 `mysql-it` profile。
+- `migration-backend` 现有 **13 个单元测试类、62 项单元测试**（2026-11-13 R2 第一切片后实测），以及 5 个 MySQL 集成测试类共 **29 项**场景：`MySqlTaskPersistenceIT` 5 项、`OwnershipMigrationScriptIT` 6 项、`OwnershipEndToEndIT` 9 项、`OwnershipEndToEndCrossReadIT` 4 项、`GpuLeaseMySqlIT` 5 项，均属 `mysql-it` profile。
 - R1 新增覆盖：`TaskAccessGuardTest` 8 项（owner/管理员/无 owner/demo 读与**demo 写拒绝**/跨用户）、`TaskExecutionQuotaPolicyTest` 4 项（按 owner 计数、跨用户不互相占用、全局上限、线程池关闭）、`OwnershipHttpContractTest` 8 项（真实 Security 过滤器链 + 真实控制器，持久层为 mock）、资源命令新增管理员拒绝与数据集验证 4 项、进度查询越权与统计 scope 3 项、集成测试新增 owner 范围查询与 demo 排除 2 项。
 - 端到端 IT（`OwnershipEndToEndIT` / `OwnershipEndToEndCrossReadIT`）使用真实 `@SpringBootTest` 上下文、真实 Security 过滤器、真实服务、真实隔离库：`OwnershipE2ESupport` 每轮创建随机 schema 并种入 admin/alice/bob 三个账号与四条归属状态不同的任务，两个账号各自 `/auth/code`→`/auth/login` 登录后访问同一任务，覆盖 403、demo 隔离、登录后禁用立即失效、无 `userId` 旧 token、伪造 `adm`、管理员开关 false/true 两种结果。**本机已执行通过（9/9）**。
-- 集成测试执行情况（2026-11-13 本机实测，`MYSQL_IT_PASSWORD` 由本机环境提供）：`mvn -B -f migration-backend/pom.xml verify -Pmysql-it` → **57 项单元测试 + 24 项 MySQL 集成测试全部通过，BUILD SUCCESS**。分布：`MySqlTaskPersistenceIT` 5、`OwnershipMigrationScriptIT` 6、`OwnershipEndToEndIT` 9、`OwnershipEndToEndCrossReadIT` 4。每个 IT 都用随机 schema，结束后删除。
+- 集成测试执行情况（2026-11-13 本机实测，`MYSQL_IT_PASSWORD` 由本机环境提供）：`mvn -B -f migration-backend/pom.xml verify -Pmysql-it` → **62 项单元测试 + 29 项 MySQL 集成测试全部通过，BUILD SUCCESS**。分布：`MySqlTaskPersistenceIT` 5、`OwnershipMigrationScriptIT` 6、`OwnershipEndToEndIT` 9、`OwnershipEndToEndCrossReadIT` 4、`GpuLeaseMySqlIT` 5。每个 IT 都用随机 schema，结束后删除。
+- GPU 租约实测（`GpuLeaseMySqlIT` 5/5）：两个线程并发启动只有一个抢到槽位；租约过期后可被接管且 `fencing_token` 从 1 变 2；旧 token 续租返回 false、释放不会清掉新租约；按 `task+run` 释放只清匹配运行；释放后可再次获取且 fence 继续递增。
+- 导出重启收敛：`ExportRecoveryRunner` 在 `ApplicationReadyEvent` 把 `pending` 置 `EXPORT_NOT_STARTED`、`running` 置 `EXPORT_INTERRUPTED`，不自动重派发；未写单测/IT（本机未构造半写 ZIP 场景），列为未验证。
 - 迁移脚本实机执行（隔离库，`OwnershipMigrationScriptIT` 6/6）：①只读段加列加索引建决策表、不改业务行；②无决策时即使 `create_by` 命中真实账号也不认领；③1–4 标 `demo`、12 号 `assign user_id=1` 后为 `matched/legacy`；④`reject` 能撤回旧的自动匹配；⑤未知任务 ID 整批中止；⑥未知用户/非法决策值整批中止。旧版字符串开关的两处缺陷（开关被重置、`data_origin IS NULL` 使用户名匹配失效）随设计替换消失。
 - **仍未完成**：生产库 `eladmin` 上的实际迁移执行与逐行核对记录。隔离库通过只证明脚本行为正确，不等于生产数据已迁移；`sql/security_model_ownership.sql` 不得表述为“已在生产验证”。
 - 真实库只读核对（2026-11-13）：`eladmin.sys_pre_defense` 实际 **9 行**、无 `owner_user_id` 列；3、4 号已被恢复线程收敛为 `failed`（结果非空），8–12 为真实跑批，其中 12 号作者 `system` 在 `sys_user` 中不存在。裁定：1–4 号 `demo`、12 号 `assign user_id=1`（理由：system 为平台批处理作者）、8–11 号待审保持 `unattributed`。详见 `18` §4、§4.1。
 - MySQL 集成测试使用唯一随机 schema，验证并发领取仅一个成功、完成操作胜过已读取恢复快照、恢复只收敛孤儿 `running` 任务、owner 范围查询只返回本人行且 demo 行被排除；清理后断言 schema 已删除。
 - `.github/workflows/migration-quality.yml` 配置了迁移版 Maven `verify` 和 Vue 3 生产构建。工作流配置存在不代表远端 Actions 已成功，远端状态需以 GitHub Actions 记录为准。
 - `mysql-it` Maven profile 通过 Failsafe 启动 MySQL 集成测试；GitHub Actions 配置 MySQL 8.4 service。远端 Actions 尚未确认时，不将本地通过表述为远端通过。
-- 2026-11-13 R1 实测：`mvn -B -f migration-backend/pom.xml test` 通过 57 项单元测试（0 失败）；同日 `verify -Pmysql-it` 通过 57 项单测 + 24 项数据库 IT（含迁移脚本、导出/下载/预览/审计端到端与跨用户开关）。
+- 2026-11-13 R2 实测：`mvn test` 通过 62 项单元测试（0 失败）；同日 `verify -Pmysql-it` 通过 62 项单测 + 29 项数据库 IT（含 GPU 租约、迁移脚本、导出/下载/预览/审计端到端与跨用户开关）。真实 LDD 未重跑。
 - 迁移脚本已在随机隔离 schema 实跑通过，但**生产库尚未执行**；不得写成“迁移已完成/已验证生产”。
 - Redis 已进入迁移版依赖和运行配置，用于可重建资源目录；任务状态、报告和执行快照仍由 MySQL 保存。Redis 故障时缓存层降级回源 MySQL。
 - CI 工作流包含 MySQL 8.4 集成测试和前端生产构建；本次未查询 GitHub Actions 运行记录，不能据配置推断远端已通过。

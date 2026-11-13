@@ -80,9 +80,9 @@ R6/R7 不能因简历需要跳过安全依赖，但不以 R4 消息队列为前�
 > 实施记录见 `09-project-status.md` §5.2、`16-engineering-improvement-roadmap.md` 的 R1 实施记录、`05-decisions.md` ADR-013。
 > 已落地：稳定 `owner_user_id` 归属、`TaskAccessGuard` 服务端校验、共享资源写操作仅管理员、历史数据迁移脚本、
 > 数据集验证入口、按 owner 的配额计数、令牌每请求回查账号状态。
-> **验收证据（2026-11-13 本机实跑）**：57 项单元测试 + 24 项 MySQL 集成测试全部通过，含真实 Security 链 +
+> **验收证据（2026-11-13 本机实跑，R1 阶段数量）**：57 项单元测试 + 24 项 MySQL 集成测试全部通过，含真实 Security 链 +
 > 真实隔离库的双账号端到端（`OwnershipEndToEndIT` 9 项、`OwnershipEndToEndCrossReadIT` 4 项，含导出/下载/PNG 预览/审计）与
-> 迁移脚本决策表实跑（`OwnershipMigrationScriptIT` 6 项）。**仍未完成**：生产库迁移执行与留档、GPU 单槽租约（R2）。
+> 迁移脚本决策表实跑（`OwnershipMigrationScriptIT` 6 项）。**仍未完成**：生产库迁移执行与留档、GPU 单槽租约（R2 已完成，见 §5）；R2 后续为适配器陈旧锁接管与失败码细分。
 
 **R1 收尾命令（本机执行，密码只走环境变量，不写入仓库/命令历史/文档）**：
 
@@ -100,7 +100,11 @@ mvn -B -f migration-backend/pom.xml verify -Pmysql-it
 
 **验收**：双用户 MySQL + HTTP 集成测试覆盖各自创建/查询/重试/取消实验，跨用户列表不出现对方任务，按 ID 访问任务、进度、报告、日志、导出、图片及 ZIP 均被拒绝；覆盖管理员授权、失效 token、未配置密钥及共享资源规则；授权拒绝返回稳定 403，不泄露文件路径。保留旧任务数据迁移脚本和回滚说明。
 
-## 5. R2：LDD 与导出任务可靠性
+## 5. R2：LDD 与导出任务可靠性（2026-11-13 第一切片已实施）
+
+> 第一切片完成：MySQL 单槽 GPU 租约（条件更新 + 续租 + fencing + 过期接管）、租约与任务领取同事务、启动恢复释放租约、导出台账重启收敛、导出超时进程树回收。
+> 证据：62 项单元测试 + 29 项 MySQL IT（`GpuLeaseMySqlIT` 5/5）；**未跑真实 LDD，生产库未建表**。
+> 未完成：适配器陈旧锁接管、失败码细分、日志与产物限额、自动重试策略。详见 `09` §5.3、`05` ADR-014。
 
 **配额**：`TaskExecutionQuotaPolicy.validateAndBuildSnapshot()` 的 JVM `synchronized` 只保护该方法内部、只在单实例生效，锁结束后才 `claimForExecution()`；设计 MySQL 资源槽位/计数行加锁，令配额检查与任务领取处于同一事务，或先明确单机单任务 GPU 并以数据库唯一活动租约实现。基于 RTX 2060 6GB / 内存 16GB 设保守默认并发，不以多用户数量作为 GPU 并发数；多实例不能依赖进程内锁。
 

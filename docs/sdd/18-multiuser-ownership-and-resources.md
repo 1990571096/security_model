@@ -4,7 +4,7 @@
 
 本文回答 R0 需要冻结的三件事：谁拥有什么（数据归属）、共享资源谁可以改（权限）、同一张 GPU 上能同时跑几个 LDD（并发）。所有“现状”结论均来自 R0 核对的实际源码与 SQL，锚点写在每节；所有“建议”均为待用户确认的方案，未经确认不进入实现。
 
-> **R1 实施结果（2026-11-13）**：归属列为 `owner_user_id`，授权集中在 `TaskAccessGuard`；资源写操作仅管理员；历史数据按“精确匹配 / unattributed / demo”三类标记；数据集新增 `POST /api/dataset/{id}/validate` 验证入口。GPU 单槽租约、导出启动恢复仍属 R2，**本文第 5 节的并发建议尚未实现**。
+> **R1 实施结果（2026-11-13）**：归属列为 `owner_user_id`，授权集中在 `TaskAccessGuard`；资源写操作仅管理员；历史数据按“精确匹配 / unattributed / demo”三类标记；数据集新增 `POST /api/dataset/{id}/validate` 验证入口。GPU 单槽租约与导出重启收敛已在 R2 第一切片落地（见 §5），适配器陈旧锁与失败码细分仍未实现。
 
 本文回答 R0 需要冻结的三件事：谁拥有什么（数据归属）、共享资源谁可以改（权限）、同一张 GPU 上能同时跑几个 LDD（并发）。所有“现状”结论均来自 R0 核对的实际源码与 SQL，锚点写在每节；所有“建议”均为待用户确认的方案，未经确认不进入实现。
 
@@ -168,6 +168,18 @@
 - 单槽租约的租期必须大于最长任务时长（当前 `timeout-seconds=3600`），否则会出现“任务还在跑但租约被抢”。租期与超时需要同一份配置来源。
 - 6GB 显存对本配置是否宽裕没有实测数据支撑；R2 第一次真实运行需记录 `torch.cuda.max_memory_allocated()` 才能给出可信并发上限，本轮不写具体数字。
 
+**R2 第一切片实施结果（2026-11-13）**：推荐 1、2、5 已落地，推荐 3、4 未做。
+
+| 推荐项 | 状态 | 实现 |
+| --- | --- | --- |
+| 数据库单槽租约 | 已实现（表名 `sys_gpu_lease`，非原建议的通用 `resource_lease`） | 条件 UPDATE 获取；同事务领取；`fencing_token` 每次 +1；续租与释放校验 `lease_token`；过期可接管 |
+| GPU 准入并发 = 1 | 已实现（由租约强制，不改 JVM 配额默认值） | `GpuLeaseService`；抢不到返回 `GPU_BUSY` |
+| 适配器锁降级 + 陈旧判定 | **未做** | 仍为适配器文件锁；平台租约已是第一道门槛 |
+| 失败码细分 | **未做** | 仍是 `VAB_INTEGRATION_ERROR` |
+| 不按用户切分 GPU | 已遵守 | 单 row、单 slot |
+| 续租（原建议未列） | 已实现 | 300s TTL、60s 心跳；失败置 `GPU_LEASE_LOST` 并取消进程 |
+| 导出重启收敛（R2 另项） | 已实现 | `ExportRecoveryRunner` 显式置失败，不自动重派发 |
+
 ## 6. 待决事项清单（需要你确认后才进入 R1/R2）
 
 | 编号 | 待决问题 | 推荐方案 | 主要风险 | 阻塞的迭代 | 状态 |
@@ -175,7 +187,7 @@
 | D1 | 共享数据集/算法/超参谁可写 | 方案 A：管理员维护、用户只读 | 用户不能自助登记数据集，需要管理员流程 | R1 | **已采纳并实现**（`ResourceCommandService.requireAdmin`） |
 | D2 | 历史 `create_by` 回填口径 | 两段式：先只读审核，再按确认的演示 ID/驳回 ID 回填；不可匹配隔离为 `unattributed` | 用户名复用导致错绑；启发式误判真实实验为演示 | R1 | **已采纳并实现**（`sql/security_model_ownership.sql`，默认 `@apply_backfill=0`） |
 | D3 | 历史数据是否给现有 `test` 账号 | 1–4 号标 `demo` + `unattributed`（模拟结果/恢复线程结果均不算真实执行）；12 号 `assign user_id=1` 并写明“system 为平台批处理作者”；8–11 号进审核清单，确认后才显式 `assign` | 一旦放权无法收回 | R1 | 规则与隔离库验证已完成；**生产执行待授权，8–11 号待逐条证据** |
-| D4 | LDD 同机并发上限 | 1（数据库单槽租约 + 适配器锁兜底） | 与现有配额默认值冲突，需连测试一起改 | R2 | 未实现 |
+| D4 | LDD 同机并发上限 | 1（数据库单槽租约 + 适配器锁兜底） | 与现有配额默认值冲突，需连测试一起改 | R2 | **租约已实现并实测**；适配器陈旧锁接管与失败码细分未做 |
 | D5 | 人工/有限自动重试策略 | 只允许人工重试；`GPU_OOM`/`RESULT_PROTOCOL_ERROR` 不自动重试，`GPU_LOCK_BUSY` 进队列 | 自动重试会在显存不足时反复失败 | R2 | 未实现 |
 | D6 | 路径登记是否仍是唯一输入 | 保留路径登记，但增加“管理员验证后才可用”的状态推进（当前缺口） | 若不补，用户/管理员都登记出不可用数据集 | R1 | **已采纳并实现**（`POST /api/dataset/{id}/validate`） |
 | D7 | 部署数据根目录 | 固定 `SECURITY_MODEL_DATA_ROOT`（数据集）与 `SECURITY_MODEL_EXECUTOR_WORKSPACE`（产物），均须在仓库之外 | 现有默认产物目录在系统临时目录 | R1 | 未实现（R2 随目录迁移一起做） |
@@ -195,7 +207,7 @@
 | 迁移脚本可执行性验证（隔离库） | 已写 IT，但本机缺凭据未跑通 | `OwnershipMigrationScriptIT` |
 | 双账号 HTTP 越权链路 | 已写 MockMvc 契约测试（真实 `/auth/login` 登录取令牌、真实过滤器/守卫/控制器，持久层为 mock），8 项通过；真实库 + 完整 Spring 上下文的端到端仍未做 | `OwnershipHttpContractTest` |
 | 双账号数据库层归属 | 已实现并在评审环境通过 5 项隔离库 IT | `MySqlTaskPersistenceIT` |
-| GPU 单槽租约 / 导出恢复 / 日志限额 | 未开始（R2） | — |
+| GPU 单槽租约 / 导出恢复 | 已实现（R2 第一切片）；日志/产物限额未开始 | `sys_gpu_lease`、`GpuLeaseService`、`ExportRecoveryRunner` |
 
 补充约束（改脚本前必读）：
 
@@ -239,6 +251,9 @@
 | 审计查询跨用户隔离、管理员开关两种取值 | 端到端 IT | `auditQueryIsOwnerScoped`、`adminReadsExportsArtifactsAndAuditButStillCannotSubmit` | 通过：普通用户 403；开关 false 时管理员 403，true 时管理员可读但不可提交 |
 | 数据库层 owner 范围查询、demo 排除 | 隔离库 IT | `MySqlTaskPersistenceIT` 5 项 | 已执行通过 |
 | 迁移脚本：只读段、决策表、显式 assign、reject、非法决策中止 | 隔离库 IT，真实执行 SQL | `OwnershipMigrationScriptIT` 6 项 | **已执行通过**（6/6，2026-11-13） |
+| GPU 单槽租约：并发唯一、过期接管、fencing、按 run 释放 | 隔离库 IT | `GpuLeaseMySqlIT` 5 项 | **已执行通过**（5/5，2026-11-13） |
+| 租约与领取同事务、续租失败收敛 | 单元（mock mapper/service） + 代码核对 | `GpuLeaseServiceTest` 4 项、`PreDefenseTaskCommandServiceTest` | 单元通过；**真实并发领取+租约的组合未单独跑真实 LDD** |
+| 导出 pending/running 重启收敛 | 代码核对 | `ExportRecoveryRunner` | 未写测试，**未验证** |
 | 账号状态不依赖 Redis/本地缓存 | 代码核对 | 过滤器只查 `sys_user`；Redis 仅缓存资源目录 | 通过（静态核对） |
 
 ## 10. 迁移执行记录模板（生产操作必须留档）

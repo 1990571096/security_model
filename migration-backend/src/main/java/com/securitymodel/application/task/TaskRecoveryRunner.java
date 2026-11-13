@@ -17,9 +17,11 @@ public class TaskRecoveryRunner {
 
     private static final Logger log = LoggerFactory.getLogger(TaskRecoveryRunner.class);
     private final PreDefenseTaskMapper taskMapper;
+    private final GpuLeaseService gpuLeaseService;
 
-    public TaskRecoveryRunner(PreDefenseTaskMapper taskMapper) {
+    public TaskRecoveryRunner(PreDefenseTaskMapper taskMapper, GpuLeaseService gpuLeaseService) {
         this.taskMapper = taskMapper;
+        this.gpuLeaseService = gpuLeaseService;
     }
 
     @EventListener(ApplicationReadyEvent.class)
@@ -36,6 +38,9 @@ public class TaskRecoveryRunner {
                             + "\"message\":\"应用重启导致任务中断\",\"error_code\":\"EXECUTOR_RESTARTED\","
                             + "\"failure_reason\":\"" + reason + "\",\"artifacts\":{}}",
                     LocalDateTime.now());
+            // The JVM that owned the GPU lease is gone; release it so a retry does not wait
+            // for the TTL. The call is keyed by task+run, so it cannot clear a newer lease.
+            gpuLeaseService.releaseByRun(task.getTaskId(), task.getCurrentRunId());
         }
         if (!running.isEmpty()) {
             log.info("任务恢复扫描完成: scanned={}, recovered={}", running.size(), recovered);

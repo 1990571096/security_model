@@ -40,6 +40,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.mock;
 
 @SpringJUnitConfig(MySqlTaskPersistenceIT.PersistenceTestConfiguration.class)
 @Transactional(propagation = Propagation.NOT_SUPPORTED)
@@ -160,7 +161,7 @@ class MySqlTaskPersistenceIT {
         AtomicInteger recoveryUpdateRows = new AtomicInteger(-1);
         PreDefenseTaskMapper racingMapper = interceptRecoverySnapshot(
                 taskMapper, recoveryReadSnapshot, allowRecoveryUpdate, recoveryUpdateRows);
-        TaskRecoveryRunner recoveryRunner = new TaskRecoveryRunner(racingMapper);
+        TaskRecoveryRunner recoveryRunner = new TaskRecoveryRunner(racingMapper, mock(GpuLeaseService.class));
         ExecutorService worker = Executors.newSingleThreadExecutor();
         try {
             Future<?> recovery = worker.submit(recoveryRunner::recoverOrphanedTasks);
@@ -184,7 +185,7 @@ class MySqlTaskPersistenceIT {
     void recoveryFailsOnlyOrphanedRunningTasks() {
         long orphanedId = insertTask("running", "orphan-run");
         long pendingId = insertTask("pending", null);
-        TaskRecoveryRunner recoveryRunner = new TaskRecoveryRunner(taskMapper);
+        TaskRecoveryRunner recoveryRunner = new TaskRecoveryRunner(taskMapper, mock(GpuLeaseService.class));
 
         recoveryRunner.recoverOrphanedTasks();
 

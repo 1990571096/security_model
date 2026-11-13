@@ -249,7 +249,7 @@ Java 的 `PythonProcessWaiter` 等待外层适配器进程时关注该文件的�
 
 ### 如何证明项目经过测试？
 
-截至 2026-11-13（R1 及评审三轮修正），`mvn -B -f migration-backend/pom.xml verify -Pmysql-it` 实测迁移版 12 个测试类、57 项单元测试 + 24 项 MySQL 集成测试通过，失败/错误/跳过均为 0，jar 打包成功。单测覆盖资源命令/查询、缓存 TTL 与故障降级、事务提交后派发、任务重试快照、进度等待与查询、启动恢复、YAML 配置解析，以及 R1 新增的任务归属守卫（8 项，含 demo 写拒绝）、按 owner 配额（4 项）、资源管理员权限与数据集验证（4 项）、进度查询越权与统计 scope（3 项）、真实登录取证后的双账号 HTTP 契约（8 项，含禁用账号与令牌 `adm` 不被信任）。集成测试 24 项分四个类：`MySqlTaskPersistenceIT` 5 项（并发领取原子性、完成与恢复的条件更新竞争、孤儿恢复边界、owner 范围查询、demo 排除）、`OwnershipMigrationScriptIT` 6 项（决策表迁移：只读段、无决策不认领、demo/assign/reject、未知任务与非法决策中止）、`OwnershipEndToEndIT` 9 项（真实库双账号 + 导出详情/下载/PNG 预览/审计/导出提交鉴权）、`OwnershipEndToEndCrossReadIT` 4 项（管理员开关 false/true），均在本机 MySQL 实跑通过。命令为 `mvn -B -f migration-backend/pom.xml test` 和 `mvn -B -f migration-backend/pom.xml verify -Pmysql-it`（`mysql-it` 需 `MYSQL_IT_PASSWORD`）。**生产库 `eladmin` 迁移仍未执行**；GitHub Actions 配置了 MySQL 8.4 service，远端结果仍以 Actions 页面为准。旧 ELADMIN 的测试不计入迁移版覆盖；LDD 工程链路验证也不等于论文正式实验。
+截至 2026-11-13（R1 及评审三轮修正、R2 第一切片），`mvn -B -f migration-backend/pom.xml verify -Pmysql-it` 实测迁移版 13 个测试类、62 项单元测试 + 29 项 MySQL 集成测试通过，失败/错误/跳过均为 0，jar 打包成功。单测覆盖资源命令/查询、缓存 TTL 与故障降级、事务提交后派发、任务重试快照、进度等待与查询、启动恢复、YAML 配置解析，以及 R1 新增的任务归属守卫（8 项，含 demo 写拒绝）、按 owner 配额（4 项）、资源管理员权限与数据集验证（4 项）、进度查询越权与统计 scope（3 项）、真实登录取证后的双账号 HTTP 契约（8 项，含禁用账号与令牌 `adm` 不被信任）、R2 的 GPU 租约语义（4 项）。集成测试 29 项分五个类：`MySqlTaskPersistenceIT` 5 项（并发领取原子性、完成与恢复的条件更新竞争、孤儿恢复边界、owner 范围查询、demo 排除）、`OwnershipMigrationScriptIT` 6 项（决策表迁移）、`OwnershipEndToEndIT` 9 项（真实库双账号 + 导出详情/下载/PNG 预览/审计/导出提交鉴权）、`OwnershipEndToEndCrossReadIT` 4 项（管理员开关 false/true）、`GpuLeaseMySqlIT` 5 项（GPU 单槽租约并发唯一、过期接管、fencing、按 run 释放），均在本机 MySQL 实跑通过。命令为 `mvn -B -f migration-backend/pom.xml test` 和 `mvn -B -f migration-backend/pom.xml verify -Pmysql-it`（`mysql-it` 需 `MYSQL_IT_PASSWORD`）。**生产库 `eladmin` 迁移仍未执行，`sys_gpu_lease` 未在生产库建表，也未跑真实 LDD**；GitHub Actions 配置了 MySQL 8.4 service，远端结果仍以 Actions 页面为准。旧 ELADMIN 的测试不计入迁移版覆盖；LDD 工程链路验证也不等于论文正式实验。
 
 ## 8. 代码追问导航
 
@@ -270,7 +270,7 @@ Java 的 `PythonProcessWaiter` 等待外层适配器进程时关注该文件的�
 3. 按某个隔离比例导出的 ZIP，能解释其中的索引、标签和图片文件。
 4. 当前本机 VaB 路径、Python 环境、PyTorch/CUDA 和 GPU 信息。
 5. 一个失败或取消/重试案例，说明状态如何变化、`run_id` 如何变化、旧回调如何被隔离。
-6. 构建和测试命令输出，以及 Surefire/Failsafe 报告。明确迁移版实测 57 项单元测试 + 24 项 MySQL 集成测试（2026-11-13，本机环境变量提供密码），以及旧模块历史定向测试的区别；生产库迁移尚未执行，不能拿隔离库结果冒充生产验证。
+6. 构建和测试命令输出，以及 Surefire/Failsafe 报告。明确迁移版实测 62 项单元测试 + 29 项 MySQL 集成测试（2026-11-13，本机环境变量提供密码），以及旧模块历史定向测试的区别；生产库迁移与 GPU 租约建表尚未执行，也未跑真实 LDD，不能拿隔离库结果冒充生产验证。
 
 不要把 `migration-frontend/src/data/demoData.js` 中的任务数字、统计百分比、模拟案例或演示模式页面作为真实实验数据。也不要把页面出现“已接入运行”的静态标签当作后端算法接入证据。
 

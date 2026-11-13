@@ -31,6 +31,13 @@ public interface CleanSubsetExportTaskMapper extends BaseMapper<CleanSubsetExpor
 
     @Select("""
             SELECT * FROM sys_pre_defense_export
+            WHERE status IN ('pending', 'running')
+            ORDER BY export_id
+            """)
+    List<CleanSubsetExportTask> findOpen();
+
+    @Select("""
+            SELECT * FROM sys_pre_defense_export
             WHERE task_id = #{taskId}
             ORDER BY export_id DESC
             """)

@@ -69,6 +69,9 @@ public class CleanSubsetExportExecutor {
                     .redirectOutput(log.toFile())
                     .start();
             if (!process.waitFor(timeoutSeconds, java.util.concurrent.TimeUnit.SECONDS)) {
+                // Kill the whole tree: a Python child writing the ZIP must not survive and
+                // keep appending to a file the task has already reported as failed.
+                process.descendants().forEach(ProcessHandle::destroyForcibly);
                 process.destroyForcibly();
                 throw new IllegalStateException("导出清洗数据集超时");
             }

@@ -35,6 +35,7 @@ public class PythonLddTaskExecutor implements DefenseTaskExecutor {
     private final PreDefenseTaskMapper taskMapper;
     private final ObjectMapper objectMapper;
     private final ExecutionFingerprintService fingerprintService;
+    private final com.securitymodel.application.task.GpuLeaseService gpuLeaseService;
     private final String pythonExecutable;
     private final String pythonScript;
     private final long timeoutSeconds;
@@ -45,12 +46,14 @@ public class PythonLddTaskExecutor implements DefenseTaskExecutor {
             PreDefenseTaskMapper taskMapper,
             ObjectMapper objectMapper,
             ExecutionFingerprintService fingerprintService,
+            com.securitymodel.application.task.GpuLeaseService gpuLeaseService,
             @Value("${security-model.executor.python.executable:python}") String pythonExecutable,
             @Value("${security-model.executor.python.script:}") String pythonScript,
             @Value("${security-model.executor.python.timeout-seconds:3600}") long timeoutSeconds) {
         this.taskMapper = taskMapper;
         this.objectMapper = objectMapper;
         this.fingerprintService = fingerprintService;
+        this.gpuLeaseService = gpuLeaseService;
         this.pythonExecutable = pythonExecutable;
         this.pythonScript = pythonScript;
         this.timeoutSeconds = timeoutSeconds;
@@ -85,6 +88,8 @@ public class PythonLddTaskExecutor implements DefenseTaskExecutor {
             }
         } finally {
             canceledRuns.remove(request.getRunId());
+            // The lease is held for the whole process lifetime, including cancel unwinding.
+            gpuLeaseService.releaseQuietly(request.getGpuLeaseToken());
         }
     }
 

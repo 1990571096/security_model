@@ -37,6 +37,7 @@ class PreDefenseTaskCommandServiceTest {
     private final OperationAuditService operationAuditService = mock(OperationAuditService.class);
     private final CurrentUserService currentUserService = mock(CurrentUserService.class);
     private final TaskAccessGuard taskAccessGuard = mock(TaskAccessGuard.class);
+    private final GpuLeaseService gpuLeaseService = mock(GpuLeaseService.class);
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final ThreadPoolTaskExecutor taskExecutor = new ThreadPoolTaskExecutor();
     private PreDefenseTaskCommandService commandService;
@@ -58,6 +59,7 @@ class PreDefenseTaskCommandServiceTest {
                 defenseTaskExecutor,
                 new LddConfigurationPolicy(objectMapper),
                 quotaPolicy,
+                gpuLeaseService,
                 fingerprintService,
                 new AfterCommitTaskDispatcher(),
                 objectMapper,
@@ -69,6 +71,7 @@ class PreDefenseTaskCommandServiceTest {
         when(resourceQueryService.findDataset(1L)).thenReturn(dataset());
         when(resourceQueryService.findAlgorithm(2L)).thenReturn(algorithm());
         when(currentUserService.username()).thenReturn("tester");
+        when(gpuLeaseService.acquire(any(), any(), any())).thenReturn(gpuLease());
     }
 
     @AfterEach
@@ -148,8 +151,19 @@ class PreDefenseTaskCommandServiceTest {
         return task;
     }
 
-    private Dataset dataset() {
-        Dataset dataset = new Dataset();
+    private com.securitymodel.domain.lease.GpuLease gpuLease() {
+        com.securitymodel.domain.lease.GpuLease lease = new com.securitymodel.domain.lease.GpuLease();
+        lease.setSlotId("default-gpu-0");
+        lease.setLeaseToken("lease-token");
+        lease.setTaskId(31L);
+        lease.setRunId("run");
+        lease.setAttempt(1);
+        lease.setFencingToken(1L);
+        lease.setExpiresAt(LocalDateTime.now().plusSeconds(300));
+        return lease;
+    }
+
+    private Dataset dataset() {        Dataset dataset = new Dataset();
         dataset.setDatasetId(1L);
         dataset.setDatasetName("CIFAR-10 test");
         dataset.setDatasetType("image");
