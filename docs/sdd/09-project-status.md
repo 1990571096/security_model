@@ -279,7 +279,7 @@ Vue 2 工程继续作为业务回归和回滚基线，不参与迁移版主流�
 | 模型端口 | 业务只依赖 `AssistantModel`；默认 `provider=disabled`，明确返回 `model_disabled`；未来新增供应商适配器并切换 provider，不改编排和确认流程 | `AssistantModel`、`DisabledAssistantModel` |
 | 审计与会话 | 工具审计只存工具名/operator/target/resultCode/durationMs，不存 prompt、参数正文或凭据；会话只存问题、状态、工具名、确认 ID、引用 ID；用户可删除自己的会话 | `AssistantAuditService`、`AssistantSessionService`、`AssistantRetentionJob` |
 | API/前端 | `POST /api/assistant/chat`、确认、工具目录、预览、会话列表/详情/删除、审计、状态；新增 `/assistant` 页面，展示模型不可用、工具结果、引用和待确认操作 | `AssistantController`、`AssistantView.vue`、`src/api/assistant.js` |
-| 验证（本机） | 2026-11-14 N1–N6 可靠性/确认闭环后 `mvn verify -Pmysql-it`（`REDIS_IT=true`）→ **209 项单元测试 + 72 项 MySQL/Redis 集成测试全绿**；助手 HTTP+MySQL 确认/会话链路 17 项（create/start/retry/cancel/export 五类写工具首次、重复、并发同凭据、预览后资源变化 409、跨用户拒绝、导出跨用户下载 403）；真实命令服务链路 5 项（双启动、删除—启动、编辑—启动、取消/瞬时成功、完成回调与并发取消）；前端 `npm run build` 本轮重跑通过；未跑真实 LDD | `tmp/r9-full-verify.log`、`tmp/r9-frontend-build.log`、`tmp/r9-n3-pipeline-it4.log`、`tmp/r9-n5-assistant-it.log` |
+| 验证（本机） | 2026-11-14 N1–N6 可靠性/确认闭环后 `mvn verify -Pmysql-it`（`REDIS_IT=true`）→ **209 项单元测试 + 72 项 MySQL/Redis 集成测试全绿**；助手 HTTP+MySQL 确认/会话链路 17 项（create/start/retry/cancel/export 五类写工具首次、重复、并发同凭据、预览后资源变化 409、跨用户拒绝、导出跨用户下载 403）；真实命令服务链路 5 项（双启动、删除—启动、编辑—启动、取消/瞬时成功、完成回调与并发取消）；前端 `npm run build` 本轮重跑通过；未跑真实 LDD；本地提交 `e6a0de0`，未推送 | `tmp/r9-full-verify.log`、`tmp/r9-frontend-build.log`、`tmp/r9-n3-pipeline-it4.log`、`tmp/r9-n5-assistant-it.log` |
 | 未做/阻塞 | 未接真实外部模型与假 HTTP 最终请求体捕获；未做真实 LDD；生产库 `eladmin` 未执行助手建表；确认流不是组织级双人审批；N4 独立 JVM 提交/抢占/接受后崩溃恢复仍未补；N5 的 start/retry/cancel/export 并发已补，但“篡改 token”未单列；N6 的 Ubuntu Java 17 CI 未实际运行（workflow 已配置，本机 Windows/Java 20 证据不能替代远端）；RabbitMQ 与独立 Worker 未实现 | ADR-021、20 §10 |
 
 ## 6. 待完成与优化建议
