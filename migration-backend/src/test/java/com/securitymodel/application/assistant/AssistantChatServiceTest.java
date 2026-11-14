@@ -1,6 +1,7 @@
 package com.securitymodel.application.assistant;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.securitymodel.application.audit.AuthenticatedUser;
 import com.securitymodel.application.audit.CurrentUserService;
 import com.securitymodel.domain.assistant.AssistantSession;
@@ -8,6 +9,9 @@ import org.junit.jupiter.api.Test;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -135,6 +139,112 @@ class AssistantChatServiceTest {
         assertEquals(0, response.modelCalls());
     }
 
+    @Test
+    void slowToolExceedingBudgetStopsBeforeAnotherModelCall() {
+        StubTool slow = new StubTool("get_my_task_summary", false,
+                new AssistantToolResult("ok", objectMapper.createObjectNode(), null, null, null, null, null),
+                6_000);
+        AssistantToolRegistry registry = new AssistantToolRegistry(List.of(slow));
+        AssistantModel model = sequence(
+                AssistantModel.ModelReply.toolCall("get_my_task_summary",
+                        objectMapper.createObjectNode().put("taskId", 1), "fake"),
+                AssistantModel.ModelReply.answer("不应到达", "fake"));
+
+        AssistantChatResponse response = service(registry, model, null, 5).chat(null, "慢工具");
+
+        assertEquals("timeout", response.status());
+        assertEquals(1, response.toolCalls());
+        assertEquals(1, response.modelCalls());
+    }
+
+    @Test
+    void concurrentBurstBeyondGlobalSlotsReturnsBusyWithoutStartingModel() throws Exception {
+        AssistantToolRegistry registry = new AssistantToolRegistry(List.of(
+                new StubTool("get_my_task_summary", false,
+                        new AssistantToolResult("ok", objectMapper.createObjectNode(), null, null, null, null, null))));
+        AssistantModel model = request -> {
+            try {
+                Thread.sleep(400);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
+            return AssistantModel.ModelReply.answer("ok", "fake");
+        };
+        AssistantChatService service = service(registry, model, null, 5);
+        CountDownLatch start = new CountDownLatch(1);
+        java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(5);
+        AtomicInteger busy = new AtomicInteger();
+        AtomicInteger answered = new AtomicInteger();
+        try {
+            List<Future<?>> futures = new java.util.ArrayList<>();
+            for (int i = 0; i < 5; i++) {
+                futures.add(pool.submit(() -> {
+                    try {
+                        start.await();
+                        service.chat(null, "并发");
+                        answered.incrementAndGet();
+                    } catch (AssistantException exception) {
+                        if ("ASSISTANT_BUSY".equals(exception.getCode())) {
+                            busy.incrementAndGet();
+                        } else {
+                            throw exception;
+                        }
+                    }
+                    return null;
+                }));
+            }
+            start.countDown();
+            for (Future<?> future : futures) {
+                future.get(5, TimeUnit.SECONDS);
+            }
+        } finally {
+            pool.shutdownNow();
+        }
+        assertTrue(busy.get() >= 1, "fifth concurrent request must be rejected as busy");
+        assertEquals(4, answered.get());
+    }
+
+    @Test
+    void nextModelRequestCarriesStructuredParameterEvidenceWithoutRawFailureText() {
+        ObjectNode data = objectMapper.createObjectNode();
+        ObjectNode algorithm = data.putArray("algorithms").addObject();
+        algorithm.put("algorithmId", 1);
+        algorithm.put("name", "LDD");
+        algorithm.put("defaultConfig", "{\"batch_size\":128,\"num_epochs\":5}");
+        data.putArray("datasets").addObject().put("name", "cifar10");
+        data.put("failureReason", "Traceback /workspace/secret.log password=abc123");
+        data.put("customParams", "{\"api_key\":\"sk-short\"}");
+        StubTool guide = new StubTool("get_parameter_guide", false,
+                new AssistantToolResult("参数说明", data, null, null, null, null, null));
+        AtomicInteger calls = new AtomicInteger();
+        java.util.concurrent.atomic.AtomicReference<AssistantModel.ModelRequest> captured =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        AssistantModel model = request -> {
+            if (calls.getAndIncrement() == 0) {
+                return AssistantModel.ModelReply.toolCall("get_parameter_guide",
+                        objectMapper.createObjectNode(), "fake");
+            }
+            captured.set(request);
+            return AssistantModel.ModelReply.answer("已读取参数", "fake");
+        };
+        AssistantChatService service = service(new AssistantToolRegistry(List.of(guide)), model, null);
+
+        AssistantChatResponse response = service.chat(null, "LDD 参数");
+
+        assertEquals("answered", response.status());
+        String toolMessage = captured.get().messages().stream()
+                .filter(message -> "tool".equals(message.role()))
+                .map(AssistantModel.ModelMessage::content)
+                .reduce("", (left, right) -> left + right);
+        assertTrue(toolMessage.contains("batch_size"));
+        assertTrue(toolMessage.contains("128"));
+        assertTrue(toolMessage.contains("num_epochs"));
+        assertTrue(toolMessage.contains("cifar10"));
+        assertFalse(toolMessage.contains("/workspace"));
+        assertFalse(toolMessage.contains("abc123"));
+        assertFalse(toolMessage.contains("sk-short"));
+    }
+
     private AssistantChatService service(AssistantToolRegistry registry, AssistantModel model,
                                          AssistantPreviewService previewService) {
         return service(registry, model, previewService, 60);
@@ -166,12 +276,18 @@ class AssistantChatServiceTest {
         private final String name;
         private final boolean write;
         private final AssistantToolResult result;
+        private final long delayMillis;
         private final AtomicInteger executions = new AtomicInteger();
 
         StubTool(String name, boolean write, AssistantToolResult result) {
+            this(name, write, result, 0);
+        }
+
+        StubTool(String name, boolean write, AssistantToolResult result, long delayMillis) {
             this.name = name;
             this.write = write;
             this.result = result;
+            this.delayMillis = delayMillis;
         }
 
         @Override
@@ -182,6 +298,13 @@ class AssistantChatServiceTest {
         @Override
         public AssistantToolResult execute(com.fasterxml.jackson.databind.JsonNode arguments) {
             executions.incrementAndGet();
+            if (delayMillis > 0) {
+                try {
+                    Thread.sleep(delayMillis);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            }
             return result;
         }
     }

@@ -2,6 +2,8 @@ package com.securitymodel.interfaces.web;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.securitymodel.SecurityModelApplication;
+import com.securitymodel.application.assistant.AssistantSessionService;
+import com.securitymodel.domain.assistant.AssistantSession;
 import com.securitymodel.infrastructure.executor.DefenseTaskExecutor;
 import com.securitymodel.support.OwnershipE2ESupport;
 import org.junit.jupiter.api.AfterEach;
@@ -21,8 +23,16 @@ import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.Statement;
 import java.util.Map;
+import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -54,6 +64,8 @@ class AssistantConfirmationEndToEndIT {
     private ObjectMapper objectMapper;
     @Autowired
     private JdbcTemplate jdbc;
+    @Autowired
+    private AssistantSessionService sessionService;
     @MockBean
     private DefenseTaskExecutor executor;
 
@@ -224,6 +236,52 @@ class AssistantConfirmationEndToEndIT {
                 .andExpect(status().isOk())
                 .andReturn().getResponse().getContentAsString();
         return objectMapper.readTree(response).path("token").asText();
+    }
+
+    @Test
+    void deletedSessionCannotBeResurrectedByLateTurnAppend() throws Exception {
+        AssistantSession session = sessionService.getOrCreate(null, 2L, "删除会话");
+        assertTrue(sessionService.appendTurn(session, "第一问", "answered", "第一答",
+                List.of(), List.of(), List.of()));
+        sessionService.deleteOwned(session.getSessionId(), 2L);
+
+        assertFalse(sessionService.appendTurn(session, "迟到回答", "answered", "不得复活",
+                List.of(), List.of(), List.of()));
+
+        Map<String, Object> row = jdbc.queryForMap(
+                "SELECT status, summary_json FROM sys_assistant_session WHERE session_id = ?",
+                session.getSessionId());
+        assertEquals("deleted", row.get("status"));
+        assertFalse(String.valueOf(row.get("summary_json")).contains("迟到回答"));
+    }
+
+    @Test
+    void concurrentTurnsAreMergedWithConditionalUpdate() throws Exception {
+        AssistantSession session = sessionService.getOrCreate(null, 2L, "并发会话");
+        CountDownLatch start = new CountDownLatch(1);
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            Future<Boolean> first = pool.submit(() -> appendAfter(start, session, "问题一", "回答一"));
+            Future<Boolean> second = pool.submit(() -> appendAfter(start, session, "问题二", "回答二"));
+            start.countDown();
+            assertTrue(first.get(5, TimeUnit.SECONDS));
+            assertTrue(second.get(5, TimeUnit.SECONDS));
+        } finally {
+            pool.shutdownNow();
+        }
+
+        String stored = jdbc.queryForObject(
+                "SELECT summary_json FROM sys_assistant_session WHERE session_id = ?",
+                String.class, session.getSessionId());
+        assertTrue(stored.contains("问题一"));
+        assertTrue(stored.contains("问题二"));
+    }
+
+    private boolean appendAfter(CountDownLatch start, AssistantSession session,
+                                String question, String answer) throws Exception {
+        assertTrue(start.await(2, TimeUnit.SECONDS));
+        return sessionService.appendTurn(session, question, "answered", answer,
+                List.of(), List.of(), List.of());
     }
 
     private static void createAssistantSchema() {

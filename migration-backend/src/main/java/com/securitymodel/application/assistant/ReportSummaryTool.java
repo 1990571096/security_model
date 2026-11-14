@@ -54,7 +54,11 @@ public class ReportSummaryTool implements AssistantTool {
             try {
                 JsonNode root = objectMapper.readTree(task.getCleaningResult());
                 copyText(root, data, "error_code", "errorCode");
-                copyText(root, data, "failure_reason", "failureReason");
+                String errorCode = root.path("error_code").asText(null);
+                if (errorCode != null && !errorCode.isBlank()) {
+                    data.put("failureSummary",
+                            com.securitymodel.application.task.TaskFailureMessages.forCode(errorCode));
+                }
                 JsonNode artifacts = root.path("artifacts");
                 if (artifacts.has("selection_kind")) {
                     data.put("selectionKind", artifacts.path("selection_kind").asText());

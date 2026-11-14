@@ -1,6 +1,6 @@
 # 安全模型训练平台后续迭代开发指导书
 
-版本：2026-11-13 v2；状态：开发指导，非功能交付记录。本文是交给开发 Agent 的总协议；逐阶段实施步骤、默认决策和验收矩阵见 [20-stage-execution-and-acceptance.md](20-stage-execution-and-acceptance.md)。两份文档必须一并阅读，不代表下述能力已实现。
+版本：2026-11-14 v3；状态：开发指导，非功能交付记录。本文是交给开发 Agent 的总协议；逐阶段实施步骤、默认决策和验收矩阵见 [20-stage-execution-and-acceptance.md](20-stage-execution-and-acceptance.md)。两份文档必须一并阅读；历史数字和“已实现”判断均以对应提交与日期为准，不代表本轮新增能力已验收。
 
 **本版使用规则**：用户指定一个阶段后，开发 Agent 应完成该阶段全部必选项、测试、文档和证据再统一送审；可以分多次提交，但不能自行把内部切片当作整个阶段交付。常规技术选择按 20 号文档默认值执行，不逐项要求用户确认。业务数据库迁移、历史数据归属、真实长训练、外部付费服务及可选阶段的启用仍受既有授权边界约束。一次送审是交付目标，不保证免除审查发现后的修正。
 
@@ -13,8 +13,8 @@
 - 保留 Java 17 / Spring Boot 3.5 / MySQL / Vue 3 / Vite / Redis；不为技术栈数量重写现有业务。
 - 交付目标是单机多用户真实运行，开发设备为 RTX 2060 6GB 显存、16GB 内存；分布式仅作可选设计与学习扩展，不是交付门槛。
 - 真实算法仅 LDD；其他训练前、训练中、训练后算法页面是展示资料，不得创建真实运行结果。正式论文实验配置与既有 128 batch / 5 epochs 工程验证配置均不得擅自修改或重跑。
-- MySQL 是任务、审计、报告事实源。Redis 当前只缓存资源目录；RabbitMQ、独立 Worker、Agent、RAG 均未实现。
-- Agent 通过外部大模型 API 实现，本机不部署大模型。外发仅限按当前用户权限过滤、经服务端脱敏的 SDD 文档片段、算法参数说明和实验报告摘要；原始样本、完整日志、本机绝对路径、凭据和用户个人信息不得发送给模型或 embedding 服务。密钥只通过本机安全配置注入。
+- MySQL 是任务、审计、报告事实源。Redis 当前只缓存资源目录；RabbitMQ、独立 Worker 均未实现。知识检索（R6）与受控助手（R7）已有代码落点，外部模型仍是禁用适配器，不能表述为“Agent/RAG 已生产上线”。
+- Agent 通过外部大模型 API 实现，本机不部署大模型。外发边界（目标约束）：仅限按当前用户权限过滤、经服务端白名单和脱敏的 SDD 文档片段、算法参数说明和实验报告摘要；原始样本、完整日志、本机绝对路径、凭据和用户个人信息不得发送给模型或 embedding 服务。当前实现已把任务失败原因改为错误码映射，并对模型证据做字段白名单，但外部模型尚未接入，不能据此宣称端到端外发验收完成。
 - 数据集和产物保持在受控本地目录；多用户隔离必须覆盖实验任务、报告、日志、导出及下载，不得仅靠前端过滤。
 - 现有 `run_id` / `attempt`、原子领取、事务提交后派发、进度文件、前端轮询、失败重试和训练任务启动恢复应复用，不得重新造一套并存状态机。
 - 旧 `eladmin` 仅是历史基线，主要开发在 `migration-backend`、`migration-frontend`、`algorithm-runtime/vab`。外部 VaB 源码、数据集和已有产物不属于自动清理范围。
@@ -31,7 +31,9 @@
 | 导出 | `CleanSubsetExportService`、`CleanSubsetExportExecutor`、`ExportRecoveryRunner` | 已有去重、重启失败收敛与超时逻辑；进程树和文件边界继续回归 |
 | 安全 | `TaskAccessGuard`、`JwtAuthenticationFilter`、`OwnershipEndToEndIT` | 已有 owner 授权、账号状态回查和隔离库 HTTP 测试；业务库迁移与测试证据独立记录 |
 | Redis | `ResourceCatalogCache`、ADR-010 | 资源目录缓存已落地，不是分布式锁或任务状态存储 |
-| 质量门禁 | `.github/workflows/migration-quality.yml` | 配置有 Maven/MySQL/Vite；远端运行状态和新增功能覆盖需实际验收 |
+| 知识检索 R6 | `KnowledgeIndexService`、`KnowledgeRetrievalMySqlIT`、`KnowledgeController` | 离线检索、ACL、引用与回答适配器已落地；真实外部模型/embedding 未接 |
+| 受控助手 R7 | `AssistantChatService`、`AssistantConfirmationService`、`AssistantSessionService`、`AssistantModelEvidence` | 工具白名单、预览确认、配额、审计、有界并发和结构化证据已落地；外部模型仍为禁用适配器，五类写工具全量 HTTP 验收未完成 |
+| 质量门禁 | `.github/workflows/migration-quality.yml` | 配置有 Maven/MySQL/Redis/Vite；进程守卫测试已改为 Windows/Linux 双实现，远端 Actions 结果仍需实际查询 |
 
 所有文件名相对于仓库根 `F:\Study\postgraduate\毕业论文\security_model`。开始每轮前执行 `git status --short`，阅读相关 SDD 与源码，保留其他人已有修改；与表格事实不一致时，先提交事实差异供复核，不得沿用过期结论。
 

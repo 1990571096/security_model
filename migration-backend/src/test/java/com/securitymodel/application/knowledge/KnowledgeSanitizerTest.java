@@ -38,6 +38,18 @@ class KnowledgeSanitizerTest {
     }
 
     @Test
+    void redactsWorkspaceAndDataPathsAndShortPlainCredentials() {
+        String raw = "cwd /workspace/project/run.log data /data/raw/sample.bin "
+                + "password=abc123 token: xyz789";
+        String sanitized = KnowledgeSanitizer.sanitize(raw);
+
+        assertFalse(sanitized.contains("/workspace"));
+        assertFalse(sanitized.contains("/data/raw"));
+        assertFalse(sanitized.contains("abc123"));
+        assertFalse(sanitized.contains("xyz789"));
+    }
+
+    @Test
     void preservesApiPathsThatAreNotFilesystemPaths() {
         String sanitized = KnowledgeSanitizer.sanitize("POST /api/knowledge/query 返回引用");
         assertTrue(sanitized.contains("/api/knowledge/query"));

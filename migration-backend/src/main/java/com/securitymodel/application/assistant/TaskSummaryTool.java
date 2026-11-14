@@ -45,9 +45,6 @@ public class TaskSummaryTool implements AssistantTool {
         data.put("algorithmId", task.getAlgorithmId());
         data.put("hyperId", task.getHyperId());
         data.put("currentAttempt", task.getCurrentAttempt());
-        if (task.getCustomParams() != null) {
-            data.put("customParams", KnowledgeSanitizer.forModel(task.getCustomParams(), 500));
-        }
         if (task.getStartTime() != null) {
             data.put("startTime", task.getStartTime().toString());
         }

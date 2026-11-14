@@ -14,10 +14,14 @@ public final class KnowledgeSanitizer {
     private static final Pattern UNC_PATH =
             Pattern.compile("\\\\\\\\[^\\s，。；、）)]+");
     private static final Pattern UNIX_PATH =
-            Pattern.compile("(?i)(?<![A-Za-z0-9])/(?:home|users|tmp|var|opt|root|etc|usr|mnt|media|private|proc|sys)"
+            Pattern.compile("(?i)(?<![A-Za-z0-9])/(?:home|users|tmp|var|opt|root|etc|usr|mnt|media|private|"
+                    + "proc|sys|workspace|workspaces|data|app|srv|build|project|projects)"
                     + "(?:/[A-Za-z0-9._-]+)+");
     private static final Pattern BEARER =
             Pattern.compile("(?i)bearer\\s+[A-Za-z0-9._~+/-]+=*");
+    private static final Pattern SECRET_ASSIGNMENT =
+            Pattern.compile("(?i)(?:password|passwd|pwd|secret|token|api[_-]?key)[=: ]+"
+                    + "[^\\s,;\"']{3,}");
     private static final Pattern JSON_CREDENTIAL =
             Pattern.compile("(?i)[\"'](?:api[_-]?key|access[_-]?key|secret[_-]?key|app[_-]?key|token"
                     + "|password|passwd|secret|authorization|credential)[\"']\\s*:\\s*[\"'][^\"']*[\"']");
@@ -45,6 +49,7 @@ public final class KnowledgeSanitizer {
         value = JWT.matcher(value).replaceAll("[已过滤]");
         value = BEARER.matcher(value).replaceAll("[已过滤]");
         value = JSON_CREDENTIAL.matcher(value).replaceAll("[已过滤凭据]");
+        value = SECRET_ASSIGNMENT.matcher(value).replaceAll("[已过滤凭据]");
         value = API_KEY.matcher(value).replaceAll("[已过滤]");
         value = WINDOWS_PATH.matcher(value).replaceAll("[已过滤路径]");
         value = UNC_PATH.matcher(value).replaceAll("[已过滤路径]");

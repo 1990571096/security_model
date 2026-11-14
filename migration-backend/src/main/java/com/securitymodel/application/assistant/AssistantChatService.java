@@ -14,9 +14,12 @@ import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -38,6 +41,7 @@ public class AssistantChatService {
     private final CurrentUserService currentUserService;
     private final ObjectMapper objectMapper;
     private final ExecutorService modelExecutor;
+    private final Semaphore requestSlots = new Semaphore(4, true);
     private final int maxModelCalls;
     private final int maxToolCalls;
     private final long timeoutMillis;
@@ -62,17 +66,30 @@ public class AssistantChatService {
         this.sessionService = sessionService;
         this.currentUserService = currentUserService;
         this.objectMapper = objectMapper;
-        this.modelExecutor = Executors.newCachedThreadPool(runnable -> {
-            Thread thread = new Thread(runnable, "assistant-model");
-            thread.setDaemon(true);
-            return thread;
-        });
+        this.modelExecutor = new ThreadPoolExecutor(4, 4, 0, TimeUnit.MILLISECONDS,
+                new ArrayBlockingQueue<>(16), runnable -> {
+                    Thread thread = new Thread(runnable, "assistant-model");
+                    thread.setDaemon(true);
+                    return thread;
+                }, new ThreadPoolExecutor.AbortPolicy());
         this.maxModelCalls = Math.max(1, Math.min(12, maxModelCalls));
         this.maxToolCalls = Math.max(1, Math.min(10, maxToolCalls));
         this.timeoutMillis = TimeUnit.SECONDS.toMillis(Math.max(5, Math.min(180, timeoutSeconds)));
     }
 
     public AssistantChatResponse chat(Long sessionId, String question) {
+        if (!requestSlots.tryAcquire()) {
+            throw new AssistantException("ASSISTANT_BUSY", HttpStatus.TOO_MANY_REQUESTS,
+                    "助手当前请求过多，请稍后重试；普通任务接口不受影响。");
+        }
+        try {
+            return chatWithBudget(sessionId, question);
+        } finally {
+            requestSlots.release();
+        }
+    }
+
+    private AssistantChatResponse chatWithBudget(Long sessionId, String question) {
         Long userId = currentUserService.requireStableIdentity().userId();
         if (question == null || question.isBlank()) {
             throw new AssistantException("ASSISTANT_QUESTION_REQUIRED", HttpStatus.BAD_REQUEST,
@@ -117,7 +134,14 @@ public class AssistantChatService {
                     safeQuestion, List.copyOf(messages), registry.descriptors(),
                     Math.max(0, maxToolCalls - toolCalls), remainingMillis);
             AssistantModel.ModelReply reply;
-            Future<AssistantModel.ModelReply> future = modelExecutor.submit(() -> model.respond(request));
+            Future<AssistantModel.ModelReply> future;
+            try {
+                future = modelExecutor.submit(() -> model.respond(request));
+            } catch (RejectedExecutionException exception) {
+                return finish(session, question, "busy",
+                        "助手模型队列已满，请稍后重试；未执行任何工具。", traces, pending,
+                        citations, "busy", modelCalls, toolCalls);
+            }
             try {
                 reply = future.get(remainingNanos, TimeUnit.NANOSECONDS);
             } catch (TimeoutException exception) {
@@ -132,10 +156,10 @@ public class AssistantChatService {
                         "助手请求被中断，未完成的工具调用不会写入业务数据。", traces, pending,
                         citations, "timeout", modelCalls, toolCalls);
             } catch (ExecutionException exception) {
-                Throwable cause = exception.getCause();
-                String message = cause == null ? null : cause.getMessage();
+                // Provider exceptions can contain request bodies, endpoints and credentials.
+                // Never copy them into the user-visible response.
                 return finish(session, question, "model_unavailable",
-                        message == null || message.isBlank() ? "模型调用失败，未执行工具。" : message,
+                        "模型调用失败，未执行工具；详情仅保留在服务端日志。",
                         traces, pending, citations, "model_unavailable", modelCalls, toolCalls);
             }
             modelCalls++;
@@ -145,10 +169,18 @@ public class AssistantChatService {
                         citations, "timeout", modelCalls, toolCalls);
             }
             if (!"ok".equals(reply.status())) {
-                return finish(session, question, reply.status(), reply.message(), traces, pending,
+                String safeStatus = "model_disabled".equals(reply.status())
+                        ? "model_disabled" : "model_unavailable";
+                return finish(session, question, safeStatus,
+                        "模型暂不可用，未执行工具；详情仅保留在服务端日志。", traces, pending,
                         citations, reply.status(), modelCalls, toolCalls);
             }
             if (reply.toolCall() != null) {
+                if (System.nanoTime() > deadline) {
+                    return finish(session, question, "timeout",
+                            "工具调用前已超过总时限，未执行该工具。", traces, pending,
+                            citations, "timeout", modelCalls, toolCalls);
+                }
                 if (toolCalls >= maxToolCalls) {
                     return finish(session, question, "limit_reached",
                             "工具调用次数已达上限，未完成的写操作不会执行。", traces, pending,
@@ -166,6 +198,11 @@ public class AssistantChatService {
                         }
                     });
                     traces.add(execution.trace());
+                    if (System.nanoTime() > deadline) {
+                        return finish(session, question, "timeout",
+                                "工具已执行，但已超过总时限；后续工具调用不会执行。", traces, pending,
+                                citations, "timeout", modelCalls, toolCalls);
+                    }
                 } catch (AssistantException exception) {
                     return finish(session, question, "tool_error", exception.getMessage(), traces, pending,
                             citations, exception.getCode(), modelCalls, toolCalls);

@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.securitymodel.application.resource.ResourceQueryService;
 import com.securitymodel.application.task.TaskAccessGuard;
 import com.securitymodel.application.task.TaskCommandException;
+import com.securitymodel.application.task.TaskFailureMessages;
 import com.securitymodel.domain.algorithm.Algorithm;
 import com.securitymodel.domain.dataset.Dataset;
 import com.securitymodel.domain.knowledge.KnowledgeDocument;
@@ -241,8 +242,11 @@ public class KnowledgeIndexService {
         }
         try {
             JsonNode root = JSON.readTree(rawResult);
-            appendField(markdown, "错误码", root.path("error_code").asText(null));
-            appendField(markdown, "失败原因", root.path("failure_reason").asText(null));
+            String errorCode = root.path("error_code").asText(null);
+            appendField(markdown, "错误码", errorCode);
+            if (errorCode != null && !errorCode.isBlank()) {
+                appendField(markdown, "失败摘要", TaskFailureMessages.forCode(errorCode));
+            }
             JsonNode metrics = root.path("metrics");
             appendField(markdown, "清洗纯度",
                     metrics.path("clean_purity_percent_by_isolation_ratio").toString());

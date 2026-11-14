@@ -34,6 +34,20 @@ public interface AssistantSessionMapper extends BaseMapper<AssistantSession> {
 
     @Update("""
             UPDATE sys_assistant_session
+            SET summary_json = #{summary}, updated_at = #{now}, expires_at = #{expiresAt}
+            WHERE session_id = #{sessionId} AND user_id = #{userId}
+              AND status = 'active' AND expires_at > #{now}
+              AND ((#{expected} IS NULL AND summary_json IS NULL) OR summary_json = #{expected})
+            """)
+    int appendTurnIfActive(@Param("sessionId") Long sessionId,
+                          @Param("userId") Long userId,
+                          @Param("expected") String expected,
+                          @Param("summary") String summary,
+                          @Param("now") LocalDateTime now,
+                          @Param("expiresAt") LocalDateTime expiresAt);
+
+    @Update("""
+            UPDATE sys_assistant_session
             SET status = 'deleted', updated_at = #{now}
             WHERE session_id = #{sessionId} AND user_id = #{userId} AND status = 'active'
             """)

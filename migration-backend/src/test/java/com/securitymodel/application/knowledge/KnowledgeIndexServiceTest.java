@@ -145,7 +145,7 @@ class KnowledgeIndexServiceTest {
                  "selected_sample_count_by_isolation_ratio":1000},
                  "artifacts":{"selection_kind":"isolation_ratio",
                  "result_path":"F:/Study/secret/result.json"},
-                 "failure_reason":null,
+                 "failure_reason":"Traceback at /workspace/secret/run.log password=abc123",
                  "effective_config":{"dataset":"cifar10","batch_size":128,"num_epochs":5},
                  "log":"Traceback at C:/Users/Jin/private/run.log token=abcdefgh12345678"}
                 """);
@@ -168,6 +168,8 @@ class KnowledgeIndexServiceTest {
         assertTrue(!indexed.contains("C:/Users"));
         assertTrue(!indexed.contains("abcdefgh12345678"));
         assertTrue(!indexed.contains("result.json"));
+        assertTrue(!indexed.contains("/workspace"));
+        assertTrue(!indexed.contains("abc123"));
     }
 
     @Test

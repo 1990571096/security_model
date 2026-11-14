@@ -303,7 +303,11 @@ public class PythonLddTaskExecutor implements DefenseTaskExecutor {
         result.put("run_id", request.getRunId());
         result.put("attempt", request.getAttempt());
         result.put("error_code", errorCode);
-        result.put("failure_reason", StringUtils.hasText(reason) ? reason : "未知执行错误");
+        // Never persist the raw exception/stderr: it can contain paths, commands and
+        // sample markers. The exact detail stays in the server log.
+        result.put("failure_reason", com.securitymodel.application.task.TaskFailureMessages.forCode(errorCode));
+        log.warn("LDD execution failed: taskId={}, runId={}, errorCode={}",
+                request.getTaskId(), request.getRunId(), errorCode);
         result.put("started_at", startedAt);
         result.put("finished_at", OffsetDateTime.now().toString());
         result.set("artifacts", artifacts(context));

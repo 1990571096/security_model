@@ -66,10 +66,37 @@ public class AssistantSessionService {
         return session;
     }
 
-    public void appendTurn(AssistantSession session, String question, String answerStatus,
-                           String answer, List<String> toolNames, List<Long> confirmationIds,
-                           List<String> citationIds) {
-        ObjectNode root = readSummary(session.getSummaryJson());
+    public boolean appendTurn(AssistantSession session, String question, String answerStatus,
+                              String answer, List<String> toolNames, List<Long> confirmationIds,
+                              List<String> citationIds) {
+        // Retry a few times because two chats may finish at once. The update only succeeds
+        // when the stored summary is still the one this attempt merged from; it never writes
+        // status back, so a deleted session cannot be resurrected.
+        for (int attempt = 0; attempt < 3; attempt++) {
+            AssistantSession current = sessionMapper.findOwned(session.getSessionId(),
+                    session.getUserId(), LocalDateTime.now());
+            if (current == null) {
+                return false;
+            }
+            String summary = mergeSummary(current.getSummaryJson(), question, answerStatus,
+                    answer, toolNames, confirmationIds, citationIds);
+            LocalDateTime now = LocalDateTime.now();
+            int updated = sessionMapper.appendTurnIfActive(session.getSessionId(), session.getUserId(),
+                    current.getSummaryJson(), summary, now, now.plusDays(sessionTtlDays));
+            if (updated == 1) {
+                session.setSummaryJson(summary);
+                session.setUpdatedAt(now);
+                session.setExpiresAt(now.plusDays(sessionTtlDays));
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private String mergeSummary(String rawSummary, String question, String answerStatus,
+                                String answer, List<String> toolNames, List<Long> confirmationIds,
+                                List<String> citationIds) {
+        ObjectNode root = readSummary(rawSummary);
         ArrayNode turns = root.has("turns") && root.get("turns").isArray()
                 ? (ArrayNode) root.get("turns") : root.putArray("turns");
         ObjectNode turn = turns.addObject();
@@ -94,10 +121,7 @@ public class AssistantSessionService {
                 summary = root.toString();
             }
         }
-        session.setSummaryJson(summary);
-        session.setUpdatedAt(LocalDateTime.now());
-        session.setExpiresAt(LocalDateTime.now().plusDays(sessionTtlDays));
-        sessionMapper.updateById(session);
+        return summary;
     }
 
     public List<Map<String, Object>> listMine(Long userId, int limit) {

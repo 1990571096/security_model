@@ -3,6 +3,8 @@ package com.securitymodel.infrastructure.executor;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
+
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -13,11 +15,26 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ExecutorProcessGuardIdentityTest {
 
+    private static final boolean WINDOWS = System.getProperty("os.name", "")
+            .toLowerCase(java.util.Locale.ROOT).contains("win");
+
+    private static Process shortProcess() throws IOException {
+        return WINDOWS
+                ? new ProcessBuilder("cmd.exe", "/c", "exit 0").start()
+                : new ProcessBuilder("sh", "-c", "exit 0").start();
+    }
+
+    private static Process longProcess() throws IOException {
+        return WINDOWS
+                ? new ProcessBuilder("cmd.exe", "/c", "pause").start()
+                : new ProcessBuilder("sh", "-c", "exec sleep 60").start();
+    }
+
     @Test
     void unverifiedRecordedPidIsNeverKilledAndSlotStaysQuarantined() throws Exception {
         Path dir = Files.createTempDirectory("guard-identity-");
-        Process root = new ProcessBuilder("cmd.exe", "/c", "ping -n 2 127.0.0.1 >nul").start();
-        Process unrelated = new ProcessBuilder("cmd.exe", "/c", "pause").start();
+        Process root = shortProcess();
+        Process unrelated = longProcess();
         try {
             assertTrue(unrelated.isAlive(), "test child must be alive before the guard runs");
             Files.writeString(dir.resolve("python-children.json"),
@@ -36,7 +53,7 @@ class ExecutorProcessGuardIdentityTest {
     @Test
     void missingChildrenRecordIsNotTreatedAsConfirmedExit() throws Exception {
         Path dir = Files.createTempDirectory("guard-missing-record-");
-        Process root = new ProcessBuilder("cmd.exe", "/c", "exit 0").start();
+        Process root = shortProcess();
         try {
             assertTrue(root.waitFor(2, TimeUnit.SECONDS));
             assertFalse(new ExecutorProcessGuard(new ObjectMapper()).ensureGone(root, dir, 100, false));
@@ -49,7 +66,7 @@ class ExecutorProcessGuardIdentityTest {
     void corruptChildrenRecordIsNotTreatedAsConfirmedExit() throws Exception {
         Path dir = Files.createTempDirectory("guard-corrupt-record-");
         Files.writeString(dir.resolve("python-children.json"), "{broken", StandardCharsets.UTF_8);
-        Process root = new ProcessBuilder("cmd.exe", "/c", "exit 0").start();
+        Process root = shortProcess();
         try {
             assertTrue(root.waitFor(2, TimeUnit.SECONDS));
             assertFalse(new ExecutorProcessGuard(new ObjectMapper()).ensureGone(root, dir, 100, false));
@@ -62,7 +79,7 @@ class ExecutorProcessGuardIdentityTest {
     void emptyChildrenRecordProvesTheAdapterChildExited() throws Exception {
         Path dir = Files.createTempDirectory("guard-empty-record-");
         Files.writeString(dir.resolve("python-children.json"), "{\"pids\":[]}", StandardCharsets.UTF_8);
-        Process root = new ProcessBuilder("cmd.exe", "/c", "exit 0").start();
+        Process root = shortProcess();
         try {
             assertTrue(root.waitFor(2, TimeUnit.SECONDS));
             assertTrue(new ExecutorProcessGuard(new ObjectMapper()).ensureGone(root, dir, 100, false));

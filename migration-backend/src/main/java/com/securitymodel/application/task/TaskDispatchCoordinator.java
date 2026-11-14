@@ -252,7 +252,7 @@ public class TaskDispatchCoordinator {
         result.put("run_id", runId);
         result.put("attempt", attempt);
         result.put("error_code", errorCode);
-        result.put("failure_reason", reason);
+        result.put("failure_reason", com.securitymodel.application.task.TaskFailureMessages.forCode(errorCode));
         result.put("finished_at", LocalDateTime.now().toString());
         result.put("artifacts", Map.of());
         try {
