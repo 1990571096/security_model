@@ -61,6 +61,12 @@ public class TaskDispatchIntentService {
         mapper.abandon(taskId, runId, attempt, errorCode, now);
     }
 
+    /** Conditional terminal transition used by expiry; only the caller that wins may release. */
+    public boolean abandonPending(Long taskId, String runId, Integer attempt, String errorCode,
+                                  LocalDateTime now) {
+        return mapper.abandonPending(taskId, runId, attempt, errorCode, now) == 1;
+    }
+
     public List<TaskDispatchIntent> findPendingOlderThan(LocalDateTime cutoff, int limit) {
         return mapper.findPendingOlderThan(cutoff, limit);
     }
@@ -70,6 +76,14 @@ public class TaskDispatchIntentService {
     }
 
     public DefenseTaskRequest readRequest(TaskDispatchIntent intent) {
+        if (intent.getSchemaVersion() == null || intent.getSchemaVersion() != SCHEMA_VERSION) {
+            throw new TaskCommandException("DISPATCH_SCHEMA_UNSUPPORTED: 调度快照版本不受支持");
+        }
+        if (intent.getRequestJson() == null || intent.getRequestJson().isBlank()
+                || intent.getRequestHash() == null
+                || !intent.getRequestHash().equals(sha256(intent.getRequestJson()))) {
+            throw new TaskCommandException("DISPATCH_REQUEST_CORRUPTED: 调度请求摘要不一致");
+        }
         try {
             return objectMapper.readValue(intent.getRequestJson(), DefenseTaskRequest.class);
         } catch (Exception exception) {

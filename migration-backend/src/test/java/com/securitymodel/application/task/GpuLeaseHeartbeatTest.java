@@ -36,7 +36,7 @@ class GpuLeaseHeartbeatTest {
         lease.setAttempt(1);
         lease.setLeaseToken("token-61");
         lease.setExpiresAt(LocalDateTime.now().plusSeconds(300));
-        when(leaseService.findOwnedActive()).thenReturn(List.of(lease));
+        when(leaseService.findLocalLeases()).thenReturn(List.of(lease));
         when(leaseService.renew(lease)).thenReturn(false);
         when(taskMapper.failBeforeExecution(eq(61L), eq("run-61"), eq(1), anyString(), any())).thenReturn(1);
 
@@ -53,12 +53,30 @@ class GpuLeaseHeartbeatTest {
         lease.setRunId("run-62");
         lease.setAttempt(1);
         lease.setLeaseToken("token-62");
-        when(leaseService.findOwnedActive()).thenReturn(List.of(lease));
+        when(leaseService.findLocalLeases()).thenReturn(List.of(lease));
         when(leaseService.renew(lease)).thenReturn(true);
 
         heartbeat.renewActiveLeases();
 
         verify(taskMapper, never()).failBeforeExecution(anyLong(), anyString(), any(), anyString(), any());
         verify(executor, never()).cancelPreDefense(anyLong(), anyString());
+    }
+
+    @Test
+    void databaseFailureStillCancelsLocalProcessBeforeFailingTask() {
+        GpuLease lease = new GpuLease();
+        lease.setSlotId("default-gpu-0");
+        lease.setTaskId(63L);
+        lease.setRunId("run-63");
+        lease.setAttempt(1);
+        lease.setLeaseToken("token-63");
+        when(leaseService.findLocalLeases()).thenReturn(List.of(lease));
+        when(leaseService.renew(lease)).thenThrow(new IllegalStateException("db down"));
+        when(taskMapper.failBeforeExecution(eq(63L), eq("run-63"), eq(1), anyString(), any()))
+                .thenThrow(new IllegalStateException("db down"));
+
+        heartbeat.renewActiveLeases();
+
+        verify(executor).cancelPreDefense(63L, "run-63");
     }
 }

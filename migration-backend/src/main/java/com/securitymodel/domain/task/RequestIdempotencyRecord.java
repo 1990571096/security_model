@@ -13,6 +13,7 @@ public class RequestIdempotencyRecord {
 
     public static final String PROCESSING = "processing";
     public static final String SUCCEEDED = "succeeded";
+    public static final String FAILED = "failed";
 
     @TableId(value = "record_id", type = IdType.AUTO)
     private Long recordId;

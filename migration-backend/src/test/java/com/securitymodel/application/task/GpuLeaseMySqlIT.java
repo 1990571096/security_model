@@ -129,22 +129,29 @@ class GpuLeaseMySqlIT {
     }
 
     @Test
-    void expiredLeaseIsReclaimedAndFencingTokenIncreases() {
+    void expiredLeaseIsQuarantinedUntilProcessExitIsConfirmed() {
         GpuLease first = leaseService.acquire(21L, "run-21", 1);
         expireNow();
 
-        GpuLease second = leaseService.acquire(22L, "run-22", 1);
+        TaskCommandException expired = assertThrows(TaskCommandException.class,
+                () -> leaseService.acquire(22L, "run-22", 1));
+        assertTrue(expired.getMessage().contains("GPU_LEASE_EXPIRED"));
+        assertTrue(leaseMapper.findBySlot(SLOT).getBlockedAt() != null,
+                "TTL expiry alone must not let a new task take the GPU");
 
+        leaseService.releaseByRun(21L, "run-21");
+        GpuLease second = leaseService.acquire(22L, "run-22", 1);
         assertNotEquals(first.getLeaseToken(), second.getLeaseToken());
         assertEquals(2L, second.getFencingToken());
         assertEquals(22L, second.getTaskId());
-        assertEquals("run-22", second.getRunId());
     }
 
     @Test
     void staleLeaseCannotRenewOrReleaseTheNewOwner() {
         GpuLease stale = leaseService.acquire(31L, "run-31", 1);
         expireNow();
+        assertThrows(TaskCommandException.class, () -> leaseService.acquire(32L, "run-32", 1));
+        leaseService.releaseByRun(31L, "run-31");
         GpuLease current = leaseService.acquire(32L, "run-32", 1);
 
         assertFalse(leaseService.renew(stale), "an expired token must not extend the lease");

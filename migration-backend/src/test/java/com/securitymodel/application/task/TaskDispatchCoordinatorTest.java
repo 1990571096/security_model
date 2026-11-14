@@ -6,7 +6,10 @@ import com.securitymodel.domain.lease.GpuLease;
 import com.securitymodel.domain.task.PreDefenseTask;
 import com.securitymodel.domain.task.TaskDispatchIntent;
 import com.securitymodel.infrastructure.executor.DefenseTaskExecutor;
+import com.securitymodel.infrastructure.executor.AttemptProcessRegistry;
 import com.securitymodel.infrastructure.persistence.mapper.PreDefenseTaskMapper;
+import com.securitymodel.infrastructure.persistence.mapper.DatasetMapper;
+import com.securitymodel.infrastructure.persistence.mapper.AlgorithmMapper;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -15,6 +18,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -22,14 +26,31 @@ class TaskDispatchCoordinatorTest {
 
     private final TaskDispatchIntentService intentService = mock(TaskDispatchIntentService.class);
     private final DefenseTaskExecutor executor = mock(DefenseTaskExecutor.class);
+    private final AttemptProcessRegistry processRegistry = mock(AttemptProcessRegistry.class);
     private final GpuLeaseService gpuLeaseService = mock(GpuLeaseService.class);
     private final ExecutionFingerprintService fingerprintService = mock(ExecutionFingerprintService.class);
     private final PreDefenseTaskMapper taskMapper = mock(PreDefenseTaskMapper.class);
     private final com.securitymodel.infrastructure.persistence.mapper.SysUserMapper userMapper =
             mock(com.securitymodel.infrastructure.persistence.mapper.SysUserMapper.class);
+    private final DatasetMapper datasetMapper = mock(DatasetMapper.class);
+    private final AlgorithmMapper algorithmMapper = mock(AlgorithmMapper.class);
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final TaskDispatchCoordinator coordinator = new TaskDispatchCoordinator(
-            intentService, executor, gpuLeaseService, fingerprintService, taskMapper, userMapper, objectMapper);
+            intentService, executor, processRegistry, gpuLeaseService, fingerprintService, taskMapper,
+            userMapper, datasetMapper, algorithmMapper, objectMapper);
+
+    @org.junit.jupiter.api.BeforeEach
+    void enableResources() {
+        com.securitymodel.domain.dataset.Dataset dataset = new com.securitymodel.domain.dataset.Dataset();
+        dataset.setEnabled(true);
+        when(datasetMapper.selectById(11L)).thenReturn(dataset);
+        com.securitymodel.domain.algorithm.Algorithm algorithm = new com.securitymodel.domain.algorithm.Algorithm();
+        algorithm.setEnabled(true);
+        when(algorithmMapper.selectById(22L)).thenReturn(algorithm);
+        com.securitymodel.domain.user.SysUser owner = new com.securitymodel.domain.user.SysUser();
+        owner.setEnabled(true);
+        when(userMapper.selectById(7L)).thenReturn(owner);
+    }
 
     @Test
     void onlyTheConditionalPromotionWinnerDispatches() {
@@ -65,6 +86,33 @@ class TaskDispatchCoordinatorTest {
         coordinator.dispatchAfterCommit(request);
 
         verify(executor).runPreDefense(request);
+        verify(taskMapper, never()).failBeforeExecution(any(), any(), any(), any(), any());
+        verify(intentService, never()).abandon(any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void replayAcceptedWorkIsNotFailedWhenBookkeepingFails() {
+        TaskDispatchIntent intent = intent();
+        DefenseTaskRequest request = request();
+        when(intentService.readRequest(intent)).thenReturn(request);
+        ObjectNode runtime = objectMapper.createObjectNode();
+        runtime.set("datasetFingerprint", objectMapper.createObjectNode().put("available", true));
+        runtime.set("algorithmFingerprint", objectMapper.createObjectNode().put("available", true));
+        when(fingerprintService.buildRuntimeSnapshot(any())).thenReturn(runtime);
+        when(fingerprintService.sha256(any())).thenReturn(intent.getRuntimeHash());
+        when(intentService.markSubmitting(eq(1L), eq("run-1"), eq(1), any())).thenReturn(true);
+        GpuLease lease = new GpuLease();
+        lease.setSlotId("default-gpu-0");
+        lease.setLeaseToken("new-token");
+        lease.setFencingToken(9L);
+        when(gpuLeaseService.acquire(eq(1L), eq("run-1"), eq(1))).thenReturn(lease);
+        org.mockito.Mockito.doThrow(new IllegalStateException("db down"))
+                .when(intentService).markSubmitted(eq(1L), eq("run-1"), eq(1), any());
+
+        assertTrue(coordinator.replayPending(intent, task()));
+
+        verify(executor).runPreDefense(request);
+        verify(gpuLeaseService, times(1)).releaseByRun(1L, "run-1");
         verify(taskMapper, never()).failBeforeExecution(any(), any(), any(), any(), any());
         verify(intentService, never()).abandon(any(), any(), any(), any(), any());
     }
@@ -152,7 +200,10 @@ class TaskDispatchCoordinatorTest {
     private DefenseTaskRequest request() {
         return DefenseTaskRequest.builder()
                 .taskId(1L).runId("run-1").attempt(1).taskName("LDD")
-                .createdBy("tester").build();
+                .createdBy("tester")
+                .dataset(DefenseResourceRef.builder().id(11L).path("D:/data/cifar10").build())
+                .algorithm(DefenseResourceRef.builder().id(22L).path("D:/code/ldd").build())
+                .build();
     }
 
     private TaskDispatchIntent intent() {
@@ -171,6 +222,7 @@ class TaskDispatchCoordinatorTest {
         task.setStatus("running");
         task.setCurrentRunId("run-1");
         task.setCurrentAttempt(1);
+        task.setOwnerUserId(7L);
         return task;
     }
 }

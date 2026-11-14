@@ -75,6 +75,10 @@ public class RequestIdempotencyService {
                         "幂等响应记录无法读取");
             }
         }
+        if (RequestIdempotencyRecord.FAILED.equals(record.getStatus())) {
+            throw new IdempotencyConflictException("REQUEST_REQUIRES_RECONCILIATION",
+                    "该幂等键的记录在提交前中断，需人工核对业务事实后重试");
+        }
         if (RequestIdempotencyRecord.PROCESSING.equals(record.getStatus()) && claimed) {
             return complete(record, resourceId, action);
         }
@@ -88,6 +92,7 @@ public class RequestIdempotencyService {
 
     private IdempotencyResult complete(RequestIdempotencyRecord record, Long resourceId,
                                        Supplier<IdempotencyResult> action) {
+        registerRollbackCleanup(record.getRecordId());
         try {
             IdempotencyResult result = action.get();
             String body = objectMapper.writeValueAsString(result.body());
@@ -101,6 +106,31 @@ public class RequestIdempotencyService {
             store.delete(record.getRecordId());
             throw new TaskCommandException("IDEMPOTENCY_RESPONSE_WRITE_FAILED: 幂等响应无法保存");
         }
+    }
+
+    /**
+     * markSucceeded participates in the business transaction. If that transaction fails at
+     * commit (after the method body returned), the claim row would otherwise stay "processing"
+     * for 24h; delete it in a new transaction on rollback.
+     */
+    private void registerRollbackCleanup(Long recordId) {
+        if (!org.springframework.transaction.support.TransactionSynchronizationManager
+                .isSynchronizationActive()) {
+            return;
+        }
+        org.springframework.transaction.support.TransactionSynchronizationManager
+                .registerSynchronization(new org.springframework.transaction.support.TransactionSynchronization() {
+                    @Override
+                    public void afterCompletion(int status) {
+                        if (status == org.springframework.transaction.support.TransactionSynchronization.STATUS_ROLLED_BACK) {
+                            try {
+                                store.delete(recordId);
+                            } catch (RuntimeException ignored) {
+                                // The stale-row reconciler remains the last resort.
+                            }
+                        }
+                    }
+                });
     }
 
     private String writeBody(Object request) {

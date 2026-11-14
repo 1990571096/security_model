@@ -40,7 +40,7 @@ public class GpuLeaseHeartbeat {
     @Scheduled(fixedDelayString = "${security-model.executor.gpu.heartbeat-interval-ms:60000}")
     public void renewActiveLeases() {
         try {
-            for (GpuLease lease : leaseService.findOwnedActive()) {
+            for (GpuLease lease : leaseService.findLocalLeases()) {
                 if (!leaseService.renew(lease)) {
                     log.error("GPU 租约已失效，取消本地执行: slot={}, taskId={}, runId={}",
                             lease.getSlotId(), lease.getTaskId(), lease.getRunId());
@@ -48,14 +48,25 @@ public class GpuLeaseHeartbeat {
                 }
             }
         } catch (Exception exception) {
-            // A missing table or a transient database error must not kill the scheduler.
+            // A missing table or a transient database error must not kill the scheduler, but it
+            // must also not leave a process running on a lease we can no longer prove.
             log.warn("GPU 租约续期扫描失败: {}", exception.getMessage());
+            for (GpuLease lease : leaseService.findLocalLeases()) {
+                failLeaseLost(lease);
+            }
         }
     }
 
     private void failLeaseLost(GpuLease lease) {
         if (lease.getTaskId() == null || lease.getAttempt() == null || lease.getRunId() == null) {
             return;
+        }
+        try {
+            // Cancel first: process termination must not depend on a database write succeeding.
+            executor.cancelPreDefense(lease.getTaskId(), lease.getRunId());
+        } catch (Exception exception) {
+            log.warn("GPU 租约丢失后取消执行失败: taskId={}, reason={}",
+                    lease.getTaskId(), exception.getMessage());
         }
         try {
             ObjectNode result = objectMapper.createObjectNode();
@@ -71,7 +82,6 @@ public class GpuLeaseHeartbeat {
             result.set("artifacts", objectMapper.createObjectNode());
             taskMapper.failBeforeExecution(lease.getTaskId(), lease.getRunId(), lease.getAttempt(),
                     result.toString(), LocalDateTime.now());
-            executor.cancelPreDefense(lease.getTaskId(), lease.getRunId());
         } catch (Exception exception) {
             log.warn("GPU 租约丢失后的任务收敛失败: taskId={}, reason={}",
                     lease.getTaskId(), exception.getMessage());

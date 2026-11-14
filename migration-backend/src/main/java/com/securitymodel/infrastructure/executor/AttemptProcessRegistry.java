@@ -40,6 +40,7 @@ public class AttemptProcessRegistry {
 
     private final Path workspace;
     private final ObjectMapper objectMapper;
+    private final java.util.Set<String> locallyAccepted = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     public AttemptProcessRegistry(
             ObjectMapper objectMapper,
@@ -48,6 +49,31 @@ public class AttemptProcessRegistry {
         String configured = workspace == null ? "" : workspace.trim();
         // A blank workspace must never fall back to the current directory (the repository root).
         this.workspace = configured.isEmpty() ? null : Paths.get(configured).toAbsolutePath().normalize();
+    }
+
+    /**
+     * Marks an attempt as accepted by this JVM before the (possibly async) executor starts.
+     * Recovery scanning must not reap an attempt that this JVM still owns.
+     */
+    public void markAccepted(Long taskId, String runId, Integer attempt) {
+        if (taskId != null && runId != null && attempt != null) {
+            locallyAccepted.add(key(taskId, runId, attempt));
+        }
+    }
+
+    public void clearAccepted(Long taskId, String runId, Integer attempt) {
+        if (taskId != null && runId != null && attempt != null) {
+            locallyAccepted.remove(key(taskId, runId, attempt));
+        }
+    }
+
+    public boolean isLocallyAccepted(Long taskId, String runId, Integer attempt) {
+        return taskId != null && runId != null && attempt != null
+                && locallyAccepted.contains(key(taskId, runId, attempt));
+    }
+
+    private String key(Long taskId, String runId, Integer attempt) {
+        return taskId + "|" + runId + "|" + attempt;
     }
 
     /** Write the pre-start marker; throws so the caller does not start a process it cannot trace. */
@@ -79,6 +105,18 @@ public class AttemptProcessRegistry {
         node.put("command", process.info().command().orElse(""));
         node.put("started_at", process.info().startInstant().map(Instant::toString).orElse(null));
         node.put("recorded_at", Instant.now().toString());
+        writeAtomically(target, objectMapper.writeValueAsString(node));
+    }
+
+    /** Records the training child pids; callers must write an empty array when no child exists. */
+    public void recordChildren(Path taskDir, List<Long> pids) throws IOException {
+        if (taskDir == null || pids == null) {
+            throw new IOException("缺少子进程列表，无法记录执行进程树");
+        }
+        Path target = requireInsideWorkspace(taskDir.resolve(CHILDREN));
+        ObjectNode node = objectMapper.createObjectNode();
+        node.set("pids", objectMapper.valueToTree(pids));
+        node.put("updated_at", Instant.now().toString());
         writeAtomically(target, objectMapper.writeValueAsString(node));
     }
 
@@ -114,6 +152,7 @@ public class AttemptProcessRegistry {
         Optional<ProcessHandle> handle = ProcessHandle.of(pid);
         List<ProcessHandle> recordedChildren = readChildren(taskId, attempt);
         if (recordedChildren == null) {
+            // Missing/corrupt children record cannot prove that no training child survived.
             return ReapOutcome.UNKNOWN;
         }
         if (handle.isEmpty() || !handle.get().isAlive()) {
@@ -130,27 +169,44 @@ public class AttemptProcessRegistry {
                     taskId, attempt, pid);
             return anyAlive(recordedChildren) ? ReapOutcome.UNKNOWN : ReapOutcome.EXITED;
         }
+        // Only kill processes whose tree relationship is provable from the verified root. A
+        // recorded pid without a start-time identity is never killed; it keeps the slot
+        // quarantined if still alive.
         List<ProcessHandle> tree = new ArrayList<>(handle.get().descendants().toList());
-        tree.addAll(recordedChildren);
+        List<ProcessHandle> unverified = new ArrayList<>();
+        long rootPid = handle.get().pid();
+        for (ProcessHandle child : recordedChildren) {
+            boolean descendant = child.parent().map(parent -> parent.pid() == rootPid).orElse(false);
+            if (descendant) {
+                tree.add(child);
+            } else {
+                unverified.add(child);
+            }
+        }
         tree.forEach(ProcessHandle::destroyForcibly);
         handle.get().destroyForcibly();
-        if (waitForAll(tree, handle.get(), 3000)) {
-            log.warn("Killed orphaned executor process tree: taskId={}, attempt={}, pid={}, known={}",
-                    taskId, attempt, pid, tree.size());
-            return ReapOutcome.REAPED;
+        if (!waitForAll(tree, handle.get(), 3000)) {
+            log.error("Orphaned executor process tree still alive after kill: taskId={}, attempt={}, pid={}",
+                    taskId, attempt, pid);
+            return ReapOutcome.KILL_FAILED;
         }
-        log.error("Orphaned executor process tree still alive after kill: taskId={}, attempt={}, pid={}",
-                taskId, attempt, pid);
-        return ReapOutcome.KILL_FAILED;
+        if (anyAlive(unverified)) {
+            log.error("Unverified recorded child still alive; slot stays quarantined: taskId={}, attempt={}, pids={}",
+                    taskId, attempt, unverified.stream().map(ProcessHandle::pid).toList());
+            return ReapOutcome.UNKNOWN;
+        }
+        log.warn("Killed orphaned executor process tree: taskId={}, attempt={}, pid={}, known={}",
+                taskId, attempt, pid, tree.size());
+        return ReapOutcome.REAPED;
     }
 
     private List<ProcessHandle> readChildren(Long taskId, Integer attempt) {
         Path file = locate(taskId, attempt, CHILDREN);
         if (file == null) {
-            return List.of();
+            return null;
         }
         JsonNode node = readJson(file);
-        if (node == null) {
+        if (node == null || !node.path("pids").isArray()) {
             return null;
         }
         List<ProcessHandle> handles = new ArrayList<>();

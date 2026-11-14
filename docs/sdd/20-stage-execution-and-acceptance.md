@@ -136,12 +136,12 @@ R2 送审必须包含无需 GPU 的真实崩溃演练：独立 Java/启动器启
 | 需求 ID | 实现位置 | 测试/证据 | 结果 |
 | --- | --- | --- | --- |
 | R2-01 | `GpuLeaseService.acquire`、`PreDefenseTaskCommandService.launchTask` | `GpuLeaseMySqlIT`：并发 1/2 成功；`transactionRollbackLeavesNoGhostLease` 回滚无租约且 fence 未消耗 | 通过（MySQL IT） |
-| R2-02 | `AttemptProcessRegistry.reapIfOrphaned` | `AttemptProcessRegistryTest` 11 项：无记录/旧协议/`starting` 无 pid/损坏/启动时间缺失 → `UNKNOWN`，不杀不放行 | 通过（单测） |
-| R2-03 | 同上（`startInstant` 正向匹配） | pid 复用不杀且 `EXITED`；有存活已记录子进程时不判退出 | 通过（单测，使用真实短进程 pid） |
+| R2-02 | `AttemptProcessRegistry.reapIfOrphaned` | `AttemptProcessRegistryTest` 13 项：无记录/旧协议/`starting` 无 pid/损坏/启动时间缺失/子进程记录缺失或损坏 → `UNKNOWN`，不杀不放行 | 通过（单测） |
+| R2-03 | 同上（`startInstant` 正向匹配） | pid 复用不杀且 `EXITED`；有存活已记录子进程时不判退出；无法证明父子关系的记录子 PID 不杀 | 通过（单测，使用真实短进程 pid） |
 | R2-04 | `ExecutorProcessGuard`、`AttemptProcessRegistry` | 父死子活 → `UNKNOWN`；`PythonLddTaskExecutorProcessTest` 超时/取消后父子均死 | 通过（真实短进程） |
-| R2-05 | `sys_gpu_lease.blocked_at`、`GpuLeaseMapper` | `GpuLeaseMySqlIT`：TTL 过期仍 `GPU_LEASE_BLOCKED`；`quarantineSurvivesAServiceRecreation` 重建服务仍隔离 | 通过（MySQL IT） |
+| R2-05 | `sys_gpu_lease.blocked_at`、`GpuLeaseMapper` | `GpuLeaseMySqlIT`：TTL 过期后 acquire 抛 `GPU_LEASE_EXPIRED` 并写 block，`releaseByRun` 确认退出后才可再次 acquire；`quarantineSurvivesAServiceRecreation` 重建服务仍隔离 | 通过（MySQL IT） |
 | R2-06 | `GpuLeaseBlockedProbe`、`releaseByRun` | `GpuLeaseBlockedProbeTest` 3 项：仅 `REAPED` 解除；`UNKNOWN/KILL_FAILED` 保持；`GpuLeaseMySqlIT` 旧 token 不能释放新租约 | 通过（单测 + MySQL IT） |
-| R2-07 | `GpuLeaseHeartbeat`、执行器 `finally`、`ExecutorProcessGuard` | `GpuLeaseHeartbeatTest` 2 项（续租失败失败任务并取消）；`PythonLddTaskExecutorProcessTest` 2 项（超时/取消整树回收后释放）；`PythonLddTaskExecutorFailureCodeTest` 7 项 | 通过（单测 + 短进程；数据库中断仅单测 mock） |
+| R2-07 | `GpuLeaseHeartbeat`、执行器 `finally`、`ExecutorProcessGuard` | `GpuLeaseHeartbeatTest` 3 项（续租失败、数据库异常均先取消进程）；`PythonLddTaskExecutorProcessTest` 2 项（超时/取消整树回收后释放）；`PythonLddTaskExecutorFailureCodeTest` 7 项 | 通过（单测 + 短进程；数据库中断仅单测 mock） |
 | R2-08 | `ExportRecoveryRunner`、`CleanSubsetExportExecutor`、`ExecutorProcessGuard` | `ExportRecoveryRunnerTest` 2 项；`MySqlTaskPersistenceIT` 新增真实库 pending/running 收敛；`CleanSubsetExportExecutorTest` 半成品 ZIP + 超时 | 通过（单测 + MySQL IT + 短进程；HTTP 下载契约沿用既有 E2E） |
 | R2-09 | `TaskCenterView.vue` 心跳阈值与“较久未更新”提示；`TaskProgressQueryService` 只返回最近心跳 | `TaskProgressQueryServiceTest` 5 项；前端 `npm run build`；页面逻辑不因陈旧心跳改任务状态 | 通过（服务测试 + 页面构建；未做浏览器手工核验） |
 | R2-10 | `PythonLddTaskExecutor.createContext`、`ExecutorArtifactPolicy` | `ExecutorArtifactPolicyTest` 3 项；`PythonLddTaskExecutorFailureCodeTest` 覆盖 attempt 递增与旧产物不覆盖 | 通过（临时目录） |
@@ -154,6 +154,19 @@ R2 送审必须包含无需 GPU 的真实崩溃演练：独立 Java/启动器启
 - 崩溃演练 `OrphanProcessCrashDrillTest`：独立 JVM `CrashLauncherMain` 启动短 Python 父子并写 `process.json`，强杀启动器后由 `AttemptProcessRegistry` 判定 `REAPED`，断言父子均死。**未与真实 MySQL 租约的“隔离→解除”串联**；槽位前后状态由 `GpuLeaseMySqlIT` 单独覆盖，两者合起来构成 R2 送审证据。
 - 日志截断发生在进程结束后，只约束归档文件大小，不能限制运行期磁盘增长。
 - 本机实测命令（R2 收口时）：`mvn -B -f migration-backend/pom.xml test` → 104 项（0 跳过）；`verify -Pmysql-it` → 104 + 33 全绿；`migration-frontend && npm run build` 通过。未执行真实 LDD、未对生产库 `eladmin` 做任何写操作。R3 后为 120 + 40，见 §6.5。
+
+## 5.5 R2 复核修复映射（2026-11-14，待复审）
+
+| 评审问题 | 需求 ID | 代码位置 | 确定性测试 | 结果 |
+| --- | --- | --- | --- | --- |
+| 重放执行器接受后记账失败仍释放 GPU | R3-04/R3-05 | `TaskDispatchCoordinator.replayPending` | `TaskDispatchCoordinatorTest.replayAcceptedWorkIsNotFailedWhenBookkeepingFails`：`markSubmitted` 抛异常仍返回 true，不失败、不额外释放 | 通过（单测） |
+| 恢复扫描误杀新 attempt/误释放 | R3-04/R3-09 | `DispatchRecoveryCoordinator.scanPendingIntents/scanSubmittingIntents` | `oldSubmittingIntentDoesNotReapOrFailTheNewAttempt`、`locallyAcceptedAttemptIsNotReapedOrFailedByTheScanner`、`pendingExpiryLoserDoesNotReleaseTheSlot` | 通过（单测） |
+| TTL 过期被当作设备空闲 | R2-05/R2-07 | `GpuLeaseMapper.acquire/renew`、`GpuLeaseService.acquire`、`GpuLeaseHeartbeat` | `GpuLeaseMySqlIT.expiredLeaseIsQuarantinedUntilProcessExitIsConfirmed`、`quarantinedSlotCannotBeReclaimedAfterExpiry`；`GpuLeaseHeartbeatTest.databaseFailureStillCancelsLocalProcessBeforeFailingTask` | 通过（MySQL IT + 单测） |
+| 子进程记录缺失/身份不足 | R2-02/R2-03/R2-04 | `AttemptProcessRegistry.reapIfOrphaned/readChildren`、`algorithm_entry.write_children` | `missingChildrenRecordIsUnknownEvenWhenRootIsExited`、`corruptedChildrenRecordDoesNotKillUnverifiedPid`、`exitedParentWithLiveRecordedChildIsUnknown`、`OrphanProcessCrashDrillTest` | 通过（单测 + 真实短进程） |
+| 幂等提交失败/崩溃 | R3-08 | `RequestIdempotencyService`、`IdempotencyRecordStore`、`IdempotencyRecoveryJob` | `RequestIdempotencyServiceTest`、`IdempotencyRecoveryJobTest`、`MySqlTaskPersistenceIT.idempotencyKeyIsScopedByOwnerAndExpiry` | 通过（单测 + MySQL IT） |
+| 重放前置校验 | R3-06 | `TaskDispatchIntentService.readRequest`、`TaskDispatchCoordinator.validateRequestIdentity/validateResources`、`ExecutionFingerprintService.fingerprint` | `TaskDispatchIntentServiceTest.replayRejectsUnsupportedSchemaAndTamperedRequestHash`、`TaskDispatchCoordinatorTest.changedRuntimeFingerprintIsNotReplayed/disabledOwnerIsNotReplayed` | 通过（单测） |
+
+本机实跑：137 项单元测试（0 失败/0 跳过）、41 项 MySQL IT 全绿、1 项 Redis IT 因未设置 `REDIS_IT=true` 跳过；Python 适配器 11/11；前端生产构建通过（大 chunk 警告）。未跑真实 LDD，未写业务库。**本表只证明已补故障窗口，不等于 R2/R3 整体外部验收通过。**
 
 ## 6. R3：持久调度、命令幂等与有限扫描
 

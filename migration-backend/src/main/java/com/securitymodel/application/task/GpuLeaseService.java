@@ -34,6 +34,7 @@ public class GpuLeaseService {
     private final long ttlSeconds;
     /** Tokens this JVM actually owns; the heartbeat must never keep a dead worker's lease alive. */
     private final Set<String> localTokens = ConcurrentHashMap.newKeySet();
+    private final java.util.Map<String, GpuLease> localLeases = new ConcurrentHashMap<>();
 
     public GpuLeaseService(
             GpuLeaseMapper mapper,
@@ -63,6 +64,14 @@ public class GpuLeaseService {
                 throw new TaskCommandException("GPU_LEASE_BLOCKED: GPU 槽位因遗留进程未确认退出而被隔离("
                         + current.getBlockedReason() + ")，需确认进程退出后解除");
             }
+            if (current != null && current.getLeaseToken() != null
+                    && current.getExpiresAt() != null && current.getExpiresAt().isBefore(now)) {
+                // TTL expiry proves only that heartbeats stopped, not that the GPU is idle.
+                // Quarantine the slot until a process probe confirms the old tree is gone.
+                mapper.block(slotId, current.getTaskId(), current.getRunId(),
+                        "LEASE_EXPIRED", now);
+                throw new TaskCommandException("GPU_LEASE_EXPIRED: GPU 租约已过期但进程未确认退出，槽位已隔离");
+            }
             throw new TaskCommandException("GPU_BUSY: 当前 GPU 正被其他任务占用，请稍后重试");
         }
         GpuLease lease = mapper.findBySlot(slotId);
@@ -70,6 +79,7 @@ public class GpuLeaseService {
             throw new TaskCommandException("GPU_LEASE_UNAVAILABLE: GPU 租约申请结果无法确认");
         }
         localTokens.add(token);
+        localLeases.put(token, lease);
         return lease;
     }
 
@@ -87,6 +97,7 @@ public class GpuLeaseService {
         }
         mapper.release(slotId, lease.getLeaseToken(), LocalDateTime.now());
         localTokens.remove(lease.getLeaseToken());
+        localLeases.remove(lease.getLeaseToken());
     }
 
     /** Best-effort release used from executor {@code finally}; never throws into the task path. */
@@ -100,6 +111,7 @@ public class GpuLeaseService {
             log.warn("GPU 租约释放失败，将等待过期回收: slot={}, reason={}", slotId, exception.getMessage());
         } finally {
             localTokens.remove(leaseToken);
+            localLeases.remove(leaseToken);
         }
     }
 
@@ -109,6 +121,9 @@ public class GpuLeaseService {
             return;
         }
         mapper.releaseByRun(slotId, taskId, runId, LocalDateTime.now());
+        localLeases.entrySet().removeIf(entry -> taskId.equals(entry.getValue().getTaskId())
+                && runId.equals(entry.getValue().getRunId()));
+        localTokens.removeIf(token -> !localLeases.containsKey(token));
     }
 
     /** Quarantine the slot until an orphaned executor is proven gone; TTL alone is not proof. */
@@ -137,6 +152,14 @@ public class GpuLeaseService {
         return mapper.findActive(LocalDateTime.now()).stream()
                 .filter(lease -> lease.getLeaseToken() != null && localTokens.contains(lease.getLeaseToken()))
                 .collect(Collectors.toList());
+    }
+
+    /**
+     * Local snapshot for the heartbeat. It deliberately does not query MySQL, so a database
+     * outage still lets the heartbeat cancel a process whose lease can no longer be proven.
+     */
+    public List<GpuLease> findLocalLeases() {
+        return List.copyOf(localLeases.values());
     }
 
     public String getSlotId() {

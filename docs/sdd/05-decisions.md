@@ -236,7 +236,7 @@ Agent 采用外部大模型 API，本机不部署大模型。生成模型和 emb
 
 ## ADR-014：R2 第一切片——MySQL 单槽 GPU 租约、fencing 与导出重启收敛
 
-日期：2026-11-13；状态：**已实施并通过隔离库测试；未修改/未重跑真实 LDD，未在生产库执行建表**。R2 收口后的进程/租约语义以 ADR-017 为准。
+日期：2026-11-13；状态：**已实施并通过隔离库测试；未修改/未重跑真实 LDD，未在生产库执行建表**。R2 复核修复后的进程/租约语义以 ADR-017 的 2026-11-14 修订为准。
 
 背景：适配器 `VAB_ROOT/.security-model-vab.lock` 是 `O_CREAT|O_EXCL` 文件锁，`SIGKILL`／断电后残留会让所有后续 LDD 永久失败；`TaskExecutionQuotaPolicy` 的 `synchronized` 只覆盖方法体，锁释放后才 `claimForExecution()`，并发下可越过配额。单机单 GPU 场景不需要 MQ 或分布式调度，需要的是数据库层的唯一活动租约。
 
@@ -311,16 +311,16 @@ Agent 采用外部大模型 API，本机不部署大模型。生成模型和 emb
 
 ## ADR-017：恢复前必须确认执行子进程已退出
 
-日期：2026-11-13；状态：**已实施并通过单元测试；未跑真实 LDD**。
+日期：2026-11-13，修订 2026-11-14；状态：**已实施并通过单元测试与真实短进程演练；未跑真实 LDD；2026-11-14 复核修复待复审**。
 
 背景：R2 的启动恢复会把所有 `running` 任务置失败并释放 GPU 租约。但 Windows 上 JVM 被硬杀不会自动终止它的 Python 子进程：遗留进程可能仍在 CUDA 中训练，而租约已被释放，下一个任务会认为自己独占 GPU 并进入同一张卡，导致显存竞争或 OOM。
 
 决策：
 
 1. **先写启动标记，再启动进程，写入原子化**：`PythonLddTaskExecutor` 在 `ProcessBuilder.start()` **之前**把 `process.json` 写成 `{"schema_version":2,"state":"starting"}`；写不成功抛 `PROCESS_RECORD_FAILED` 并拒绝启动。启动成功后改写为 `{"schema_version":2,"state":"running","pid","command","started_at"}`。两次写入都先写临时文件再 `ATOMIC_MOVE`（不支持时降级普通 move），避免半截 JSON。**“没有记录”不再等价于“未启动”**：旧版本、记录被删、启动后写记录失败都可能留下无记录但已运行的进程，因此无记录、`schema_version` 不是 2、JSON 损坏、`starting` 无 pid 一律 `UNKNOWN`。只有未来版本化协议能持久证明“未提交”时才允许 `NOT_STARTED`；R2 不再产生该枚举。
-2. **适配器记录训练子进程**：`algorithm_entry.run` 在 `Popen` 之后写 `python-children.json`（`pids` + `updated_at`），训练结束在 `finally` 删除。恢复与执行器回收同时核对父进程、`descendants()` 和已记录子进程，避免只等父进程退出就认为整棵树退出。
-3. **恢复探测结果必须五选一**：`NOT_STARTED`（仅未来可证明未提交时；R2 不产生）、`EXITED`（身份正向匹配且进程与已记录子进程均已退出）、`REAPED`（存活且身份匹配，已杀掉整棵树并确认退出）、`KILL_FAILED`（杀掉后仍有存活）、`UNKNOWN`（无记录/旧协议/损坏/身份或子进程无法确认）。
-4. **身份必须正向匹配**：只有 `startInstant` 与记录相等才允许杀进程；`startInstant` 缺失、不可解析、记录缺失或运行时读不到 → `UNKNOWN`，不杀、不释放。pid 被复用（启动时间不等）且无存活子进程 → `EXITED`；父进程已死但已记录子进程仍存活 → `UNKNOWN` 并保持隔离。
+2. **适配器记录训练子进程**：`algorithm_entry.run` 在 `Popen` 之后写 `python-children.json`（`pids` + `updated_at`），临时文件 + `os.replace` 原子写；写失败立即 `kill/wait` 训练进程并抛 `IntegrationError`，不再吞掉记录失败。训练结束在 `finally` 删除。恢复与执行器回收同时核对父进程、`descendants()` 和已记录子进程；父进程退出但记录子进程仍存活时不判整树退出。
+3. **恢复探测结果必须五选一**：`NOT_STARTED`（仅未来可证明未提交时；R2 不产生）、`EXITED`（身份正向匹配且进程与已记录子进程均已退出）、`REAPED`（存活且身份匹配，已杀掉整棵树并确认退出）、`KILL_FAILED`（杀掉后仍有存活）、`UNKNOWN`（无记录/旧协议/损坏/身份或子进程无法确认）。`python-children.json` 缺失、损坏或无 `pids` 数组时按 `UNKNOWN`，不得当作空集合。
+4. **身份必须正向匹配**：只有 `startInstant` 与记录相等才允许杀进程；`startInstant` 缺失、不可解析、记录缺失或运行时读不到 → `UNKNOWN`，不杀、不释放。pid 被复用（启动时间不等）且无存活子进程 → `EXITED`；父进程已死但已记录子进程仍存活 → `UNKNOWN` 并保持隔离。记录中的子 PID 只有能证明为已验证根进程的直接子进程时才随树终止；无法证明身份的存活子进程不杀，返回 `UNKNOWN`。
 5. **租约释放只认“已确认退出”**：`NOT_STARTED/EXITED/REAPED` 才 `releaseByRun`；`KILL_FAILED/UNKNOWN` 调 `markBlocked` 把槽位置为隔离（`blocked_at` + `blocked_reason`），**租约 TTL 过期也不能被重新领取**——TTL 只证明心跳失联，不证明 GPU 空闲。执行器 `finally` 不再无条件释放：`ExecutorProcessGuard.ensureGone` 确认整树退出才释放，否则 `markBlocked("EXECUTOR_TREE_ALIVE")`；中断、超时、导出超时同样先杀整树再收敛。
 6. **隔离槽位由探测任务解除，并对管理员可见**：`GpuLeaseBlockedProbe` 每 60 秒重探一次，只有得到 `NOT_STARTED/EXITED/REAPED` 才 `releaseByRun` 并清空 `blocked_at`；仍为 `KILL_FAILED/UNKNOWN` 时继续隔离并告警。`/api/task-progress/executor-status` 返回 `gpuSlot`（`blocked/leased/idle/unknown`、原因、隔离时间、最近探测时间、恢复指引），不包含 taskId、runId 或本机路径；前端任务中心展示该状态。人工解除必须显式执行（`releaseByRun` 或带条件的 SQL），不能靠时间流逝。
 7. **启动恢复完成前不接受新启动**：`SchedulingReadinessGate` 在 `TaskRecoveryRunner` 恢复循环结束后置 ready；`PreDefenseTaskCommandService.launchTask` 未就绪时返回 `SCHEDULING_NOT_READY`，只读接口不拦截。
@@ -332,11 +332,11 @@ Agent 采用外部大模型 API，本机不部署大模型。生成模型和 emb
 - 隔离不会自动过期：`KILL_FAILED/UNKNOWN` 的槽位在人工确认前一直拒绝领取，新任务得到 `GPU_LEASE_BLOCKED`（与普通 `GPU_BUSY` 区分）。
 - `process.json` / `python-children.json` 只用于恢复判定，不对外提供下载，不写入 `result.json`。
 - 仍需承认：父进程退出、子进程未记录但实际存活的情形无法枚举，只能靠适配器持续维护 `python-children.json` 与执行器 `descendants()` 降低概率；两者都无法给出证据时保持 `UNKNOWN` 隔离，不自动放行。
-- 测试证据（2026-11-13）：`AttemptProcessRegistryTest` 11 项（无记录/旧协议/`starting` 无 pid/损坏/启动时间缺失/pid 复用/父死子活/身份匹配才杀/空 workspace 不回退/workspace 外拒绝准备）、`GpuLeaseBlockedProbeTest` 3 项、`PythonLddTaskExecutorProcessTest` 2 项（真实短 Python 父子进程的超时与取消）、`CleanSubsetExportExecutorTest` 1 项（半成品 ZIP + 超时）、`OrphanProcessCrashDrillTest` 1 项（独立 JVM 启动器被强杀后恢复整树）。**未跑真实 LDD**。
+- 测试证据（2026-11-14）：`AttemptProcessRegistryTest` 13 项（无记录/旧协议/`starting` 无 pid/损坏/启动时间缺失/子进程记录缺失或损坏/pid 复用/父死子活/身份匹配才杀/无法证明子 PID 不杀/空 workspace 不回退/workspace 外拒绝准备）、`GpuLeaseBlockedProbeTest` 3 项、`PythonLddTaskExecutorProcessTest` 2 项（真实短 Python 父子进程的超时与取消）、`CleanSubsetExportExecutorTest` 1 项（半成品 ZIP + 超时）、`OrphanProcessCrashDrillTest` 1 项（独立 JVM 启动器被强杀后恢复整树，启动器已记录真实子 PID）。**未跑真实 LDD**。
 
-## ADR-018：调度意图、重启语义与请求幂等（R3，已实施，待外部评审）
+## ADR-018：调度意图、重启语义与请求幂等（R3，已实施，2026-11-14 修复待复审）
 
-日期：2026-11-13；状态：**R3-A/R3-B 代码与自动化测试已落地，外部评审与生产迁移仍未完成**。生产库未执行迁移前，不得写成“生产级持久调度已上线”。
+日期：2026-11-13，修订 2026-11-14；状态：**R3-A/R3-B 代码与自动化测试已落地，P1/P2 复核修复已完成，外部评审与生产迁移仍未完成**。生产库未执行迁移前，不得写成“生产级持久调度已上线”。
 
 范围：本 ADR 对应 [20 号任务书](20-stage-execution-and-acceptance.md) 的 R3-A 与 R3-B。两批代码均已写入，验收证据见第 6.4 节矩阵与 `09` 状态文档；扫描只补偿确认未提交的意图，不自动重跑算法失败或派发不确定的任务。
 
@@ -345,15 +345,15 @@ Agent 采用外部大模型 API，本机不部署大模型。生成模型和 emb
 决策（已实施）：
 
 1. **调度意图与领取同事务**：新增 `sys_task_dispatch_intent`（`task_id`、`run_id`、`attempt`、`status`（`pending`/`submitting`/`submitted`/`abandoned`）、`schema_version`、`request_json`、`request_hash`、`runtime_hash`、`error_code`、`created_at`、`updated_at`、`submitted_at`），唯一键 `(task_id, run_id, attempt)`，扫描索引 `(status, updated_at)`。`request_json` 由 `DefenseTaskRequest` 序列化，`gpuLeaseToken` 已 `@JsonIgnore` 排除；不保存凭据。重放前校验任务 `run_id/attempt`、归属账号仍启用、资源存在、运行时指纹未变，并重新获取租约。
-2. **派发用条件抢占，不靠唯一键**：`UPDATE ... SET status='submitting' WHERE status='pending' AND task_id=? AND run_id=? AND attempt=?`，只有影响 1 行的调用者提交执行器；执行器接受后才 `markSubmitted`。若接受后写 `submitted` 失败，只记录告警，不把已接受的任务改成失败。
-3. **单一恢复协调器**：`TaskRecoveryRunner` 只委托 `DispatchRecoveryCoordinator.recoverAtStartup`。顺序为：读取 `running` 任务 → 按意图分类 → `pending` 重放 / `submitting|submitted` 收敛为 `DISPATCH_UNCERTAIN` / 无意图旧任务按 R2 进程证据收敛 → 最后 `markReady`。禁止第二个启动监听器先把任务置失败。
-4. **`pending` 是“未提交”的持久证据**：`pending` 不因缺少 `process.json` 被误判为未知；重放前释放本 run 的旧租约、重新 acquire 取得新 token。`submitting/submitted` 不自动重放；进程确认退出才释放槽位，否则 `markBlocked("ORPHANED_PROCESS_*")`。
+2. **派发用条件抢占，不靠唯一键**：`UPDATE ... SET status='submitting' WHERE status='pending' AND task_id=? AND run_id=? AND attempt=?`，只有影响 1 行的调用者提交执行器；执行器接受后才 `markSubmitted`。唯一键只防止重复插入意图，不能证明只派发一次；多调用者读取同一行时，条件更新是唯一门槛。若执行器已接受而 `markSubmitted` 失败，只记录告警，不释放租约、不失败任务；若在标记 `submitting` 后、执行器接收前崩溃，则恢复只能保守收敛为 `DISPATCH_UNCERTAIN`，由用户重试，不能称可靠投递或保证执行。
+3. **单一恢复协调器**：`TaskRecoveryRunner` 只委托 `DispatchRecoveryCoordinator.recoverAtStartup`。顺序为：读取 `running` 任务 → 按意图分类 → `pending` 重放 / `submitting|submitted` 收敛为 `DISPATCH_UNCERTAIN` / 无意图旧任务按 R2 进程证据收敛 → 最后 `markReady`。禁止第二个启动监听器先把任务置失败。扫描和启动收敛都先核对意图与当前 `runId/attempt`；旧意图只 `abandon`，不得探测/终止新 attempt；本 JVM `AttemptProcessRegistry` 已接受的 attempt 跳过探测。
+4. **`pending` 是“未提交”的持久证据**：`pending` 不因缺少 `process.json` 被误判为未知；重放前校验 `schema_version`、`request_hash`、快照 task/run/attempt、非空且启用的 owner、demo 拒绝、资源启用与路径可用，然后释放本 run 的旧租约并重新 acquire 取得新 token。`submitting/submitted` 不自动重放；进程确认退出才释放槽位，否则 `markBlocked("ORPHANED_PROCESS_*")`。GPU TTL 过期只表示心跳失联，不表示空闲；过期旧租约先 `block("LEASE_EXPIRED")`，确认退出后才允许新任务领取。`GPU_BUSY/BLOCKED` 明确失败并 `abandoned`，不无限期 running。
 5. **R3-B 有界扫描**：`@Scheduled` 每 10 秒、初始延迟 30 秒、每批 20 条，只扫 `updated_at` 早于 30 秒的 `pending`；`pending` 创建超过 5 分钟仍无法提交则 `DISPATCH_EXPIRED` + `abandoned`；`submitting` 失联先查进程记录，不确定则隔离后再失败；`submitted` 不参与扫描，正常运行不被超时误杀。配置项为 `security-model.dispatch.*`。
-6. **R3-B 请求幂等**：`sys_request_idempotency` 唯一 `(owner_user_id, operation, idempotency_key)`，保存请求哈希、资源 ID、状态、稳定响应与 24 小时有效期。`create/start/retry` 接受可选 `Idempotency-Key`（1–128）；同键同体返回原响应，同键异体 409 `IDEMPOTENCY_KEY_REUSED`，进行中并发 409 `REQUEST_IN_PROGRESS`，不同用户同键互不影响。成功记录随业务事务提交；失败/回滚在自己的清理事务中删除占位记录，不永久占键。
+6. **R3-B 请求幂等**：`sys_request_idempotency` 唯一 `(owner_user_id, operation, idempotency_key)`，保存请求哈希、资源 ID、状态、稳定响应与 24 小时有效期。`create/start/retry` 接受可选 `Idempotency-Key`（1–128）；同键同体返回原响应，同键异体 409 `IDEMPOTENCY_KEY_REUSED`，进行中并发 409 `REQUEST_IN_PROGRESS`，不同用户同键互不影响。成功记录随业务事务提交；业务事务回滚时在 `afterCompletion` 用独立事务清理占位记录；超时的 `processing` 不自动删除，转 `failed` 并返回 `REQUEST_REQUIRES_RECONCILIATION`，由人工核对业务事实。
 
 边界：不承诺 exactly-once。`submitting` 崩溃恢复为 `DISPATCH_UNCERTAIN`，由用户手工重试。`request_json` 的路径复检只能证明文件仍存在且指纹未变，不能证明文件内容未被同尺寸替换；内容指纹复用现有 `fingerprint-content` 机制。生产库 `eladmin` 仍未执行本 ADR 的建表脚本。
 
-验收：单元测试覆盖条件抢占、执行器拒绝、接受后记账失败、GPU_BUSY 重放、pending 重放、submitting 隔离、5 分钟超时、幂等同体/异体/并发/失败释放；真实 MySQL IT 覆盖意图唯一键、条件抢占、回滚无残留、pending 扫描筛选、幂等键跨用户与过期。完整计数与剩余未跑项见 `09` 第 9 节。
+验收：单元测试覆盖条件抢占、执行器拒绝、接受后记账失败、GPU_BUSY 重放、pending 重放、submitting 隔离、5 分钟超时、旧意图/新 attempt、本地已接受跳过、幂等同体/异体/并发/失败释放/超时转人工核对；真实 MySQL IT 覆盖意图唯一键、条件抢占、回滚无残留、pending 扫描筛选、幂等键跨用户与过期、TTL 过期隔离。2026-11-14 实跑 137 单测 + 41 MySQL IT（1 Redis IT 因未设置 `REDIS_IT=true` 跳过）+ Python 11 项；完整计数与剩余未跑项见 `09` §5.6.1、§9。
 
 ## ADR-019：R5 可观测性、缓存代际与最小暴露
 

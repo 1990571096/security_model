@@ -731,14 +731,15 @@ def write_progress(path, payload):
 
 
 def write_children(children_path, pids):
-    """Record spawned training pids so a restart can reason about the whole tree."""
-    try:
-        Path(children_path).write_text(
-            json.dumps({"pids": [int(pid) for pid in pids], "updated_at": utc_now()}),
-            encoding="utf-8",
-        )
-    except OSError:
-        pass
+    """Record spawned training pids so a restart can reason about the whole tree.
+
+    The caller aborts the child if this record cannot be written; a missing record is
+    treated as an unknown process tree by the Java recovery path, never as an empty tree.
+    """
+    payload = {"pids": [int(pid) for pid in pids], "updated_at": utc_now()}
+    temporary = Path(str(children_path) + ".tmp")
+    temporary.write_text(json.dumps(payload), encoding="utf-8")
+    os.replace(str(temporary), str(children_path))
 
 
 def remove_children(children_path):
@@ -831,7 +832,15 @@ def run(args):
                         bufsize=1,
                     )
                     children_path = result_path.with_name("python-children.json")
-                    write_children(children_path, [process.pid])
+                    try:
+                        write_children(children_path, [process.pid])
+                    except OSError as record_error:
+                        # A child that cannot be traced must not run on the shared GPU.
+                        process.kill()
+                        process.wait()
+                        raise IntegrationError(
+                            "无法记录训练子进程，已终止执行: {}".format(record_error)
+                        )
                     try:
                         for line in process.stdout:
                             log_file.write(line)

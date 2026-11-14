@@ -116,6 +116,7 @@ public class PythonLddTaskExecutor implements DefenseTaskExecutor {
             MDC.remove("taskId");
             MDC.remove("runId");
             MDC.remove("attempt");
+            processRegistry.clearAccepted(request.getTaskId(), request.getRunId(), request.getAttempt());
             runtimeMetrics.recordExecution(metricOutcome, System.nanoTime() - metricsStarted);
             canceledRuns.remove(request.getRunId());
             Process process = activeProcesses.remove(request.getRunId());

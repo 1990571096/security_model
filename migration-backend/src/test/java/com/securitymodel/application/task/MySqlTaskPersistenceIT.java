@@ -285,8 +285,10 @@ class MySqlTaskPersistenceIT {
                 "SELECT COUNT(*) FROM sys_request_idempotency WHERE idempotency_key = 'k1'",
                 Integer.class));
 
-        assertNull(idempotencyMapper.findByKey(7L, "task.start", "k1", now.plusHours(25)));
-        assertEquals(1, idempotencyMapper.deleteExpired(7L, "task.start", "k1", now.plusHours(25)));
+        assertNotNull(idempotencyMapper.findByKey(7L, "task.start", "k1", now.plusHours(25)));
+        assertEquals(0, idempotencyMapper.deleteExpired(7L, "task.start", "k1", now.plusHours(25)),
+                "an interrupted processing row must be reconciled instead of deleted");
+        assertEquals(1, idempotencyMapper.markStaleProcessingFailed(first.getRecordId(), now.plusHours(25)));
     }
 
     @Test

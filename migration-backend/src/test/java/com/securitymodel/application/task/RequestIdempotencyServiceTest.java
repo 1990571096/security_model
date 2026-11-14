@@ -46,6 +46,22 @@ class RequestIdempotencyServiceTest {
     }
 
     @Test
+    void interruptedProcessingRecordRequiresManualReconciliation() {
+        authenticate(7L);
+        RequestIdempotencyRecord failed = new RequestIdempotencyRecord();
+        failed.setStatus(RequestIdempotencyRecord.FAILED);
+        failed.setRequestHash(sha256("{\"taskId\":5}"));
+        when(store.find(7L, "task.start", "k1")).thenReturn(failed);
+
+        IdempotencyConflictException exception = assertThrows(IdempotencyConflictException.class,
+                () -> service.execute("task.start", "k1", Map.of("taskId", 5L), 5L,
+                        () -> new IdempotencyResult(200, objectMapper.createObjectNode())));
+
+        assertEquals("REQUEST_REQUIRES_RECONCILIATION", exception.getCode());
+        verify(store, never()).delete(any());
+    }
+
+    @Test
     void sameKeyDifferentBodyIsRejected() {
         authenticate(7L);
         RequestIdempotencyRecord record = succeeded("other-hash", 200, "{}");

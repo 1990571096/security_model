@@ -5,11 +5,15 @@ on:
     paths:
       - "migration-backend/**"
       - "migration-frontend/**"
+      - "sql/**"
+      - "algorithm-runtime/**"
       - ".github/workflows/migration-quality.yml"
   pull_request:
     paths:
       - "migration-backend/**"
       - "migration-frontend/**"
+      - "sql/**"
+      - "algorithm-runtime/**"
       - ".github/workflows/migration-quality.yml"
 
 jobs:
@@ -41,6 +45,16 @@ jobs:
           cache: maven
       - name: Verify migration backend
         run: mvn -B -f migration-backend/pom.xml verify -Pmysql-it
+
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Run adapter tests
+        run: python -m unittest discover -s algorithm-runtime/vab/tests -v
 
   frontend:
     runs-on: ubuntu-latest

@@ -38,7 +38,7 @@ public interface GpuLeaseMapper {
                 released_at = NULL,
                 fencing_token = fencing_token + 1
             WHERE slot_id = #{slotId}
-              AND (lease_token IS NULL OR expires_at < #{now})
+              AND lease_token IS NULL
               AND blocked_at IS NULL
             """)
     int acquire(@Param("slotId") String slotId,
@@ -55,6 +55,7 @@ public interface GpuLeaseMapper {
             WHERE slot_id = #{slotId}
               AND lease_token = #{token}
               AND released_at IS NULL
+              AND expires_at >= #{now}
             """)
     int renew(@Param("slotId") String slotId,
               @Param("token") String token,

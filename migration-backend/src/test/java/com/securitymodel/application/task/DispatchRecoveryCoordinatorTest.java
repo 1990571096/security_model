@@ -66,6 +66,61 @@ class DispatchRecoveryCoordinatorTest {
     }
 
     @Test
+    void oldSubmittingIntentDoesNotReapOrFailTheNewAttempt() {
+        gate.markReady();
+        PreDefenseTask task = runningTask(1L, "run-2", 2);
+        TaskDispatchIntent intent = intent(1L, "run-1", 1, TaskDispatchIntent.SUBMITTING,
+                LocalDateTime.now().minusSeconds(60));
+        when(intentService.findPendingOlderThan(any(), eq(20))).thenReturn(List.of());
+        when(intentService.findSubmittingOlderThan(any(), eq(20))).thenReturn(List.of(intent));
+        when(taskMapper.selectById(1L)).thenReturn(task);
+
+        coordinator.scanPending();
+
+        verify(processRegistry, never()).reapIfOrphaned(any(), any());
+        verify(gpuLeaseService, never()).releaseByRun(1L, "run-1");
+        verify(intentService).abandon(eq(1L), eq("run-1"), eq(1),
+                eq("DISPATCH_IDENTITY_MISMATCH"), any());
+        verify(dispatchCoordinator, never()).failAndAbandon(any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void locallyAcceptedAttemptIsNotReapedOrFailedByTheScanner() {
+        gate.markReady();
+        PreDefenseTask task = runningTask(1L, "run-1", 1);
+        TaskDispatchIntent intent = intent(1L, "run-1", 1, TaskDispatchIntent.SUBMITTING,
+                LocalDateTime.now().minusSeconds(60));
+        when(intentService.findPendingOlderThan(any(), eq(20))).thenReturn(List.of());
+        when(intentService.findSubmittingOlderThan(any(), eq(20))).thenReturn(List.of(intent));
+        when(taskMapper.selectById(1L)).thenReturn(task);
+        when(processRegistry.isLocallyAccepted(1L, "run-1", 1)).thenReturn(true);
+
+        coordinator.scanPending();
+
+        verify(processRegistry, never()).reapIfOrphaned(any(), any());
+        verify(gpuLeaseService, never()).releaseByRun(1L, "run-1");
+        verify(dispatchCoordinator, never()).failAndAbandon(any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void pendingExpiryLoserDoesNotReleaseTheSlot() {
+        gate.markReady();
+        PreDefenseTask task = runningTask(1L, "run-1", 1);
+        TaskDispatchIntent intent = intent(1L, "run-1", 1, TaskDispatchIntent.PENDING,
+                LocalDateTime.now().minusSeconds(600));
+        when(intentService.findPendingOlderThan(any(), eq(20))).thenReturn(List.of(intent));
+        when(intentService.findSubmittingOlderThan(any(), eq(20))).thenReturn(List.of());
+        when(taskMapper.selectById(1L)).thenReturn(task);
+        when(intentService.abandonPending(eq(1L), eq("run-1"), eq(1), eq("DISPATCH_EXPIRED"), any()))
+                .thenReturn(false);
+
+        coordinator.scanPending();
+
+        verify(gpuLeaseService, never()).releaseByRun(1L, "run-1");
+        verify(dispatchCoordinator, never()).failAndAbandon(any(), any(), any(), any(), any());
+    }
+
+    @Test
     void pendingPastExpiryFailsExplicitlyDuringBoundedScan() {
         gate.markReady();
         PreDefenseTask task = runningTask(1L, "run-1", 1);
@@ -74,6 +129,8 @@ class DispatchRecoveryCoordinatorTest {
         when(intentService.findPendingOlderThan(any(), eq(20))).thenReturn(List.of(intent));
         when(intentService.findSubmittingOlderThan(any(), eq(20))).thenReturn(List.of());
         when(taskMapper.selectById(1L)).thenReturn(task);
+        when(intentService.abandonPending(eq(1L), eq("run-1"), eq(1), eq("DISPATCH_EXPIRED"), any()))
+                .thenReturn(true);
 
         coordinator.scanPending();
 

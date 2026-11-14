@@ -132,8 +132,19 @@ public class DispatchRecoveryCoordinator {
                         "DISPATCH_TASK_NOT_RUNNING", now);
                 continue;
             }
+            if (!belongsToCurrentAttempt(task, intent)) {
+                // A stale pending intent must never release the lease of a newer attempt.
+                intentService.abandon(intent.getTaskId(), intent.getRunId(), intent.getAttempt(),
+                        "DISPATCH_IDENTITY_MISMATCH", now);
+                continue;
+            }
             if (intent.getCreatedAt() != null
                     && intent.getCreatedAt().isBefore(now.minusSeconds(pendingExpireSeconds))) {
+                if (!intentService.abandonPending(intent.getTaskId(), intent.getRunId(),
+                        intent.getAttempt(), "DISPATCH_EXPIRED", now)) {
+                    // Another caller already promoted or closed this intent; it owns the decision.
+                    continue;
+                }
                 gpuLeaseService.releaseByRun(intent.getTaskId(), intent.getRunId());
                 dispatchCoordinator.failAndAbandon(intent.getTaskId(), intent.getRunId(),
                         intent.getAttempt(), "DISPATCH_EXPIRED",
@@ -154,6 +165,17 @@ public class DispatchRecoveryCoordinator {
                         "DISPATCH_TASK_NOT_RUNNING", now);
                 continue;
             }
+            if (!belongsToCurrentAttempt(task, intent)) {
+                // An old submitting intent must not probe or kill the current attempt.
+                intentService.abandon(intent.getTaskId(), intent.getRunId(), intent.getAttempt(),
+                        "DISPATCH_IDENTITY_MISMATCH", now);
+                continue;
+            }
+            if (processRegistry.isLocallyAccepted(task.getTaskId(), task.getCurrentRunId(),
+                    task.getCurrentAttempt())) {
+                // This JVM accepted the attempt; the heartbeat/executor owns its lifecycle.
+                continue;
+            }
             AttemptProcessRegistry.ReapOutcome outcome;
             try {
                 outcome = processRegistry.reapIfOrphaned(task.getTaskId(), task.getCurrentAttempt());
@@ -171,6 +193,13 @@ public class DispatchRecoveryCoordinator {
                     intent.getAttempt(), "DISPATCH_UNCERTAIN",
                     "派发状态不确定，按失败收敛，请用户手动重试");
         }
+    }
+
+    private boolean belongsToCurrentAttempt(PreDefenseTask task, TaskDispatchIntent intent) {
+        return intent.getRunId() != null
+                && intent.getRunId().equals(task.getCurrentRunId())
+                && intent.getAttempt() != null
+                && intent.getAttempt().equals(task.getCurrentAttempt());
     }
 
     private int failLegacy(PreDefenseTask task) {
@@ -196,6 +225,10 @@ public class DispatchRecoveryCoordinator {
     }
 
     private int convergeUncertain(PreDefenseTask task, TaskDispatchIntent intent) {
+        if (processRegistry.isLocallyAccepted(task.getTaskId(), task.getCurrentRunId(),
+                task.getCurrentAttempt())) {
+            return 0;
+        }
         AttemptProcessRegistry.ReapOutcome outcome;
         try {
             outcome = processRegistry.reapIfOrphaned(task.getTaskId(), task.getCurrentAttempt());

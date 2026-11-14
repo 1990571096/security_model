@@ -2,7 +2,7 @@
 
 更新时间：2026-11-13（R0 事实审计）
 
-2026-11-13 文档与实现迭代：R2 收口后完成 R3-A/R3-B（持久调度意图、条件抢占、统一启动恢复、有界 pending 扫描、create/start/retry 请求幂等），并完成 R5 第一批（运行指标、日志关联、Redis 代际缓存、管理员观测接口、Actuator 最小暴露、真实统计页），本机实跑 127 项单测 + 41 项 MySQL IT + 1 项真实 Redis 缓存代际 IT；带意图的真实 JVM 重启、R3-04 崩溃演练、真实 Redis 宕机、生产库建表仍未完成。文档中未执行的真实 LDD 与生产库迁移仍保持未验证状态。
+2026-11-13 文档与实现迭代：R2 第四切片后实现 R3-A/R3-B 代码（持久调度意图、条件抢占、统一启动恢复、有界 pending 扫描、create/start/retry 请求幂等），并完成 R5 第一批（运行指标、日志关联、Redis 代际缓存、管理员观测接口、Actuator 最小暴露、真实统计页），本机实跑 127 项单测 + 41 项 MySQL IT + 1 项真实 Redis 缓存代际 IT；带意图的真实 JVM 重启、R3-04 崩溃演练、真实 Redis 宕机、生产库建表仍未完成，R3 仍待外部复审。文档中未执行的真实 LDD 与生产库迁移仍保持未验证状态。
 
 当前迁移版已接入 Redis 资源目录缓存，并具备 MySQL 集成测试和对应 CI 工作流配置。
 最近一次记录的本机 MySQL profile 验收覆盖原子领取、完成与恢复竞争、孤儿任务恢复边界，
@@ -185,7 +185,7 @@ Vue 2 工程继续作为业务回归和回滚基线，不参与迁移版主流�
 | 槽位隔离 | `KILL_FAILED/UNKNOWN` 置 `blocked_at/blocked_reason`；TTL 过期仍拒绝领取并返回 `GPU_LEASE_BLOCKED`；`GpuLeaseBlockedProbe` 每 60s 重探，确认退出才解除 | `sys_gpu_lease`、`GpuLeaseBlockedProbe`、`sql/security_model_gpu_lease_block.sql` |
 | 未做 | 真实 LDD 产物实测；目录递归哈希；自动算法重试队列（D5，仍不在范围）；生产库建表；带意图的真实 JVM 重启与 R3-04 崩溃演练 | 见 §5.7、§9 |
 
-## 5.6 R2 第四切片：恢复语义收口（2026-11-13）
+## 5.6 R2 第四切片：恢复语义实现（2026-11-13，历史记录；复核修复见 §5.6.1）
 
 | 变更 | 事实 | 证据 |
 | --- | --- | --- |
@@ -199,6 +199,23 @@ Vue 2 工程继续作为业务回归和回滚基线，不参与迁移版主流�
 | 崩溃演练 | `OrphanProcessCrashDrillTest`：独立 JVM 启动短 Python 父子并记录，强杀启动器后由恢复判定 `REAPED`，父子均死；单跑与全量均通过 | 同上 |
 | 未做 | 真实 LDD/6GB 显存实测；生产库建表与迁移；日志运行期磁盘上限（当前仅归档截断） | 见 §7、§9 |
 
+## 5.6.1 R2/R3 复核修复记录（2026-11-14，待复审）
+
+针对 `9d21281` 外部评审的 P1/P2，按 20 号任务书完成以下修复；本节只记录已落地代码与可复现证据，不代表外部复审已通过。
+
+| 评审项 | 修复事实 | 证据 |
+| --- | --- | --- |
+| P1-1 执行器接受后记账失败释放 GPU | 正常派发与重放都拆成“执行器调用”和 `markSubmitted` 两个阶段；执行器接受后回写失败只记 warn，不释放租约、不失败任务；派发前 `AttemptProcessRegistry.markAccepted`，执行器拒绝/异常 `clearAccepted` | `TaskDispatchCoordinator`、`PythonLddTaskExecutor`；`TaskDispatchCoordinatorTest.replayAcceptedWorkIsNotFailedWhenBookkeepingFails` |
+| P1-2 恢复扫描误杀/误释放 | pending/submitting 先核对意图与当前 `runId/attempt`；旧意图只 abandon；pending 过期先 `abandonPending` 条件抢占，只有赢家 release；本 JVM 已接受的 attempt 跳过探测；启动收敛同样跳过本地 accepted | `DispatchRecoveryCoordinator`、`TaskDispatchIntentMapper.abandonPending`；`DispatchRecoveryCoordinatorTest` 6 项 |
+| P1-3 过期租约被当作空闲 | `acquire` 只允许 `lease_token IS NULL AND blocked_at IS NULL`；发现过期活跃租约时 `block("LEASE_EXPIRED")` 并返回 `GPU_LEASE_EXPIRED`；`renew` 增加 `expires_at >= now`；心跳改用本地租约快照，先取消进程再写失败记录，DB 异常也取消 | `GpuLeaseMapper`、`GpuLeaseService`、`GpuLeaseHeartbeat`；`GpuLeaseMySqlIT` 8 项、`GpuLeaseHeartbeatTest` 3 项 |
+| P1-4 子进程记录缺失/身份不足 | 缺失/损坏/无 `pids` 的 `python-children.json` 返回 `UNKNOWN`，不再当空集合；只杀身份正向匹配的根进程及其可证明后代，记录中无法证明父子关系的 PID 不杀、存活则保持隔离；`write_children` 原子写失败会立即终止训练子进程 | `AttemptProcessRegistry`、`algorithm_entry.py`；`AttemptProcessRegistryTest` 13 项、`OrphanProcessCrashDrillTest` |
+| P2 幂等提交失败/崩溃 | 业务事务回滚时注册 `afterCompletion` 清理 claim；过期删除只处理 `succeeded`，`processing` 不自动删除；超时处理中转 `failed` 并要求人工核对；前端 create/start/retry 在同一次逻辑请求重试时复用键 | `RequestIdempotencyService`、`IdempotencyRecordStore`、`IdempotencyRecoveryJob`、`RequestIdempotencyMapper`、`TaskCenterView.vue`；`RequestIdempotencyServiceTest` 7 项、`IdempotencyRecoveryJobTest`、`MySqlTaskPersistenceIT` |
+| P2 重放前置校验 | `readRequest` 校验 `schema_version` 与 `request_hash`；重放校验快照 task/run/attempt、owner 非空且启用、demo 拒绝、数据集/算法启用、运行时指纹可用（空路径 `available=false`） | `TaskDispatchIntentService`、`TaskDispatchCoordinator`、`ExecutionFingerprintService`；`TaskDispatchIntentServiceTest` 2 项、`TaskDispatchCoordinatorTest` 8 项 |
+
+本机实测（2026-11-14）：`mvn -B -f migration-backend/pom.xml verify -Pmysql-it` → **137 项单元测试，0 失败/0 跳过；41 项 MySQL IT 全绿；1 项 Redis IT 因未设置 `REDIS_IT=true` 跳过**；`python -m unittest discover -s algorithm-runtime/vab/tests` → **11/11 通过**；`npm --prefix migration-frontend run build` → 通过，仍有大 chunk 警告。日志见 `tmp/r2-r3-fix-verify3.log`、`tmp/r2-r3-python-tests.log`、`tmp/r2-r3-frontend.log`。未跑真实 LDD、未写生产库。
+
+仍未完成：真实 LDD/6GB 显存实测；生产库 `eladmin` 建表与迁移；带意图的真实 JVM 重启、R3-04 崩溃演练与真实库旧/新 run 竞争；Redis 宕机注入；日志运行期磁盘硬上限（当前仅归档截断）。R2/R3 本轮为“修复完成待复审”，不写“验收通过”。
+
 ## 5.7 R3 实施记录：持久调度与请求幂等（2026-11-13）
 
 | 变更 | 事实 | 证据 |
@@ -208,8 +225,8 @@ Vue 2 工程继续作为业务回归和回滚基线，不参与迁移版主流�
 | 单一恢复 | `TaskRecoveryRunner` 只委托 `DispatchRecoveryCoordinator`；pending 直接重放（不因无进程记录误失败），submitting/submitted 收敛为 `DISPATCH_UNCERTAIN`，无意图旧任务按 R2 证据失败；最后 `markReady` | `TaskRecoveryRunner`、`DispatchRecoveryCoordinator` |
 | 重放校验 | 校验任务 `run_id/attempt`、归属账号仍启用、数据集/算法仍可用、运行时指纹未变；先释放本 run 旧租约，再 acquire 新 token；GPU_BUSY/BLOCKED、路径/指纹/身份失效均零执行 + abandoned | `TaskDispatchCoordinator` |
 | 有界扫描 | 10s 间隔、初始 30s、每批 20、只扫超过 30s 的 pending；创建超过 5 分钟 → `DISPATCH_EXPIRED`；submitting 失联按进程证据释放或隔离后 `DISPATCH_UNCERTAIN`；submitted 不扫描 | `DispatchRecoveryCoordinator.scanPending`、`application.yml` |
-| 请求幂等 | `sys_request_idempotency` 唯一 `(owner_user_id, operation, idempotency_key)`，24h 有效期；create/start/retry 支持可选 `Idempotency-Key`（1–128）；同体复用、异体 409、进行中 409、跨用户独立；成功记录随业务事务提交，失败在独立事务释放键 | `RequestIdempotencyService`、`IdempotencyRecordStore`、`PreDefenseTaskController` |
-| 前端 | create/start/retry 每次提交生成并传入幂等键；失败详情继续显示 `failure_reason`，其中包含 `DISPATCH_*` / `REQUEST_IN_PROGRESS` 等错误码 | `preDefense.js`、`task.js`、`TaskCenterView.vue` |
+| 请求幂等 | `sys_request_idempotency` 唯一 `(owner_user_id, operation, idempotency_key)`，24h 有效期；create/start/retry 支持可选 `Idempotency-Key`（1–128）；同体复用、异体 409、进行中 409、跨用户独立；成功记录随业务事务提交，失败在独立事务释放键；2026-11-14 增加提交回滚清理、processing 不自动删除、超时转 `failed` 待人工核对 | `RequestIdempotencyService`、`IdempotencyRecordStore`、`IdempotencyRecoveryJob`、`PreDefenseTaskController` |
+| 前端 | create/start/retry 每次提交传入幂等键；2026-11-14 改为同一次逻辑请求失败重试复用同一键，成功后才清除；失败详情继续显示 `failure_reason` | `preDefense.js`、`task.js`、`TaskCenterView.vue` |
 | 验证（本机实测） | `mvn verify -Pmysql-it` → **120 项单元测试，0 失败/0 跳过；40 项 MySQL IT 全绿**（`MySqlTaskPersistenceIT` 13 项）；前端 `npm run build` 通过 | `tmp/r3-final-verify.log`、`tmp/r3-frontend-build.log` |
 | 未做 | 带意图的真实 JVM 重启重放一次、R3-04 短进程崩溃、R3-07 新 attempt 跨旧 run 的真实库竞争、R3-05 取消竞争全链路、生产库建表 | 见 20 §6.5 |
 
@@ -238,8 +255,8 @@ Vue 2 工程继续作为业务回归和回滚基线，不参与迁移版主流�
 
 ### P1：平台工程完善
 
-1. **R1（下一个迭代）**：稳定用户 ID 归属、任务/报告/日志/产物/导出授权、共享资源写权限收敛、历史数据迁移。验收见 17 号指导书 R1。
-2. **R2（收口待审）**：GPU 单槽租约、进程记录/整树回收、隔离槽位与探测、启动就绪门、导出失败收敛、产物清单/保留期均已有实现与本机证据；剩余真实 LDD/6GB 实测、生产库建表/迁移和日志运行期限额。R1 的“生产迁移未执行”仍保持未完成。
+1. **R1（已实施，评审“有条件通过”；生产迁移未执行）**：稳定用户 ID 归属、任务/报告/日志/产物/导出授权、共享资源写权限收敛、历史数据迁移。验收见 17 号指导书 R1。
+2. **R2（可靠性修复完成，待复审）**：GPU 单槽租约、进程记录/整树回收、隔离槽位与探测、启动就绪门、导出失败收敛、产物清单/保留期均已有实现与本机证据；2026-11-14 已修复评审 P1-1~P1-4。剩余真实 LDD/6GB 实测、生产库建表/迁移和日志运行期限额。
 3. 持续补迁移版领域服务和 API 集成测试；现有 MySQL 集成测试仅覆盖任务原子领取、状态竞争和恢复扫描，不代表完整端到端覆盖。
 4. 补充 Python 依赖锁定、部署复现和应用重启演练。
 5. 继续补充 Redis 缓存命中率、失效和不可用降级的观测指标。

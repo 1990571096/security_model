@@ -15,7 +15,8 @@ public interface RequestIdempotencyMapper extends BaseMapper<RequestIdempotencyR
     @Select("""
             SELECT * FROM sys_request_idempotency
             WHERE owner_user_id = #{ownerUserId} AND operation = #{operation}
-              AND idempotency_key = #{key} AND expires_at > #{now}
+              AND idempotency_key = #{key}
+              AND (expires_at > #{now} OR status IN ('processing', 'failed'))
             """)
     RequestIdempotencyRecord findByKey(@Param("ownerUserId") Long ownerUserId,
                                        @Param("operation") String operation,
@@ -26,11 +27,31 @@ public interface RequestIdempotencyMapper extends BaseMapper<RequestIdempotencyR
             DELETE FROM sys_request_idempotency
             WHERE owner_user_id = #{ownerUserId} AND operation = #{operation}
               AND idempotency_key = #{key} AND expires_at <= #{now}
+              AND status = 'succeeded'
             """)
     int deleteExpired(@Param("ownerUserId") Long ownerUserId,
                       @Param("operation") String operation,
                       @Param("key") String key,
                       @Param("now") LocalDateTime now);
+
+    @Select("""
+            SELECT * FROM sys_request_idempotency
+            WHERE status = 'processing' AND updated_at < #{cutoff}
+            ORDER BY updated_at ASC
+            LIMIT #{limit}
+            """)
+    java.util.List<RequestIdempotencyRecord> findStaleProcessing(@Param("cutoff") LocalDateTime cutoff,
+                                                                 @Param("limit") int limit);
+
+    @Update("""
+            UPDATE sys_request_idempotency
+            SET status = 'failed', response_code = 409,
+                response_body = '{"error_code":"IDEMPOTENCY_PROCESS_INTERRUPTED"}',
+                updated_at = #{now}
+            WHERE record_id = #{recordId} AND status = 'processing'
+            """)
+    int markStaleProcessingFailed(@Param("recordId") Long recordId,
+                                  @Param("now") LocalDateTime now);
 
     @Update("""
             UPDATE sys_request_idempotency

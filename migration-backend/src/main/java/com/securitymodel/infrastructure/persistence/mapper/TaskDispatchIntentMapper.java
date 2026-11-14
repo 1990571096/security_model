@@ -55,6 +55,18 @@ public interface TaskDispatchIntentMapper extends BaseMapper<TaskDispatchIntent>
                 @Param("errorCode") String errorCode,
                 @Param("now") LocalDateTime now);
 
+    @Update("""
+            UPDATE sys_task_dispatch_intent
+            SET status = 'abandoned', error_code = #{errorCode}, updated_at = #{now}
+            WHERE task_id = #{taskId} AND run_id = #{runId} AND attempt = #{attempt}
+              AND status = 'pending'
+            """)
+    int abandonPending(@Param("taskId") Long taskId,
+                       @Param("runId") String runId,
+                       @Param("attempt") Integer attempt,
+                       @Param("errorCode") String errorCode,
+                       @Param("now") LocalDateTime now);
+
     @Select("""
             SELECT * FROM sys_task_dispatch_intent
             WHERE status = 'pending' AND updated_at < #{cutoff}

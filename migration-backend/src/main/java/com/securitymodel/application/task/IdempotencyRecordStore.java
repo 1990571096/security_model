@@ -45,6 +45,16 @@ public class IdempotencyRecordStore {
         return mapper.findByKey(ownerUserId, operation, key, LocalDateTime.now());
     }
 
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void markStaleProcessingFailed(Long recordId, LocalDateTime now) {
+        mapper.markStaleProcessingFailed(recordId, now);
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public java.util.List<RequestIdempotencyRecord> findStaleProcessing(LocalDateTime cutoff, int limit) {
+        return mapper.findStaleProcessing(cutoff, limit);
+    }
+
     @Transactional(propagation = Propagation.MANDATORY)
     public void markSucceeded(Long recordId, int responseCode, String responseBody, Long resourceId,
                               LocalDateTime now) {

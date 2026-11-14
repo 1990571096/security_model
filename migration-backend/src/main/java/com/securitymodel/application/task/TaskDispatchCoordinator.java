@@ -6,8 +6,11 @@ import com.securitymodel.domain.lease.GpuLease;
 import com.securitymodel.domain.task.PreDefenseTask;
 import com.securitymodel.domain.task.TaskDispatchIntent;
 import com.securitymodel.infrastructure.executor.DefenseTaskExecutor;
+import com.securitymodel.infrastructure.executor.AttemptProcessRegistry;
 import com.securitymodel.infrastructure.persistence.mapper.PreDefenseTaskMapper;
 import com.securitymodel.infrastructure.persistence.mapper.SysUserMapper;
+import com.securitymodel.infrastructure.persistence.mapper.DatasetMapper;
+import com.securitymodel.infrastructure.persistence.mapper.AlgorithmMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -28,25 +31,34 @@ public class TaskDispatchCoordinator {
 
     private final TaskDispatchIntentService intentService;
     private final DefenseTaskExecutor executor;
+    private final AttemptProcessRegistry processRegistry;
     private final GpuLeaseService gpuLeaseService;
     private final ExecutionFingerprintService fingerprintService;
     private final PreDefenseTaskMapper taskMapper;
     private final SysUserMapper userMapper;
+    private final DatasetMapper datasetMapper;
+    private final AlgorithmMapper algorithmMapper;
     private final ObjectMapper objectMapper;
 
     public TaskDispatchCoordinator(TaskDispatchIntentService intentService,
                                    DefenseTaskExecutor executor,
+                                   AttemptProcessRegistry processRegistry,
                                    GpuLeaseService gpuLeaseService,
                                    ExecutionFingerprintService fingerprintService,
                                    PreDefenseTaskMapper taskMapper,
                                    SysUserMapper userMapper,
+                                   DatasetMapper datasetMapper,
+                                   AlgorithmMapper algorithmMapper,
                                    ObjectMapper objectMapper) {
         this.intentService = intentService;
         this.executor = executor;
+        this.processRegistry = processRegistry;
         this.gpuLeaseService = gpuLeaseService;
         this.fingerprintService = fingerprintService;
         this.taskMapper = taskMapper;
         this.userMapper = userMapper;
+        this.datasetMapper = datasetMapper;
+        this.algorithmMapper = algorithmMapper;
         this.objectMapper = objectMapper;
     }
 
@@ -63,8 +75,10 @@ public class TaskDispatchCoordinator {
             return;
         }
         try {
+            processRegistry.markAccepted(request.getTaskId(), request.getRunId(), request.getAttempt());
             executor.runPreDefense(request);
         } catch (RuntimeException exception) {
+            processRegistry.clearAccepted(request.getTaskId(), request.getRunId(), request.getAttempt());
             String code = exception instanceof TaskCommandException
                     && exception.getMessage() != null
                     && exception.getMessage().contains("GPU_")
@@ -106,11 +120,26 @@ public class TaskDispatchCoordinator {
                         "DISPATCH_IDENTITY_MISMATCH", "任务归属账号已停用或不存在，拒绝重放");
                 return false;
             }
+        } else {
+            failAndAbandon(intent.getTaskId(), intent.getRunId(), intent.getAttempt(),
+                    "DISPATCH_IDENTITY_MISMATCH", "任务没有稳定归属账号，拒绝自动重放");
+            return false;
+        }
+        if ("demo".equals(task.getDataOrigin())) {
+            failAndAbandon(intent.getTaskId(), intent.getRunId(), intent.getAttempt(),
+                    "DISPATCH_DEMO_FORBIDDEN", "演示任务不允许自动重放");
+            return false;
         }
         DefenseTaskRequest request;
         try {
             request = intentService.readRequest(intent);
+            validateRequestIdentity(intent, task, request);
+            validateResources(request);
             ObjectNode runtime = fingerprintService.buildRuntimeSnapshot(request);
+            if (!runtime.path("datasetFingerprint").path("available").asBoolean(false)
+                    || !runtime.path("algorithmFingerprint").path("available").asBoolean(false)) {
+                throw new TaskCommandException("DISPATCH_RESOURCE_INVALID: 数据或算法路径不可用");
+            }
             String runtimeHash = fingerprintService.sha256(runtime.toString());
             if (intent.getRuntimeHash() != null && !intent.getRuntimeHash().equals(runtimeHash)) {
                 failAndAbandon(intent.getTaskId(), intent.getRunId(), intent.getAttempt(),
@@ -142,11 +171,10 @@ public class TaskDispatchCoordinator {
             request.setGpuLeaseToken(lease.getLeaseToken());
             request.setGpuSlotId(lease.getSlotId());
             request.setGpuFencingToken(lease.getFencingToken());
+            processRegistry.markAccepted(intent.getTaskId(), intent.getRunId(), intent.getAttempt());
             executor.runPreDefense(request);
-            intentService.markSubmitted(intent.getTaskId(), intent.getRunId(),
-                    intent.getAttempt(), LocalDateTime.now());
-            return true;
         } catch (RuntimeException exception) {
+            processRegistry.clearAccepted(intent.getTaskId(), intent.getRunId(), intent.getAttempt());
             String code = exception instanceof TaskCommandException
                     && exception.getMessage() != null
                     && exception.getMessage().contains("GPU_")
@@ -156,6 +184,16 @@ public class TaskDispatchCoordinator {
                     code, "重放失败: " + exception.getMessage());
             return false;
         }
+        try {
+            intentService.markSubmitted(intent.getTaskId(), intent.getRunId(),
+                    intent.getAttempt(), LocalDateTime.now());
+        } catch (RuntimeException exception) {
+            // Accepted by the executor: the process/queue owns the work now. A bookkeeping
+            // failure must not release the slot or converge the task to failed.
+            log.warn("重放执行器已接受任务但提交状态回写失败: taskId={}, runId={}, reason={}",
+                    intent.getTaskId(), intent.getRunId(), exception.getMessage());
+        }
+        return true;
     }
 
     public void failAndAbandon(Long taskId, String runId, Integer attempt,
@@ -175,6 +213,35 @@ public class TaskDispatchCoordinator {
         }
     }
 
+    private void validateRequestIdentity(TaskDispatchIntent intent, PreDefenseTask task,
+                                         DefenseTaskRequest request) {
+        if (request.getTaskId() == null || !request.getTaskId().equals(intent.getTaskId())
+                || request.getRunId() == null || !request.getRunId().equals(intent.getRunId())
+                || request.getAttempt() == null || !request.getAttempt().equals(intent.getAttempt())
+                || task.getTaskId() == null || !task.getTaskId().equals(intent.getTaskId())
+                || task.getCurrentRunId() == null || !task.getCurrentRunId().equals(intent.getRunId())
+                || task.getCurrentAttempt() == null || !task.getCurrentAttempt().equals(intent.getAttempt())) {
+            throw new TaskCommandException("DISPATCH_IDENTITY_MISMATCH: 快照身份与当前任务不一致");
+        }
+        if (request.getCreatedBy() == null || request.getCreatedBy().isBlank()) {
+            throw new TaskCommandException("DISPATCH_IDENTITY_MISMATCH: 快照缺少创建人");
+        }
+    }
+
+    private void validateResources(DefenseTaskRequest request) {
+        if (request.getDataset() == null || request.getDataset().getId() == null
+                || request.getAlgorithm() == null || request.getAlgorithm().getId() == null) {
+            throw new TaskCommandException("DISPATCH_RESOURCE_INVALID: 数据集或算法引用缺失");
+        }
+        var dataset = datasetMapper.selectById(request.getDataset().getId());
+        if (dataset == null || !Boolean.TRUE.equals(dataset.getEnabled())) {
+            throw new TaskCommandException("DISPATCH_RESOURCE_DISABLED: 数据集已禁用或不存在");
+        }
+        var algorithm = algorithmMapper.selectById(request.getAlgorithm().getId());
+        if (algorithm == null || !Boolean.TRUE.equals(algorithm.getEnabled())) {
+            throw new TaskCommandException("DISPATCH_RESOURCE_DISABLED: 算法已禁用或不存在");
+        }
+    }
     private String failureResult(Long taskId, String runId, Integer attempt,
                                  String errorCode, String reason) {
         Map<String, Object> result = new LinkedHashMap<>();

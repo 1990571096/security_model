@@ -48,6 +48,7 @@ class AttemptProcessRegistryTest {
         Process process = new ProcessBuilder("cmd", "/c", "exit", "0").start();
         registry.prepare(attemptDir);
         registry.record(attemptDir, process);
+        Files.writeString(attemptDir.resolve("python-children.json"), "{\"pids\":[]}", StandardCharsets.UTF_8);
         process.waitFor();
 
         assertEquals(AttemptProcessRegistry.ReapOutcome.EXITED, registry.reapIfOrphaned(3L, 1));
@@ -78,6 +79,7 @@ class AttemptProcessRegistryTest {
                 .start();
         registry.prepare(attemptDir);
         registry.record(attemptDir, process);
+        Files.writeString(attemptDir.resolve("python-children.json"), "{\"pids\":[]}", StandardCharsets.UTF_8);
 
         assertEquals(AttemptProcessRegistry.ReapOutcome.REAPED, registry.reapIfOrphaned(5L, 1));
         assertEquals(false, process.isAlive());
@@ -111,6 +113,7 @@ class AttemptProcessRegistryTest {
                 "{\"schema_version\":2,\"state\":\"running\",\"pid\":" + unrelated.pid()
                         + ",\"started_at\":\"2000-01-01T00:00:00Z\"}", StandardCharsets.UTF_8);
         AttemptProcessRegistry registry = new AttemptProcessRegistry(objectMapper, workspace.toString());
+        Files.writeString(attemptDir.resolve("python-children.json"), "{\"pids\":[]}", StandardCharsets.UTF_8);
 
         assertEquals(AttemptProcessRegistry.ReapOutcome.EXITED, registry.reapIfOrphaned(7L, 1));
         assertEquals(true, unrelated.isAlive(), "a reused pid must never be killed");
@@ -124,6 +127,33 @@ class AttemptProcessRegistryTest {
         AttemptProcessRegistry registry = new AttemptProcessRegistry(objectMapper, workspace.toString());
 
         assertEquals(AttemptProcessRegistry.ReapOutcome.UNKNOWN, registry.reapIfOrphaned(8L, 1));
+    }
+
+    @Test
+    void missingChildrenRecordIsUnknownEvenWhenRootIsExited(@TempDir Path workspace) throws Exception {
+        AttemptProcessRegistry registry = new AttemptProcessRegistry(objectMapper, workspace.toString());
+        Path attemptDir = Files.createDirectories(workspace.resolve("pre_defense-12").resolve("attempt-1"));
+        Process process = new ProcessBuilder("cmd", "/c", "exit", "0").start();
+        registry.prepare(attemptDir);
+        registry.record(attemptDir, process);
+        process.waitFor();
+
+        assertEquals(AttemptProcessRegistry.ReapOutcome.UNKNOWN, registry.reapIfOrphaned(12L, 1));
+    }
+
+    @Test
+    void corruptedChildrenRecordDoesNotKillUnverifiedPid(@TempDir Path workspace) throws Exception {
+        AttemptProcessRegistry registry = new AttemptProcessRegistry(objectMapper, workspace.toString());
+        Path attemptDir = Files.createDirectories(workspace.resolve("pre_defense-13").resolve("attempt-1"));
+        Process unrelated = new ProcessBuilder("ping", "-n", "20", "127.0.0.1")
+                .redirectErrorStream(true).start();
+        registry.prepare(attemptDir);
+        registry.record(attemptDir, unrelated);
+        Files.writeString(attemptDir.resolve("python-children.json"), "{broken", StandardCharsets.UTF_8);
+
+        assertEquals(AttemptProcessRegistry.ReapOutcome.UNKNOWN, registry.reapIfOrphaned(13L, 1));
+        assertEquals(true, unrelated.isAlive());
+        unrelated.destroyForcibly();
     }
 
     @Test
