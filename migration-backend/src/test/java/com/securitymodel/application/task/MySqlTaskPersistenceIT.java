@@ -368,6 +368,48 @@ class MySqlTaskPersistenceIT {
     }
 
     @Test
+    void lateOldRunResultAndFinishNeverOverwriteCurrentAttempt() {
+        long taskId = insertTask("running", "run-new");
+        LocalDateTime now = LocalDateTime.now();
+
+        assertEquals(0, taskMapper.updateResultForRun(
+                taskId, "run-old", null, "{\"status\":\"success\",\"artifacts\":{}}"),
+                "a late result from the old run must be ignored");
+        assertEquals(0, taskMapper.finishForRun(
+                taskId, "run-old", "success", 100, now),
+                "a late finish from the old run must be ignored");
+
+        PreDefenseTask stillRunning = taskMapper.selectById(taskId);
+        assertEquals("running", stillRunning.getStatus());
+        assertEquals("run-new", stillRunning.getCurrentRunId());
+        assertNull(stillRunning.getCleaningResult());
+
+        assertEquals(1, taskMapper.updateResultForRun(
+                taskId, "run-new", null, "{\"status\":\"success\",\"artifacts\":{}}"));
+        assertEquals(1, taskMapper.finishForRun(taskId, "run-new", "success", 100, now));
+        assertEquals("success", taskMapper.selectById(taskId).getStatus());
+    }
+
+    @Test
+    void cancelAndInstantFinishCannotBothTerminalizeTheSameRun() {
+        long canceledFirst = insertTask("running", "run-cancel-first");
+        long finishedFirst = insertTask("running", "run-finish-first");
+        LocalDateTime now = LocalDateTime.now();
+
+        assertEquals(1, taskMapper.cancelForRun(canceledFirst, "run-cancel-first",
+                "{\"status\":\"canceled\"}", now));
+        assertEquals(0, taskMapper.finishForRun(canceledFirst, "run-cancel-first",
+                "success", 100, now));
+        assertEquals("canceled", taskMapper.selectById(canceledFirst).getStatus());
+
+        assertEquals(1, taskMapper.finishForRun(finishedFirst, "run-finish-first",
+                "success", 100, now));
+        assertEquals(0, taskMapper.cancelForRun(finishedFirst, "run-finish-first",
+                "{\"status\":\"canceled\"}", now));
+        assertEquals("success", taskMapper.selectById(finishedFirst).getStatus());
+    }
+
+    @Test
     void pendingIntentIsReplayedFromRealDatabaseWithoutBeingFailed() {
         long taskId = insertTask("running", "run-replay");
         insertIntent(taskId, "run-replay", 1, "pending", LocalDateTime.now().minusSeconds(10));
