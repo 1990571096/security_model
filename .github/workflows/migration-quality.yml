@@ -31,11 +31,21 @@ jobs:
           --health-interval=10s
           --health-timeout=5s
           --health-retries=10
+      redis:
+        image: redis:7.4
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
     env:
       MYSQL_IT_HOST: 127.0.0.1
       MYSQL_IT_PORT: 3306
       MYSQL_IT_USERNAME: root
       MYSQL_IT_PASSWORD: migration-test-password
+      REDIS_IT: "true"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4

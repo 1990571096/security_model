@@ -10,6 +10,7 @@ import org.mybatis.spring.annotation.MapperScan;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.ImportAutoConfiguration;
 import org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration;
+import org.springframework.boot.autoconfigure.jdbc.DataSourceTransactionManagerAutoConfiguration;
 import org.springframework.boot.autoconfigure.jdbc.JdbcTemplateAutoConfiguration;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
@@ -17,8 +18,10 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.junit.jupiter.SpringJUnitConfig;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.sql.DriverManager;
 import java.sql.Statement;
@@ -65,6 +68,9 @@ class GpuLeaseMySqlIT {
     @Autowired
     private JdbcTemplate jdbc;
 
+    @Autowired
+    private PlatformTransactionManager transactionManager;
+
     @DynamicPropertySource
     static void mysqlProperties(DynamicPropertyRegistry registry) {
         registry.add("spring.datasource.url", GpuLeaseMySqlIT::schemaUrl);
@@ -106,6 +112,30 @@ class GpuLeaseMySqlIT {
              Statement statement = connection.createStatement()) {
             statement.execute("DROP DATABASE `" + SCHEMA + "`");
         }
+    }
+
+    @Test
+    void expiredLeaseQuarantineSurvivesCallerRollback() {
+        // Arrange a lease that is past its TTL, as if the owning JVM died.
+        leaseMapper.bootstrap(SLOT);
+        leaseMapper.acquire(SLOT, "expired-token", 21L, "run-21", 1,
+                LocalDateTime.now().minusSeconds(10), LocalDateTime.now().minusSeconds(5));
+        assertEquals("expired-token", leaseMapper.findBySlot(SLOT).getLeaseToken());
+
+        // Caller opens a transaction, acquire quarantines in a REQUIRES_NEW transaction,
+        // then the caller rolls back. The blocked marker must still be committed.
+        TransactionTemplate outer = new TransactionTemplate(transactionManager);
+        assertThrows(TaskCommandException.class, () -> outer.executeWithoutResult(status -> {
+            try {
+                leaseService.acquire(22L, "run-22", 1);
+            } finally {
+                status.setRollbackOnly();
+            }
+        }));
+        GpuLease after = leaseMapper.findBySlot(SLOT);
+        assertTrue(after.getBlockedAt() != null);
+        assertEquals("LEASE_EXPIRED", after.getBlockedReason());
+        assertEquals("expired-token", after.getLeaseToken());
     }
 
     @Test
@@ -286,13 +316,14 @@ class GpuLeaseMySqlIT {
     @MapperScan("com.securitymodel.infrastructure.persistence.mapper")
     @ImportAutoConfiguration({
             DataSourceAutoConfiguration.class,
+            DataSourceTransactionManagerAutoConfiguration.class,
             JdbcTemplateAutoConfiguration.class,
             MybatisPlusAutoConfiguration.class
     })
     static class LeaseTestConfiguration {
         @Bean
-        GpuLeaseService gpuLeaseService(GpuLeaseMapper mapper) {
-            return new GpuLeaseService(mapper, SLOT, 300);
+        GpuLeaseService gpuLeaseService(GpuLeaseMapper mapper, PlatformTransactionManager transactionManager) {
+            return new GpuLeaseService(mapper, SLOT, 300, transactionManager);
         }
     }
 }

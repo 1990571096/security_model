@@ -114,8 +114,34 @@ class AssistantChatServiceTest {
         assertEquals(6, response.modelCalls());
     }
 
+    @Test
+    void blockingModelIsCutOffByTotalTimeoutAndNoToolRuns() {
+        AssistantToolRegistry registry = new AssistantToolRegistry(List.of(
+                new StubTool("get_my_task_summary", false,
+                        new AssistantToolResult("ok", objectMapper.createObjectNode(), null, null, null, null, null))));
+        AssistantModel model = request -> {
+            try {
+                Thread.sleep(10_000);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
+            return AssistantModel.ModelReply.answer("迟到的回答", "fake");
+        };
+
+        AssistantChatResponse response = service(registry, model, null, 5).chat(null, "阻塞");
+
+        assertEquals("timeout", response.status());
+        assertEquals(0, response.toolCalls());
+        assertEquals(0, response.modelCalls());
+    }
+
     private AssistantChatService service(AssistantToolRegistry registry, AssistantModel model,
                                          AssistantPreviewService previewService) {
+        return service(registry, model, previewService, 60);
+    }
+
+    private AssistantChatService service(AssistantToolRegistry registry, AssistantModel model,
+                                         AssistantPreviewService previewService, int timeoutSeconds) {
         AssistantQuotaService quota = mock(AssistantQuotaService.class);
         when(quota.remaining()).thenReturn(50);
         AssistantSessionService sessions = mock(AssistantSessionService.class);
@@ -127,7 +153,8 @@ class AssistantChatServiceTest {
         CurrentUserService currentUser = mock(CurrentUserService.class);
         when(currentUser.requireStableIdentity()).thenReturn(new AuthenticatedUser(2L, "alice", false));
         return new AssistantChatService(model, registry, preview,
-                mock(AssistantAuditService.class), quota, sessions, currentUser, 6, 5, 60);
+                mock(AssistantAuditService.class), quota, sessions, currentUser, objectMapper, 6, 5,
+                timeoutSeconds);
     }
 
     private AssistantModel sequence(AssistantModel.ModelReply... replies) {

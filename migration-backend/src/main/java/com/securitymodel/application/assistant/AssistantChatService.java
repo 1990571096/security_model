@@ -1,9 +1,11 @@
 package com.securitymodel.application.assistant;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.securitymodel.application.audit.CurrentUserService;
 import com.securitymodel.application.knowledge.KnowledgeSanitizer;
 import com.securitymodel.domain.assistant.AssistantSession;
+import jakarta.annotation.PreDestroy;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -12,7 +14,12 @@ import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 /**
  * Bounded tool loop. Limits are enforced by the server, not by the model: at most six
@@ -29,6 +36,8 @@ public class AssistantChatService {
     private final AssistantQuotaService quotaService;
     private final AssistantSessionService sessionService;
     private final CurrentUserService currentUserService;
+    private final ObjectMapper objectMapper;
+    private final ExecutorService modelExecutor;
     private final int maxModelCalls;
     private final int maxToolCalls;
     private final long timeoutMillis;
@@ -41,6 +50,7 @@ public class AssistantChatService {
             AssistantQuotaService quotaService,
             AssistantSessionService sessionService,
             CurrentUserService currentUserService,
+            ObjectMapper objectMapper,
             @Value("${security-model.assistant.max-model-calls:6}") int maxModelCalls,
             @Value("${security-model.assistant.max-tool-calls:5}") int maxToolCalls,
             @Value("${security-model.assistant.timeout-seconds:60}") long timeoutSeconds) {
@@ -51,6 +61,12 @@ public class AssistantChatService {
         this.quotaService = quotaService;
         this.sessionService = sessionService;
         this.currentUserService = currentUserService;
+        this.objectMapper = objectMapper;
+        this.modelExecutor = Executors.newCachedThreadPool(runnable -> {
+            Thread thread = new Thread(runnable, "assistant-model");
+            thread.setDaemon(true);
+            return thread;
+        });
         this.maxModelCalls = Math.max(1, Math.min(12, maxModelCalls));
         this.maxToolCalls = Math.max(1, Math.min(10, maxToolCalls));
         this.timeoutMillis = TimeUnit.SECONDS.toMillis(Math.max(5, Math.min(180, timeoutSeconds)));
@@ -90,10 +106,44 @@ public class AssistantChatService {
                         "模型调用次数已达上限，未完成的写操作不会执行。", traces, pending,
                         citations, "max_model_calls", modelCalls, toolCalls);
             }
-            AssistantModel.ModelReply reply = model.respond(new AssistantModel.ModelRequest(
+            long remainingNanos = deadline - System.nanoTime();
+            if (remainingNanos <= 0) {
+                return finish(session, question, "timeout",
+                        "助手请求超时，未完成的工具调用不会写入业务数据。", traces, pending,
+                        citations, "timeout", modelCalls, toolCalls);
+            }
+            long remainingMillis = Math.max(1, TimeUnit.NANOSECONDS.toMillis(remainingNanos));
+            AssistantModel.ModelRequest request = new AssistantModel.ModelRequest(
                     safeQuestion, List.copyOf(messages), registry.descriptors(),
-                    Math.max(0, maxToolCalls - toolCalls)));
+                    Math.max(0, maxToolCalls - toolCalls), remainingMillis);
+            AssistantModel.ModelReply reply;
+            Future<AssistantModel.ModelReply> future = modelExecutor.submit(() -> model.respond(request));
+            try {
+                reply = future.get(remainingNanos, TimeUnit.NANOSECONDS);
+            } catch (TimeoutException exception) {
+                future.cancel(true);
+                return finish(session, question, "timeout",
+                        "模型调用超过剩余时限，未完成的工具调用不会写入业务数据。", traces, pending,
+                        citations, "timeout", modelCalls, toolCalls);
+            } catch (InterruptedException exception) {
+                future.cancel(true);
+                Thread.currentThread().interrupt();
+                return finish(session, question, "timeout",
+                        "助手请求被中断，未完成的工具调用不会写入业务数据。", traces, pending,
+                        citations, "timeout", modelCalls, toolCalls);
+            } catch (ExecutionException exception) {
+                Throwable cause = exception.getCause();
+                String message = cause == null ? null : cause.getMessage();
+                return finish(session, question, "model_unavailable",
+                        message == null || message.isBlank() ? "模型调用失败，未执行工具。" : message,
+                        traces, pending, citations, "model_unavailable", modelCalls, toolCalls);
+            }
             modelCalls++;
+            if (System.nanoTime() > deadline) {
+                return finish(session, question, "timeout",
+                        "模型返回时已超过总时限，未处理的工具调用不会执行。", traces, pending,
+                        citations, "timeout", modelCalls, toolCalls);
+            }
             if (!"ok".equals(reply.status())) {
                 return finish(session, question, reply.status(), reply.message(), traces, pending,
                         citations, reply.status(), modelCalls, toolCalls);
@@ -121,8 +171,10 @@ public class AssistantChatService {
                             citations, exception.getCode(), modelCalls, toolCalls);
                 }
                 messages.add(new AssistantModel.ModelMessage("assistant",
-                        "tool " + reply.toolCall().toolName() + " -> " + execution.trace().summary()));
-                messages.add(new AssistantModel.ModelMessage("tool", execution.trace().summary()));
+                        "tool " + reply.toolCall().toolName() + " 已执行"));
+                messages.add(new AssistantModel.ModelMessage("tool",
+                        AssistantModelEvidence.forTool(objectMapper, reply.toolCall().toolName(),
+                                execution.trace().summary(), execution.trace().data())));
                 continue;
             }
             if (reply.answer() == null || reply.answer().isBlank()) {
@@ -202,6 +254,11 @@ public class AssistantChatService {
         return new AssistantChatResponse(session.getSessionId(), status, answer, traces, pending,
                 new ArrayList<>(citations), modelStatus, answer, modelCalls, toolCalls,
                 quotaService.remaining());
+    }
+
+    @PreDestroy
+    void shutdownModelExecutor() {
+        modelExecutor.shutdownNow();
     }
 
     private long elapsedMs(long started) {

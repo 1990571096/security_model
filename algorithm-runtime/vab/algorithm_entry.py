@@ -742,11 +742,20 @@ def write_children(children_path, pids):
     os.replace(str(temporary), str(children_path))
 
 
-def remove_children(children_path):
+def mark_children_exited(children_path):
+    """Keep positive evidence that the recorded child exited.
+
+    Deleting the file made a normal success indistinguishable from a missing/corrupt
+    record, which the runtime guard must treat as unknown. Write an empty pids array
+    after the child has exited; only fall back to deletion if that write fails.
+    """
     try:
-        Path(children_path).unlink()
+        write_children(children_path, [])
     except OSError:
-        pass
+        try:
+            Path(children_path).unlink()
+        except OSError:
+            pass
 
 
 def run(args):
@@ -850,7 +859,14 @@ def run(args):
                             returncode=process.wait(),
                         )
                     finally:
-                        remove_children(children_path)
+                        # Only positive evidence after the child is really gone; a broken
+                        # pipe must not leave an empty record while the child still runs.
+                        try:
+                            if process.poll() is None:
+                                process.kill()
+                            process.wait()
+                        finally:
+                            mark_children_exited(children_path)
             finally:
                 release_lock(lock_path, lock_token)
             if completed.returncode != 0:

@@ -204,6 +204,33 @@ class MySqlTaskPersistenceIT {
     }
 
     @Test
+    void pendingFieldUpdateNeverOverwritesRunningStatusOrRunIdentity() {
+        long taskId = insertTask("pending", null);
+        PreDefenseTask editable = taskMapper.selectByIdForUpdate(taskId);
+        assertEquals("pending", editable.getStatus());
+        editable.setTaskName("edited-name");
+        editable.setUpdateBy("tester");
+        editable.setUpdateTime(LocalDateTime.now());
+        assertEquals(1, taskMapper.updatePendingFields(editable));
+        assertEquals("edited-name", taskMapper.selectById(taskId).getTaskName());
+
+        // Simulate a start winning between the caller's read and the edit: the conditional
+        // UPDATE must not put a running row back to pending nor rewrite its run identity.
+        jdbc.update("""
+                UPDATE sys_pre_defense
+                SET status = 'running', current_run_id = 'race-run', current_attempt = 1
+                WHERE task_id = ?
+                """, taskId);
+        PreDefenseTask stale = taskMapper.selectById(taskId);
+        stale.setTaskName("stale-name");
+        assertEquals(0, taskMapper.updatePendingFields(stale));
+        PreDefenseTask after = taskMapper.selectById(taskId);
+        assertEquals("running", after.getStatus());
+        assertEquals("race-run", after.getCurrentRunId());
+        assertEquals("edited-name", after.getTaskName());
+    }
+
+    @Test
     void dispatchIntentUniqueKeyAndConditionalPromotionElectOneDispatcher() {
         long taskId = insertTask("running", "run-intent");
         insertIntent(taskId, "run-intent", 1, "pending", LocalDateTime.now().minusSeconds(60));

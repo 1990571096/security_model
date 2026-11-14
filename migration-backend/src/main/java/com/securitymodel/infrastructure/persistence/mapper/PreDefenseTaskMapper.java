@@ -4,12 +4,55 @@ import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.securitymodel.domain.task.PreDefenseTask;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
+import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 import java.time.LocalDateTime;
+import java.util.Collection;
+import java.util.List;
 
 @Mapper
 public interface PreDefenseTaskMapper extends BaseMapper<PreDefenseTask> {
+
+    /** Serializes edit/delete/start/retry on the same task inside one transaction. */
+    @Select("""
+            SELECT *
+            FROM sys_pre_defense
+            WHERE task_id = #{taskId}
+            FOR UPDATE
+            """)
+    PreDefenseTask selectByIdForUpdate(@Param("taskId") Long taskId);
+
+    /** Locks a batch in task-id order to avoid deadlocks between concurrent deletes. */
+    @Select("""
+            <script>
+            SELECT *
+            FROM sys_pre_defense
+            WHERE task_id IN
+            <foreach collection="taskIds" item="id" open="(" separator="," close=")">
+                #{id}
+            </foreach>
+            ORDER BY task_id
+            FOR UPDATE
+            </script>
+            """)
+    List<PreDefenseTask> selectBatchForUpdate(@Param("taskIds") Collection<Long> taskIds);
+
+    /** Updates only editable business fields and never changes status/run identity. */
+    @Update("""
+            UPDATE sys_pre_defense
+            SET task_name = #{task.taskName},
+                description = #{task.description},
+                dataset_id = #{task.datasetId},
+                algorithm_id = #{task.algorithmId},
+                hyper_id = #{task.hyperId},
+                custom_params = #{task.customParams},
+                update_by = #{task.updateBy},
+                update_time = #{task.updateTime}
+            WHERE task_id = #{task.taskId}
+              AND status = 'pending'
+            """)
+    int updatePendingFields(@Param("task") PreDefenseTask task);
 
     @Update("""
             UPDATE sys_pre_defense

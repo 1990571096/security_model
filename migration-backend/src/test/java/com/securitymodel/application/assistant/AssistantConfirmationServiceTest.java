@@ -98,13 +98,35 @@ class AssistantConfirmationServiceTest {
         confirmation.setContextHash("old");
         when(mapper.findById(1L)).thenReturn(confirmation);
         when(currentUser.requireStableIdentity()).thenReturn(new AuthenticatedUser(1L, "alice", false));
-        when(guard.requireOwned(5L)).thenReturn(task());
+        when(guard.requireOwnedForUpdate(5L)).thenReturn(task());
 
         AssistantException exception = assertThrows(AssistantException.class,
                 () -> service().confirm(1L, "token"));
 
         assertEquals("ASSISTANT_CONFIRMATION_STALE", exception.getCode());
         verify(mapper, org.mockito.Mockito.never()).consume(anyLong(), any(), anyLong(), any());
+    }
+
+    @Test
+    void changedTaskOrRequestStateInvalidatesEveryWriteOperation() {
+        for (String operation : java.util.List.of("create", "start", "cancel", "retry", "export", "delete")) {
+            AssistantConfirmation confirmation = confirmation(1L,
+                    AssistantContextHasher.sha256("token"), AssistantConfirmation.PENDING);
+            confirmation.setOperation(operation);
+            confirmation.setTargetTaskId("create".equals(operation) ? null : 5L);
+            confirmation.setRequestJson("create".equals(operation)
+                    ? "{\"taskName\":\"new\"}" : "{\"taskId\":5}");
+            confirmation.setContextHash("old");
+            when(mapper.findById(1L)).thenReturn(confirmation);
+            when(currentUser.requireStableIdentity()).thenReturn(new AuthenticatedUser(1L, "alice", false));
+            when(guard.requireOwnedForUpdate(5L)).thenReturn(task());
+
+            AssistantException exception = assertThrows(AssistantException.class,
+                    () -> service().confirm(1L, "token"));
+
+            assertEquals("ASSISTANT_CONFIRMATION_STALE", exception.getCode(), operation);
+            verify(executor, org.mockito.Mockito.never()).execute(any(), anyLong(), any());
+        }
     }
 
     @Test
@@ -118,7 +140,7 @@ class AssistantConfirmationServiceTest {
         confirmation.setContextHash(AssistantContextHasher.taskState("start", task, ""));
         when(mapper.findById(1L)).thenReturn(confirmation);
         when(currentUser.requireStableIdentity()).thenReturn(new AuthenticatedUser(1L, "alice", false));
-        when(guard.requireOwned(5L)).thenReturn(task);
+        when(guard.requireOwnedForUpdate(5L)).thenReturn(task);
         when(mapper.consume(org.mockito.ArgumentMatchers.eq(1L),
                 org.mockito.ArgumentMatchers.eq(confirmation.getTokenHash()),
                 org.mockito.ArgumentMatchers.eq(1L), any(LocalDateTime.class))).thenReturn(1);

@@ -78,7 +78,16 @@ public class AssistantConfirmationService {
         }
 
         long started = System.nanoTime();
-        String currentContext = currentContextHash(confirmation);
+        // Lock the task row before hashing and keep it until the business command commits.
+        // Token consumption alone protects the credential, not the task version the user
+        // actually previewed.
+        PreDefenseTask lockedTask = lockTargetTask(confirmation);
+        AssistantConfirmation latest = confirmationMapper.findById(confirmationId);
+        if (latest != null && AssistantConfirmation.CONSUMED.equals(latest.getStatus())) {
+            audit(latest, "REPLAYED", elapsedMs(started));
+            return replay(latest);
+        }
+        String currentContext = currentContextHash(confirmation, lockedTask);
         if (!currentContext.equals(confirmation.getContextHash())) {
             audit(confirmation, "STALE", elapsedMs(started));
             throw new AssistantException("ASSISTANT_CONFIRMATION_STALE", HttpStatus.CONFLICT,
@@ -88,9 +97,9 @@ public class AssistantConfirmationService {
         LocalDateTime now = LocalDateTime.now();
         int claimed = confirmationMapper.consume(confirmationId, confirmation.getTokenHash(), userId, now);
         if (claimed != 1) {
-            AssistantConfirmation latest = confirmationMapper.findById(confirmationId);
-            if (latest != null && AssistantConfirmation.CONSUMED.equals(latest.getStatus())) {
-                return replay(latest);
+            AssistantConfirmation latestAfterClaim = confirmationMapper.findById(confirmationId);
+            if (latestAfterClaim != null && AssistantConfirmation.CONSUMED.equals(latestAfterClaim.getStatus())) {
+                return replay(latestAfterClaim);
             }
             throw new AssistantException("ASSISTANT_CONFIRMATION_BUSY", HttpStatus.CONFLICT,
                     "确认凭据已被处理，不能重复执行");
@@ -104,12 +113,22 @@ public class AssistantConfirmationService {
         return new AssistantConfirmationResult(result.status(), result.body(), false);
     }
 
-    private String currentContextHash(AssistantConfirmation confirmation) {
+    private PreDefenseTask lockTargetTask(AssistantConfirmation confirmation) {
+        if ("create".equals(confirmation.getOperation())) {
+            return null;
+        }
+        if (confirmation.getTargetTaskId() == null) {
+            throw new AssistantException("ASSISTANT_CONFIRMATION_CORRUPT", HttpStatus.INTERNAL_SERVER_ERROR,
+                    "确认记录缺少目标任务");
+        }
+        return taskAccessGuard.requireOwnedForUpdate(confirmation.getTargetTaskId());
+    }
+
+    private String currentContextHash(AssistantConfirmation confirmation, PreDefenseTask task) {
         String operation = confirmation.getOperation();
         if ("create".equals(operation)) {
             return AssistantContextHasher.createState(confirmation.getRequestJson());
         }
-        PreDefenseTask task = taskAccessGuard.requireOwned(confirmation.getTargetTaskId());
         JsonNode request = parseRequest(confirmation.getRequestJson());
         String extra = switch (operation) {
             case "cancel" -> confirmation.getTargetRunId();

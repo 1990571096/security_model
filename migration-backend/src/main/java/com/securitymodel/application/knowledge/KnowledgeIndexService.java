@@ -1,5 +1,7 @@
 package com.securitymodel.application.knowledge;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.securitymodel.application.resource.ResourceQueryService;
 import com.securitymodel.application.task.TaskAccessGuard;
 import com.securitymodel.application.task.TaskCommandException;
@@ -36,6 +38,7 @@ import java.util.stream.Stream;
 public class KnowledgeIndexService {
 
     private static final Logger log = LoggerFactory.getLogger(KnowledgeIndexService.class);
+    private static final ObjectMapper JSON = new ObjectMapper();
     private static final String DEMO_ORIGIN = "demo";
 
     private final KnowledgeDocumentMapper documentMapper;
@@ -219,15 +222,47 @@ public class KnowledgeIndexService {
         StringBuilder markdown = new StringBuilder();
         markdown.append("# 任务报告：").append(safe(task.getTaskName(), 120)).append("\n\n");
         appendField(markdown, "任务状态", task.getStatus());
-        appendField(markdown, "当前 run", task.getCurrentRunId());
-        appendField(markdown, "当前 attempt", task.getCurrentAttempt() == null ? null
-                : task.getCurrentAttempt().toString());
+        appendField(markdown, "进度", task.getProgress() == null ? null : task.getProgress().toString());
         appendField(markdown, "数据集", dataset == null ? null : dataset.getDatasetName());
         appendField(markdown, "算法", algorithm == null ? null : algorithm.getAlgorithmName());
         appendField(markdown, "任务说明", task.getDescription());
-        appendField(markdown, "自定义参数", truncate(task.getCustomParams(), 2000));
-        appendField(markdown, "结果摘要", truncate(task.getCleaningResult(), 4000));
+        appendResultSummary(markdown, task.getCleaningResult());
         return KnowledgeSanitizer.sanitize(markdown.toString());
+    }
+
+    /**
+     * Report indexing uses a parsed field whitelist, never the raw result JSON. The raw
+     * envelope contains artifact/log/data paths and runtime executables that must not be
+     * embedded in a searchable document.
+     */
+    private void appendResultSummary(StringBuilder markdown, String rawResult) {
+        if (rawResult == null || rawResult.isBlank()) {
+            return;
+        }
+        try {
+            JsonNode root = JSON.readTree(rawResult);
+            appendField(markdown, "错误码", root.path("error_code").asText(null));
+            appendField(markdown, "失败原因", root.path("failure_reason").asText(null));
+            JsonNode metrics = root.path("metrics");
+            appendField(markdown, "清洗纯度",
+                    metrics.path("clean_purity_percent_by_isolation_ratio").toString());
+            appendField(markdown, "保留样本数",
+                    metrics.path("selected_sample_count_by_isolation_ratio").toString());
+            appendField(markdown, "选择类型", root.path("artifacts").path("selection_kind").asText(null));
+            JsonNode config = root.path("effective_config");
+            if (config.isObject()) {
+                StringBuilder safeConfig = new StringBuilder();
+                for (String key : List.of("dataset", "trigger_type", "trigger_label", "poisoned_mode",
+                        "poisoned_portion", "batch_size", "num_epochs", "seed")) {
+                    if (config.has(key) && !config.get(key).isNull()) {
+                        safeConfig.append(key).append("=").append(config.get(key).asText()).append(" ");
+                    }
+                }
+                appendField(markdown, "生效配置摘要", safeConfig.toString());
+            }
+        } catch (Exception exception) {
+            appendField(markdown, "结果摘要", "unavailable");
+        }
     }
 
     private void appendField(StringBuilder markdown, String label, String value) {

@@ -80,6 +80,7 @@ class PythonLddTaskExecutorProcessTest {
                 "open(os.path.join(root, 'root.pid'), 'w').write(str(os.getpid()))",
                 "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])",
                 "open(os.path.join(root, 'child.pid'), 'w').write(str(child.pid))",
+                "open(os.path.join(root, 'python-children.json'), 'w').write('{\"pids\":[%d]}' % child.pid)",
                 "time.sleep(60)"), StandardCharsets.UTF_8);
         ExecutionFingerprintService fingerprint =
                 new ExecutionFingerprintService(objectMapper, workspace.toString(), "python", script.toString(),

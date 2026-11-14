@@ -81,6 +81,17 @@ class OwnershipHttpContractTest {
         when(taskMapper.selectById(200L)).thenReturn(storedTask(200L));
         when(taskMapper.selectById(300L)).thenReturn(storedTask(300L));
         when(taskMapper.selectById(999L)).thenReturn(null);
+        when(taskMapper.selectByIdForUpdate(100L)).thenReturn(storedTask(100L));
+        when(taskMapper.selectByIdForUpdate(200L)).thenReturn(storedTask(200L));
+        when(taskMapper.selectByIdForUpdate(300L)).thenReturn(storedTask(300L));
+        when(taskMapper.selectBatchForUpdate(any())).thenAnswer(invocation -> {
+            Iterable<?> ids = invocation.getArgument(0);
+            List<PreDefenseTask> found = new java.util.ArrayList<>();
+            for (Object id : ids) {
+                found.add(storedTask(((Number) id).longValue()));
+            }
+            return found;
+        });
         when(taskMapper.selectBatchIds(any())).thenAnswer(invocation -> {
             Iterable<?> ids = invocation.getArgument(0);
             List<PreDefenseTask> found = new java.util.ArrayList<>();

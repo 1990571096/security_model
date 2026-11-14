@@ -101,6 +101,7 @@ class PreDefenseTaskCommandServiceTest {
         PreDefenseTask pending = task(31L, "pending", existingSnapshot);
 
         when(taskAccessGuard.requireOwned(31L)).thenReturn(failed, pending);
+        when(taskMapper.selectByIdForUpdate(31L)).thenReturn(failed);
         when(taskMapper.resetForRetry(31L)).thenReturn(1);
         when(taskMapper.claimForExecution(eq(31L), any(), eq(2), any(), any())).thenReturn(1);
 
@@ -126,6 +127,7 @@ class PreDefenseTaskCommandServiceTest {
     void refusesToStartUntilStartupRecoveryIsReady() {
         PreDefenseTask pending = task(33L, "pending", null);
         when(taskAccessGuard.requireOwned(33L)).thenReturn(pending);
+        when(taskMapper.selectByIdForUpdate(33L)).thenReturn(pending);
         readinessGate.markNotReady();
 
         var exception = org.junit.jupiter.api.Assertions.assertThrows(TaskCommandException.class,

@@ -14,7 +14,8 @@ public interface AssistantModel {
     ModelReply respond(ModelRequest request);
 
     record ModelRequest(String question, List<ModelMessage> messages,
-                        List<AssistantToolDescriptor> tools, int remainingToolCalls) {
+                        List<AssistantToolDescriptor> tools, int remainingToolCalls,
+                        long timeoutMillis) {
     }
 
     record ModelMessage(String role, String content) {

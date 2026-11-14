@@ -106,7 +106,7 @@ public class PreDefenseTaskCommandService {
     @Transactional(rollbackFor = Exception.class)
     public PreDefenseTask update(Long taskId, PreDefenseTaskCommand command) {
         validateCommand(command);
-        PreDefenseTask task = taskAccessGuard.requireOwned(taskId);
+        PreDefenseTask task = lockOwned(taskId);
         if (!"pending".equals(task.getStatus())) {
             throw new TaskCommandException("只有等待中的任务才能编辑");
         }
@@ -120,7 +120,11 @@ public class PreDefenseTaskCommandService {
         applyCommand(task, command);
         task.setUpdateBy(currentUserService.username());
         task.setUpdateTime(LocalDateTime.now());
-        taskMapper.updateById(task);
+        // The row lock above serializes this write against start/delete; the status predicate
+        // is a second guard so a stale entity can never write a running task back to pending.
+        if (taskMapper.updatePendingFields(task) != 1) {
+            throw new TaskCommandException("任务状态已变化，请刷新后重试");
+        }
         operationAuditService.recordTask(
                 taskId, "UPDATE", "pending", task.getStatus(), command, "编辑 LDD 清洗任务");
         return findRequired(taskId);
@@ -131,15 +135,19 @@ public class PreDefenseTaskCommandService {
         if (taskIds == null || taskIds.isEmpty()) {
             throw new TaskCommandException("任务ID列表不能为空");
         }
-        List<PreDefenseTask> tasks = taskMapper.selectBatchIds(taskIds);
-        if (tasks.size() != taskIds.size()) {
+        // Deterministic order prevents two concurrent multi-row deletes from deadlocking.
+        List<Long> orderedIds = taskIds.stream().distinct().sorted().toList();
+        List<PreDefenseTask> tasks = taskMapper.selectBatchForUpdate(orderedIds);
+        if (tasks.size() != orderedIds.size()) {
             throw new TaskCommandException("存在不存在的任务");
         }
         tasks.forEach(taskAccessGuard::requireOwner);
         if (tasks.stream().anyMatch(task -> "running".equals(task.getStatus()))) {
             throw new TaskCommandException("运行中的任务不能删除");
         }
-        taskMapper.deleteBatchIds(taskIds);
+        if (taskMapper.deleteBatchIds(orderedIds) != orderedIds.size()) {
+            throw new TaskCommandException("任务状态已变化，请刷新后重试");
+        }
         tasks.forEach(task -> operationAuditService.recordTask(
                 task.getTaskId(), "DELETE", task.getStatus(), "deleted",
                 Map.of("taskId", task.getTaskId()), "删除 LDD 清洗任务"));
@@ -147,7 +155,7 @@ public class PreDefenseTaskCommandService {
 
     @Transactional(rollbackFor = Exception.class)
     public Map<String, Object> start(Long taskId) {
-        PreDefenseTask task = taskAccessGuard.requireOwned(taskId);
+        PreDefenseTask task = lockOwned(taskId);
         if (!"pending".equals(task.getStatus())) {
             throw new TaskCommandException("只有等待中的任务才能启动");
         }
@@ -160,14 +168,14 @@ public class PreDefenseTaskCommandService {
 
     @Transactional(rollbackFor = Exception.class)
     public Map<String, Object> retry(Long taskId) {
-        PreDefenseTask task = taskAccessGuard.requireOwned(taskId);
+        PreDefenseTask task = lockOwned(taskId);
         if (!"failed".equals(task.getStatus())) {
             throw new TaskCommandException("只有失败的任务才能重试");
         }
         if (taskMapper.resetForRetry(taskId) != 1) {
             throw new TaskCommandException("任务状态已变化，请刷新后重试");
         }
-        launchTask(taskAccessGuard.requireOwned(taskId));
+        launchTask(task);
         operationAuditService.recordTask(
                 taskId, "RETRY", "failed", "running",
                 Map.of("taskId", taskId), "重试 LDD 清洗任务");
@@ -176,7 +184,7 @@ public class PreDefenseTaskCommandService {
 
     @Transactional(rollbackFor = Exception.class)
     public Map<String, Object> cancel(Long taskId) {
-        PreDefenseTask task = taskAccessGuard.requireOwned(taskId);
+        PreDefenseTask task = lockOwned(taskId);
         if (!"running".equals(task.getStatus())) {
             throw new TaskCommandException("只有运行中的任务才能取消");
         }
@@ -211,6 +219,15 @@ public class PreDefenseTaskCommandService {
     public PreDefenseTaskCommand validateDraft(PreDefenseTaskCommand command) {
         validateCommand(command);
         return command;
+    }
+
+    private PreDefenseTask lockOwned(Long taskId) {
+        PreDefenseTask task = taskMapper.selectByIdForUpdate(taskId);
+        if (task == null) {
+            throw new TaskCommandException("任务不存在");
+        }
+        taskAccessGuard.requireOwner(task);
+        return task;
     }
 
     private void validateCommand(PreDefenseTaskCommand command) {
@@ -292,18 +309,27 @@ public class PreDefenseTaskCommandService {
         // The lease and the task claim share one transaction: losing the GPU slot rolls the
         // claim back, and a failed claim rolls the lease back, so neither can half-commit.
         GpuLease lease = gpuLeaseService.acquire(task.getTaskId(), runId, attempt);
-        DefenseTaskRequest request = buildExecutionRequest(task, runId, attempt, lease);
-        ObjectNode quota = taskExecutionQuotaPolicy.validateAndBuildSnapshot(task);
-        LocalDateTime startTime = LocalDateTime.now();
-        String snapshot = appendExecutionSnapshot(task.getExecutionSnapshot(), request, startTime, quota, lease);
-        int claimed = taskMapper.claimForExecution(
-                task.getTaskId(), request.getRunId(), request.getAttempt(), startTime, snapshot);
-        if (claimed != 1) {
-            throw new TaskCommandException("任务状态已变化，请刷新后重试");
+        DefenseTaskRequest request;
+        try {
+            request = buildExecutionRequest(task, runId, attempt, lease);
+            ObjectNode quota = taskExecutionQuotaPolicy.validateAndBuildSnapshot(task);
+            LocalDateTime startTime = LocalDateTime.now();
+            String snapshot = appendExecutionSnapshot(task.getExecutionSnapshot(), request, startTime, quota, lease);
+            int claimed = taskMapper.claimForExecution(
+                    task.getTaskId(), request.getRunId(), request.getAttempt(), startTime, snapshot);
+            if (claimed != 1) {
+                throw new TaskCommandException("任务状态已变化，请刷新后重试");
+            }
+            ObjectNode runtime = executionFingerprintService.buildRuntimeSnapshot(request);
+            dispatchIntentService.createPending(request,
+                    executionFingerprintService.sha256(runtime.toString()), startTime);
+        } catch (RuntimeException exception) {
+            // The DB transaction will roll the lease row back, but this JVM's in-memory
+            // heartbeat registry must also forget it or it may try to renew a dead lease.
+            gpuLeaseService.forgetLocal(lease.getLeaseToken());
+            throw exception;
         }
-        ObjectNode runtime = executionFingerprintService.buildRuntimeSnapshot(request);
-        dispatchIntentService.createPending(request,
-                executionFingerprintService.sha256(runtime.toString()), startTime);
+        // Dispatch runs only after commit; it is intentionally outside the rollback cleanup.
         afterCommitTaskDispatcher.dispatch(
                 () -> dispatchCoordinator.dispatchAfterCommit(request),
                 null);

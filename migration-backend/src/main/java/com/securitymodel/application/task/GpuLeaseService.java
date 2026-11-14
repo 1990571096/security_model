@@ -4,8 +4,14 @@ import com.securitymodel.domain.lease.GpuLease;
 import com.securitymodel.infrastructure.persistence.mapper.GpuLeaseMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.util.StringUtils;
 
 import java.time.LocalDateTime;
@@ -35,14 +41,26 @@ public class GpuLeaseService {
     /** Tokens this JVM actually owns; the heartbeat must never keep a dead worker's lease alive. */
     private final Set<String> localTokens = ConcurrentHashMap.newKeySet();
     private final java.util.Map<String, GpuLease> localLeases = new ConcurrentHashMap<>();
+    private final TransactionTemplate quarantineTransaction;
 
+    /** Test/manual constructor: no independent transaction is available. */
+    public GpuLeaseService(GpuLeaseMapper mapper, String slotId, long ttlSeconds) {
+        this(mapper, slotId, ttlSeconds, null);
+    }
+
+    @Autowired
     public GpuLeaseService(
             GpuLeaseMapper mapper,
             @Value("${security-model.executor.gpu.slot-id:default-gpu-0}") String slotId,
-            @Value("${security-model.executor.gpu.lease-ttl-seconds:300}") long ttlSeconds) {
+            @Value("${security-model.executor.gpu.lease-ttl-seconds:300}") long ttlSeconds,
+            PlatformTransactionManager transactionManager) {
         this.mapper = mapper;
         this.slotId = slotId;
         this.ttlSeconds = ttlSeconds;
+        this.quarantineTransaction = transactionManager == null ? null : new TransactionTemplate(transactionManager);
+        if (this.quarantineTransaction != null) {
+            this.quarantineTransaction.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        }
     }
 
     /**
@@ -67,9 +85,10 @@ public class GpuLeaseService {
             if (current != null && current.getLeaseToken() != null
                     && current.getExpiresAt() != null && current.getExpiresAt().isBefore(now)) {
                 // TTL expiry proves only that heartbeats stopped, not that the GPU is idle.
-                // Quarantine the slot until a process probe confirms the old tree is gone.
-                mapper.block(slotId, current.getTaskId(), current.getRunId(),
-                        "LEASE_EXPIRED", now);
+                // The failed conditional UPDATE above still holds this row's lock in the
+                // caller transaction. Persist quarantine only after the caller completes,
+                // otherwise a REQUIRES_NEW write would deadlock and the rollback would erase it.
+                scheduleQuarantine(current, now);
                 throw new TaskCommandException("GPU_LEASE_EXPIRED: GPU 租约已过期但进程未确认退出，槽位已隔离");
             }
             throw new TaskCommandException("GPU_BUSY: 当前 GPU 正被其他任务占用，请稍后重试");
@@ -81,6 +100,40 @@ public class GpuLeaseService {
         localTokens.add(token);
         localLeases.put(token, lease);
         return lease;
+    }
+
+    private void scheduleQuarantine(GpuLease current, LocalDateTime now) {
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCompletion(int status) {
+                    quarantine(current, now);
+                }
+            });
+            return;
+        }
+        quarantine(current, now);
+    }
+
+    private void quarantine(GpuLease current, LocalDateTime now) {
+        Runnable block = () -> mapper.block(slotId, current.getTaskId(), current.getRunId(),
+                "LEASE_EXPIRED", now);
+        if (quarantineTransaction == null) {
+            block.run();
+            return;
+        }
+        // REQUIRES_NEW: the outer start transaction is about to roll back and must not
+        // erase the isolation decision.
+        quarantineTransaction.executeWithoutResult(status -> block.run());
+    }
+
+    /** Removes a lease this JVM registered but could not commit as a successful claim. */
+    public void forgetLocal(String leaseToken) {
+        if (leaseToken == null) {
+            return;
+        }
+        localTokens.remove(leaseToken);
+        localLeases.remove(leaseToken);
     }
 
     public boolean renew(GpuLease lease) {

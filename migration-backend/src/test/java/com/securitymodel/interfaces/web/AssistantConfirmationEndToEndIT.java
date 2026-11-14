@@ -151,6 +151,36 @@ class AssistantConfirmationEndToEndIT {
     }
 
     @Test
+    void taskChangeAfterPreviewMakesConfirmationStaleAndExecutesNothing() throws Exception {
+        String alice = login("alice");
+        String preview = mockMvc.perform(post("/api/assistant/tools/preview_cancel_task/preview")
+                        .header("Authorization", alice)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"taskId\":" + ALICE_RUNNING_TASK + "}"))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        long confirmationId = objectMapper.readTree(preview).path("confirmationId").asLong();
+        String token = objectMapper.readTree(preview).path("token").asText();
+
+        // A concurrent run started/changed after the user previewed: the previewed parameters
+        // no longer describe the current task version.
+        jdbc.update("UPDATE sys_pre_defense SET current_run_id = 'mutated-run' WHERE task_id = ?",
+                ALICE_RUNNING_TASK);
+
+        mockMvc.perform(post("/api/assistant/confirmations/confirm")
+                        .header("Authorization", alice)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(Map.of(
+                                "confirmationId", confirmationId, "token", token))))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("ASSISTANT_CONFIRMATION_STALE"));
+
+        assertEquals("running", jdbc.queryForObject(
+                "SELECT status FROM sys_pre_defense WHERE task_id = ?", String.class, ALICE_RUNNING_TASK));
+        verify(executor, times(0)).cancelPreDefense(ALICE_RUNNING_TASK, "mutated-run");
+    }
+
+    @Test
     void modelDisabledReturnsExplicitStatusAndCoreApiStillWorks() throws Exception {
         String alice = login("alice");
         mockMvc.perform(post("/api/assistant/chat")

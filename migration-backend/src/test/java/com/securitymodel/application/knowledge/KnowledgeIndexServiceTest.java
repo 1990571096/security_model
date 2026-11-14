@@ -10,6 +10,7 @@ import com.securitymodel.infrastructure.persistence.mapper.AlgorithmMapper;
 import com.securitymodel.infrastructure.persistence.mapper.KnowledgeDocumentMapper;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.mockito.ArgumentCaptor;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -129,6 +130,44 @@ class KnowledgeIndexServiceTest {
         assertEquals(1, stats.changed());
         verify(writer).saveVersion(eq("algorithm"), eq("algorithm:7"), eq("LDD"), eq("shared"),
                 eq(null), anyString(), anyList(), any());
+    }
+
+    @SuppressWarnings("unchecked")
+    @Test
+    void taskReportIndexesMetricsButNotRawArtifactPathsOrLogs() {
+        PreDefenseTask task = new PreDefenseTask();
+        task.setTaskId(42L);
+        task.setTaskName("LDD report");
+        task.setStatus("success");
+        task.setDataOrigin("user");
+        task.setCleaningResult("""
+                {"metrics":{"clean_purity_percent_by_isolation_ratio":91.5,
+                 "selected_sample_count_by_isolation_ratio":1000},
+                 "artifacts":{"selection_kind":"isolation_ratio",
+                 "result_path":"F:/Study/secret/result.json"},
+                 "failure_reason":null,
+                 "effective_config":{"dataset":"cifar10","batch_size":128,"num_epochs":5},
+                 "log":"Traceback at C:/Users/Jin/private/run.log token=abcdefgh12345678"}
+                """);
+        when(taskAccessGuard.requireOwned(42L)).thenReturn(task);
+        when(writer.saveVersion(any(), anyString(), anyString(), anyString(), any(), anyString(),
+                anyList(), any())).thenReturn(document(11L));
+
+        service(800).indexTaskReport(42L);
+
+        ArgumentCaptor<List<MarkdownKnowledgeChunker.Draft>> drafts =
+                ArgumentCaptor.forClass(List.class);
+        verify(writer).saveVersion(any(), anyString(), anyString(), anyString(), any(),
+                anyString(), drafts.capture(), any());
+        String indexed = drafts.getValue().stream()
+                .map(MarkdownKnowledgeChunker.Draft::content)
+                .collect(java.util.stream.Collectors.joining("\n"));
+        assertTrue(indexed.contains("91.5"));
+        assertTrue(indexed.contains("batch_size=128"));
+        assertTrue(!indexed.contains("F:/Study"));
+        assertTrue(!indexed.contains("C:/Users"));
+        assertTrue(!indexed.contains("abcdefgh12345678"));
+        assertTrue(!indexed.contains("result.json"));
     }
 
     @Test

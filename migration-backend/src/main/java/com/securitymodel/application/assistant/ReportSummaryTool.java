@@ -59,9 +59,14 @@ public class ReportSummaryTool implements AssistantTool {
                 if (artifacts.has("selection_kind")) {
                     data.put("selectionKind", artifacts.path("selection_kind").asText());
                 }
-                if (artifacts.has("clean_purity_percent_by_isolation_ratio")) {
+                JsonNode metrics = root.path("metrics");
+                if (metrics.has("clean_purity_percent_by_isolation_ratio")) {
                     data.set("cleanPurityPercentByIsolationRatio",
-                            artifacts.get("clean_purity_percent_by_isolation_ratio"));
+                            metrics.get("clean_purity_percent_by_isolation_ratio"));
+                }
+                if (metrics.has("selected_sample_count_by_isolation_ratio")) {
+                    data.set("selectedSampleCountByIsolationRatio",
+                            metrics.get("selected_sample_count_by_isolation_ratio"));
                 }
                 JsonNode config = root.path("effective_config");
                 if (config.has("dataset")) {

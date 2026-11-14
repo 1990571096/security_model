@@ -46,6 +46,16 @@ public class TaskAccessGuard {
         return task;
     }
 
+    /** Loads the task under a row lock and requires owner-level write permission. */
+    public PreDefenseTask requireOwnedForUpdate(Long taskId) {
+        PreDefenseTask task = taskMapper.selectByIdForUpdate(taskId);
+        if (task == null) {
+            throw new TaskCommandException("任务不存在");
+        }
+        requireOwner(task);
+        return task;
+    }
+
     /** Loads the task and requires read permission. */
     public PreDefenseTask requireReadable(Long taskId) {
         PreDefenseTask task = requirePresent(taskId);
