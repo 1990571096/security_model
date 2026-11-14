@@ -57,3 +57,19 @@ security-model:
     stale-progress-seconds: ${SECURITY_MODEL_OBSERVABILITY_STALE_PROGRESS_SECONDS:600}
     refresh-interval-ms: ${SECURITY_MODEL_OBSERVABILITY_REFRESH_INTERVAL_MS:30000}
     refresh-initial-delay-ms: ${SECURITY_MODEL_OBSERVABILITY_REFRESH_INITIAL_DELAY_MS:30000}
+  knowledge:
+    # R6: local retrieval is always available; external generation is opt-in.
+    sdd-root: ${SECURITY_MODEL_KNOWLEDGE_SDD_ROOT:../docs/sdd}
+    max-chunk-chars: ${SECURITY_MODEL_KNOWLEDGE_MAX_CHUNK_CHARS:800}
+    candidate-limit: ${SECURITY_MODEL_KNOWLEDGE_CANDIDATE_LIMIT:5000}
+    top-k: ${SECURITY_MODEL_KNOWLEDGE_TOP_K:5}
+    min-coverage: ${SECURITY_MODEL_KNOWLEDGE_MIN_COVERAGE:0.25}
+    min-score: ${SECURITY_MODEL_KNOWLEDGE_MIN_SCORE:20}
+    model:
+      enabled: ${SECURITY_MODEL_KNOWLEDGE_MODEL_ENABLED:false}
+      base-url: ${SECURITY_MODEL_KNOWLEDGE_MODEL_BASE_URL:}
+      name: ${SECURITY_MODEL_KNOWLEDGE_MODEL_NAME:}
+      api-key: ${SECURITY_MODEL_KNOWLEDGE_MODEL_API_KEY:}
+      timeout-seconds: ${SECURITY_MODEL_KNOWLEDGE_MODEL_TIMEOUT_SECONDS:30}
+      max-retries: ${SECURITY_MODEL_KNOWLEDGE_MODEL_MAX_RETRIES:1}
+      max-citation-chars: ${SECURITY_MODEL_KNOWLEDGE_MODEL_MAX_CITATION_CHARS:600}

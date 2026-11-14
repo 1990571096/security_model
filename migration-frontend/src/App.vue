@@ -30,6 +30,10 @@
           <el-icon><Monitor /></el-icon>
           <span>运行监控</span>
         </el-menu-item>
+        <el-menu-item index="/knowledge">
+          <el-icon><Search /></el-icon>
+          <span>知识检索</span>
+        </el-menu-item>
         <el-menu-item index="/statistics">
           <el-icon><TrendCharts /></el-icon>
           <span>数据统计</span>
@@ -75,6 +79,7 @@
         <router-link to="/algorithms">算法</router-link>
         <router-link to="/tasks">任务</router-link>
         <router-link to="/runtime-monitor">监控</router-link>
+        <router-link to="/knowledge">知识</router-link>
         <router-link to="/statistics">统计</router-link>
         <router-link to="/cases">案例</router-link>
         <router-link to="/defense/pre">训练前</router-link>
@@ -101,7 +106,8 @@ import {
   Promotion,
   Setting,
   TrendCharts,
-  Memo
+  Memo,
+  Search
 } from '@element-plus/icons-vue'
 
 const route = useRoute()
@@ -114,6 +120,7 @@ const pageTitles = {
   '/dashboard': '安全训练工作台',
   '/tasks': '安全防御任务',
   '/runtime-monitor': '运行监控',
+  '/knowledge': '知识检索',
   '/datasets': '数据集资源',
   '/algorithms': '算法资源',
   '/training-defense': '参数配置台账',

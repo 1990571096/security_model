@@ -368,5 +368,18 @@ Agent 采用外部大模型 API，本机不部署大模型。生成模型和 emb
 
 边界：新增 `ResourceCatalogCacheRedisIT` 已在本机真实 Redis 验证“读取中被 evict 时旧值不回填”，`OwnershipEndToEndIT` 已用真实 Security 链验证 Actuator 与管理汇总鉴权；Redis 宕机、真实 MySQL 长时间观测、CI 远端结果尚未验证；生产库未建表，不能写成“生产可观测体系已完成”。
 
+## ADR-020：R6 本地检索、中文切词与外部模型边界
+
+日期：2026-11-14；状态：**离线检索、引用 API 与模型适配器已实施并通过单元测试、20 题评估集和真实 MySQL ACL 测试；外部模型未获供应商/预算/数据留存授权，保持默认关闭，联调阻塞**。
+
+1. **不新增向量库**：继续使用 MySQL 作为唯一事实库。`sys_knowledge_document` 保存 `source_key/source_type/version/content_hash/visibility/owner_user_id/status`，`sys_knowledge_chunk` 保存 `section_path/content/start_line/end_line`；唯一键为 `(source_key, version)` 与 `(document_id, chunk_index)`。检索 SQL 只连接 `status='active'` 的文档，旧版本保留作审计但不可召回。
+2. **ACL 先于排序**：共享文档对所有已认证稳定用户可读；私有文档仅 `owner_user_id` 可读；管理员跨用户读必须显式打开 `security-model.ownership.admin-cross-user-read`。排序器只接收 SQL 已过滤的候选，不取全库再由前端过滤。
+3. **确定性中文切词**：`KnowledgeTokenizer` 使用 NFKC、小写、Han 连续串展开单字与二元组，英文/数字按词并做复数去尾；不引入外部分词器，保证同样的语料在每台机器得到同样的评估结果。停用词只去掉疑问/助词，技术词不删。
+4. **排序与拒答**：标题权重 3、章节 2、正文 1，按文档频率做 IDF 加权；同时要求 IDF 加权覆盖率和最低分（默认 `min-coverage=0.25`、`min-score=20`），避免仅命中“参数/循环”等常见词就回答未知问题。topK 默认 5，同分按 chunkId 稳定排序；无命中返回 `unknown`，不调用模型。
+5. **版本切换原子化**：管理员显式触发索引，不在启动时自动扫描。内容未变按 SHA-256 跳过；变化时在同一短事务插入新版本和全部 chunk，再 retire 其他 active 版本，读者不会看到半成品。SDD 导入拒绝符号链接、越界路径和非 UTF-8 读取异常；导入前统一脱敏。
+6. **外发字段白名单**：`KnowledgePromptBuilder` 只生成 `model/messages/temperature/max_tokens`，上下文只包含 `[Cn] 标题/章节/脱敏片段`，不包含 sourceKey、文档 ID、owner、绝对路径、日志、样本或凭据；问题是先脱敏再截断。system prompt 明确 `<context>` 是不可信数据，文档内指令不得执行。
+7. **模型失败不阻塞检索**：通用 OpenAI-compatible 适配器支持 baseUrl/model/key/timeout/retries 配置，默认 `enabled=false`；无密钥或配置不完整返回 `model_not_configured` 且不发请求；超时/429/5xx 最多自动重试一次；4xx、空响应、超时和网络异常都降级为 `retrieval_only` 并返回引用片段。模型答案出现候选集外的 `[C99]` 时整段丢弃；R6 不注册工具，文档注入无法扩大工具权限。
+
+边界：没有供应商授权、费用上限与数据留存确认前，不能真实调用付费 API，也不能写“外部模型联调完成”。当前证据来自假 HTTP 服务器捕获请求体、单元测试、20 题固定评估集（10 有效/5 未知/5 越权或注入）和真实 MySQL ACL 测试；生产库 `eladmin` 未执行本 ADR 的建表脚本，真实语料规模与模型质量仍未验证。
 
 

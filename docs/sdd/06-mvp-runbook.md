@@ -20,6 +20,7 @@ SOURCE sql/security_model_mvp_seed.sql;
 SOURCE sql/security_model_execution_snapshot.sql;
 SOURCE sql/security_model_task_run_context.sql;
 SOURCE sql/security_model_clean_subset_export.sql;
+SOURCE sql/security_model_knowledge.sql;
 ```
 
 已有开发库：
@@ -29,6 +30,7 @@ SOURCE sql/security_model_mvp_seed.sql;
 SOURCE sql/security_model_execution_snapshot.sql;
 SOURCE sql/security_model_task_run_context.sql;
 SOURCE sql/security_model_clean_subset_export.sql;
+SOURCE sql/security_model_knowledge.sql;
 ```
 
 seed 脚本不删除历史表和权限数据，只隐藏训练中、训练后及无关后台菜单，并禁用历史 mock baseline。当前展示算法为 `LDD`。
@@ -140,6 +142,7 @@ SOURCE sql/security_model_gpu_lease.sql;
 SOURCE sql/security_model_gpu_lease_block.sql;
 SOURCE sql/security_model_task_dispatch.sql;
 SOURCE sql/security_model_request_idempotency.sql;
+SOURCE sql/security_model_knowledge.sql;
 ```
 
 所有脚本均使用 `CREATE TABLE IF NOT EXISTS`，可重复执行；回滚脚本只删除本阶段新增表，不删除业务任务。R3 两张表没有外键到任务表，回滚不会级联删除任务。
@@ -162,6 +165,13 @@ SOURCE sql/security_model_request_idempotency.sql;
 - 指标标签只有 status/state/result/outcome 等低基数枚举；taskId、runId、userId 不得作为标签。
 - 日志格式包含 `requestId`、`taskId`、`runId`、`attempt`；请求头 `X-Request-Id` 只接受 8–64 位安全字符，否则生成 UUID。日志不记录 token、数据库密码、完整数据集路径。
 
+### 知识检索与外部模型
+
+- 索引不随启动自动执行。管理员先调用 `POST /api/knowledge/reindex` 导入 `docs/sdd`，再调用 `POST /api/knowledge/algorithms/reindex` 导入启用算法；用户只能调用 `POST /api/knowledge/tasks/{taskId}/index` 索引自己的任务报告摘要。
+- 配置前缀为 `security-model.knowledge.*`：`sdd-root`、`max-chunk-chars=800`、`candidate-limit=5000`、`top-k=5`、`min-coverage=0.25`、`min-score=20`。
+- 外部模型默认 `security-model.knowledge.model.enabled=false`；只有同时配置 `base-url`、`name`、`api-key` 才可能调用，且仍受超时、一次重试和引用校验约束。没有供应商/费用/数据留存授权时保持关闭，页面显示 `retrieval_only` 或 `model_not_configured`，不得写成联调完成。
+- 验收查询 `POST /api/knowledge/query` 的 `status` 为 `answered`/`retrieval_only`/`unknown`；`citations` 必须带 sourceKey、version、章节和行号。`GET /api/knowledge/status` 只返回 active 文档数。
+
 ### 备份与回滚
 
 备份必须放在仓库外，且不得提交 Git。以下命令只作为模板，路径和数据库名由执行人替换；生产执行前仍需单独授权。
@@ -171,7 +181,7 @@ SOURCE sql/security_model_request_idempotency.sql;
 cmd /c "mysqldump --single-transaction --routines --triggers -h 127.0.0.1 -P 3306 -u root -p eladmin --result-file=D:\db-backup\eladmin-before-r5.sql"
 ```
 
-回滚顺序：停止应用 → 确认无写入 → 按需执行 `security_model_request_idempotency_rollback.sql`、`security_model_task_dispatch_rollback.sql`、`security_model_gpu_lease_block_rollback.sql`、`security_model_gpu_lease_rollback.sql`。回滚不会删除任务表；生产回滚前必须再次核对备份与业务影响。
+回滚顺序：停止应用 → 确认无写入 → 按需执行 `security_model_knowledge_rollback.sql`、`security_model_request_idempotency_rollback.sql`、`security_model_task_dispatch_rollback.sql`、`security_model_gpu_lease_block_rollback.sql`、`security_model_gpu_lease_rollback.sql`。回滚不会删除任务表；生产回滚前必须再次核对备份与业务影响。
 
 ### 排障
 

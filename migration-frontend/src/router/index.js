@@ -11,6 +11,7 @@ const router = createRouter({
     { path: '/algorithms/:algorithmKey', component: () => import('../views/AlgorithmDetailView.vue') },
     { path: '/tasks', component: () => import('../views/TaskCenterView.vue') },
     { path: '/runtime-monitor', component: () => import('../views/RuntimeMonitorView.vue') },
+    { path: '/knowledge', component: () => import('../views/KnowledgeView.vue') },
     { path: '/training-defense', component: () => import('../views/TrainingDefenseView.vue') },
     { path: '/statistics', component: () => import('../views/StatisticsView.vue') },
     { path: '/cases', component: () => import('../views/CaseView.vue') },

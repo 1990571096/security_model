@@ -1,6 +1,6 @@
 # 项目目标与阶段进度说明
 
-更新时间：2026-11-13（R0 事实审计）
+更新时间：2026-11-14（R6 离线检索与引用回答实施）
 
 2026-11-13 文档与实现迭代：R2 第四切片后实现 R3-A/R3-B 代码（持久调度意图、条件抢占、统一启动恢复、有界 pending 扫描、create/start/retry 请求幂等），并完成 R5 第一批（运行指标、日志关联、Redis 代际缓存、管理员观测接口、Actuator 最小暴露、真实统计页），本机实跑 127 项单测 + 41 项 MySQL IT + 1 项真实 Redis 缓存代际 IT；带意图的真实 JVM 重启、R3-04 崩溃演练、真实 Redis 宕机、生产库建表仍未完成，R3 仍待外部复审。文档中未执行的真实 LDD 与生产库迁移仍保持未验证状态。
 
@@ -58,6 +58,7 @@ Vue 2 工程继续作为业务回归和回滚基线，不参与迁移版主流�
 | 参数快照 | 每次启动/重试保存资源、配置、运行环境和时间信息；数据集文件默认保存 SHA-256 内容摘要。 |
 | 任务进度 | 支持 pending、running、success、failed、canceled 状态展示、运行概览统计、任务名称搜索和轮询查看。 |
 | 执行池观测 | 提供 `/api/task-progress/executor-status`，展示有界线程池的活跃线程、队列占用、完成数、饱和状态、接收状态和任务运行配额；前端任务中心自动刷新。 |
+| 知识检索 | MySQL 文档/版本/chunk + ACL 前置检索，确定性中文切词/IDF 排序，引用定位到文档版本/章节/行号；无命中明确拒答，外部模型默认关闭。页面见 `/knowledge`。 |
 | 执行日志 | 支持从任务结果登记的日志文件中安全读取内容；运行中的任务会轮询当前尝试目录下的标准输出和错误输出，并按 offset 增量读取，同时返回 Python 适配器的阶段、epoch、进度消息和心跳快照。 |
 | 实验报告 | 已展示任务概览、执行尝试、参数快照、样本统计、LDD 指标、失败原因和产物信息。 |
 | 实际运行环境 | LDD 结果记录适配器版本、Python、PyTorch、NumPy、CUDA、GPU 和关键 Python 依赖版本，报告页单独展示实际运行环境。 |
@@ -245,6 +246,22 @@ Vue 2 工程继续作为业务回归和回滚基线，不参与迁移版主流�
 | 验证（本机） | `mvn verify -Pmysql-it`（`REDIS_IT=true`）→ **127 项单元测试，0 失败/0 跳过；41 项 MySQL IT + 1 项真实 Redis IT 全绿**；前端 `npm run build` 通过；Redis 宕机未注入 | `tmp/r5-final-verify.log`、`tmp/r5-redis-it.log`、`tmp/r5-frontend-final.log` |
 | 未做 | 生产库建表、真实 Redis 宕机/并发回填故障注入、MySQL 长时观测、CI 远端结果；统计页未展示真实 ASR（无采集源） | 见 20 §8、§9 |
 
+## 5.9 R6 实施记录：有引用的知识检索（2026-11-14，外部模型联调阻塞）
+
+| 变更 | 事实 | 证据 |
+| --- | --- | --- |
+| 知识库 schema | 新增 `sys_knowledge_document` / `sys_knowledge_chunk`；`(source_key, version)` 与 `(document_id, chunk_index)` 唯一；检索只连接 `status='active'` | `sql/security_model_knowledge.sql`、`KnowledgeDocumentMapper` |
+| ACL | 共享文档所有稳定认证用户可读；私有报告仅 `owner_user_id`；管理员跨用户读默认关闭，需显式开启 | `KnowledgeDocumentMapper.findSearchableForUser`、`KnowledgeRetrievalService` |
+| 导入与版本 | 管理员显式触发；SDD 直接 `.md` 文件拒绝符号链接/越界，UTF-8 去 BOM 后先脱敏再 SHA-256；内容未变跳过；变化时同一事务写新版本+全部 chunk 再 retire 旧 active 版本 | `KnowledgeIndexService`、`KnowledgeDocumentWriter` |
+| 分块与切词 | Markdown 保留标题/章节/1-based 行号；中文 Han 连续串展开单字+二元组，英文/数字按词，停用疑问词 | `MarkdownKnowledgeChunker`、`KnowledgeTokenizer` |
+| 排序与拒答 | 标题 3/章节 2/正文 1，IDF 加权；`min-coverage=0.25`、`min-score=20`、topK=5；无命中返回 `unknown`，不调用模型 | `KnowledgeRanker`、`KnowledgeRetrievalService` |
+| 引用回答 | `POST /api/knowledge/query` 返回 `status/answer/citations/modelStatus/modelMessage`；引用含 sourceKey/version/section/chunk/line/snippet/visibility；模型答案出现候选集外引用时整段丢弃并回退 | `KnowledgeQueryService`、`KnowledgePromptBuilder` |
+| 外部模型 | 通用 OpenAI-compatible 适配器，默认 `enabled=false`；无 key 返回 `model_not_configured`；超时/429/5xx 最多重试 1 次；4xx/超时/空响应降级为 `retrieval_only`；请求体白名单不含 sourceKey/文档 ID/owner/路径/日志/样本/凭据 | `OpenAiCompatibleKnowledgeAnswerModel` |
+| API | `GET /api/knowledge/status`、`POST /api/knowledge/reindex`、`POST /api/knowledge/algorithms/reindex`、`POST /api/knowledge/tasks/{taskId}/index`（owner）、`DELETE /api/knowledge/documents/{documentId}`（管理员） | `KnowledgeController` |
+| 前端 | 新增知识检索页、路由与菜单；展示回答/检索模式/未知、引用卡片、模型状态；管理员索引入口对 403 给出明确提示，不伪造成功 | `KnowledgeView.vue`、`src/api/knowledge.js`、`router/index.js`、`App.vue` |
+| 验证（本机） | `mvn verify -Pmysql-it`（`REDIS_IT=true`）→ **174 项单元测试，0 失败/0 跳过；45 项 MySQL IT + 1 项真实 Redis IT 全绿**；Python 11/11；前端 `npm run build` 通过（element chunk 947.11 kB 警告仍在）；未跑真实 LDD | `tmp/r6-final-verify2.log`、`tmp/r6-python-tests.log`、`tmp/r6-frontend.log` |
+| 未做/阻塞 | 外部模型供应商、费用上限、数据留存未获人类授权，不能真实外发；生产库 `eladmin` 未建表；真实语料规模、模型质量与 20 题之外的失败样例未评估 | 20 §9 |
+
 ## 6. 待完成与优化建议
 
 ### P0：正式实验闭环
@@ -257,7 +274,8 @@ Vue 2 工程继续作为业务回归和回滚基线，不参与迁移版主流�
 
 1. **R1（已实施，评审“有条件通过”；生产迁移未执行）**：稳定用户 ID 归属、任务/报告/日志/产物/导出授权、共享资源写权限收敛、历史数据迁移。验收见 17 号指导书 R1。
 2. **R2（可靠性修复完成，待复审）**：GPU 单槽租约、进程记录/整树回收、隔离槽位与探测、启动就绪门、导出失败收敛、产物清单/保留期均已有实现与本机证据；2026-11-14 已修复评审 P1-1~P1-4。剩余真实 LDD/6GB 实测、生产库建表/迁移和日志运行期限额。
-3. 持续补迁移版领域服务和 API 集成测试；现有 MySQL 集成测试仅覆盖任务原子领取、状态竞争和恢复扫描，不代表完整端到端覆盖。
+3. **R6（离线检索与适配器完成，外部模型联调阻塞）**：MySQL 文档/版本/chunk、ACL 前置检索、确定性中文切词与 IDF 排序、引用 API、知识页和通用模型适配器已落地；缺供应商/预算/数据留存授权，未真实外发，生产库未建表。详见 §5.9 与 ADR-020。
+4. 持续补迁移版领域服务和 API 集成测试；现有 MySQL 集成测试仅覆盖任务原子领取、状态竞争和恢复扫描，不代表完整端到端覆盖。
 4. 补充 Python 依赖锁定、部署复现和应用重启演练。
 5. 继续补充 Redis 缓存命中率、失效和不可用降级的观测指标。
 6. 只有跨进程/多实例调度成为明确需求后，再评估 Outbox + RabbitMQ 和独立 Worker。
