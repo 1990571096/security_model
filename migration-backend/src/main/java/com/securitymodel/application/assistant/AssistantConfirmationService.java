@@ -4,7 +4,10 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.securitymodel.application.audit.CurrentUserService;
 import com.securitymodel.application.task.IdempotencyResult;
+import com.securitymodel.application.task.PreDefenseTaskCommand;
+import com.securitymodel.application.task.PreDefenseTaskCommandService;
 import com.securitymodel.application.task.TaskAccessGuard;
+import com.securitymodel.application.task.TaskCommandException;
 import com.securitymodel.domain.assistant.AssistantConfirmation;
 import com.securitymodel.domain.task.PreDefenseTask;
 import com.securitymodel.infrastructure.persistence.mapper.AssistantConfirmationMapper;
@@ -25,6 +28,7 @@ public class AssistantConfirmationService {
     private final AssistantConfirmationMapper confirmationMapper;
     private final AssistantWriteExecutor writeExecutor;
     private final TaskAccessGuard taskAccessGuard;
+    private final PreDefenseTaskCommandService commandService;
     private final AssistantAuditService auditService;
     private final CurrentUserService currentUserService;
     private final ObjectMapper objectMapper;
@@ -33,12 +37,14 @@ public class AssistantConfirmationService {
             AssistantConfirmationMapper confirmationMapper,
             AssistantWriteExecutor writeExecutor,
             TaskAccessGuard taskAccessGuard,
+            PreDefenseTaskCommandService commandService,
             AssistantAuditService auditService,
             CurrentUserService currentUserService,
             ObjectMapper objectMapper) {
         this.confirmationMapper = confirmationMapper;
         this.writeExecutor = writeExecutor;
         this.taskAccessGuard = taskAccessGuard;
+        this.commandService = commandService;
         this.auditService = auditService;
         this.currentUserService = currentUserService;
         this.objectMapper = objectMapper;
@@ -126,13 +132,17 @@ public class AssistantConfirmationService {
 
     private String currentContextHash(AssistantConfirmation confirmation, PreDefenseTask task) {
         String operation = confirmation.getOperation();
+        JsonNode request = parseRequest(confirmation.getRequestJson());
         if ("create".equals(operation)) {
+            if (!approvedConfigStillMatches(request)) {
+                return "stale-config";
+            }
             return AssistantContextHasher.createState(confirmation.getRequestJson());
         }
-        JsonNode request = parseRequest(confirmation.getRequestJson());
         String extra = switch (operation) {
             case "cancel" -> confirmation.getTargetRunId();
             case "export" -> request.path("isolationRatio").asText();
+            case "start", "retry" -> currentConfigFingerprint(task);
             default -> "";
         };
         if (("cancel".equals(operation) || "export".equals(operation))
@@ -141,6 +151,34 @@ public class AssistantConfirmationService {
             return "stale-run";
         }
         return AssistantContextHasher.taskState(operation, task, extra);
+    }
+
+    private boolean approvedConfigStillMatches(JsonNode request) {
+        String expected = request.path("expectedConfigFingerprint").asText("");
+        if (expected.isBlank()) {
+            return false;
+        }
+        PreDefenseTaskCommand command = new PreDefenseTaskCommand();
+        command.setTaskName(request.path("taskName").asText());
+        command.setDescription(request.has("description") ? request.path("description").asText() : null);
+        command.setDatasetId(request.path("datasetId").asLong());
+        command.setAlgorithmId(request.path("algorithmId").asLong());
+        command.setHyperId(request.has("hyperId") ? request.path("hyperId").asLong() : null);
+        command.setCustomParams(request.path("customParams").isObject()
+                ? request.path("customParams").toString() : "{}");
+        try {
+            return expected.equals(commandService.plan(command).fingerprint());
+        } catch (TaskCommandException exception) {
+            return false;
+        }
+    }
+
+    private String currentConfigFingerprint(PreDefenseTask task) {
+        try {
+            return commandService.plan(task).fingerprint();
+        } catch (TaskCommandException exception) {
+            return "stale-config";
+        }
     }
 
     private JsonNode parseRequest(String raw) {

@@ -14,7 +14,9 @@ import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.Map;
 import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.RejectedExecutionException;
@@ -42,9 +44,11 @@ public class AssistantChatService {
     private final ObjectMapper objectMapper;
     private final ExecutorService modelExecutor;
     private final Semaphore requestSlots = new Semaphore(4, true);
+    private final Map<Long, Semaphore> userSlots = new ConcurrentHashMap<>();
     private final int maxModelCalls;
     private final int maxToolCalls;
     private final long timeoutMillis;
+    private final int maxConcurrentPerUser;
 
     public AssistantChatService(
             AssistantModel model,
@@ -57,7 +61,8 @@ public class AssistantChatService {
             ObjectMapper objectMapper,
             @Value("${security-model.assistant.max-model-calls:6}") int maxModelCalls,
             @Value("${security-model.assistant.max-tool-calls:5}") int maxToolCalls,
-            @Value("${security-model.assistant.timeout-seconds:60}") long timeoutSeconds) {
+            @Value("${security-model.assistant.timeout-seconds:60}") long timeoutSeconds,
+            @Value("${security-model.assistant.max-concurrent-per-user:1}") int maxConcurrentPerUser) {
         this.model = model;
         this.registry = registry;
         this.previewService = previewService;
@@ -75,6 +80,7 @@ public class AssistantChatService {
         this.maxModelCalls = Math.max(1, Math.min(12, maxModelCalls));
         this.maxToolCalls = Math.max(1, Math.min(10, maxToolCalls));
         this.timeoutMillis = TimeUnit.SECONDS.toMillis(Math.max(5, Math.min(180, timeoutSeconds)));
+        this.maxConcurrentPerUser = Math.max(1, Math.min(4, maxConcurrentPerUser));
     }
 
     public AssistantChatResponse chat(Long sessionId, String question) {
@@ -82,9 +88,24 @@ public class AssistantChatService {
             throw new AssistantException("ASSISTANT_BUSY", HttpStatus.TOO_MANY_REQUESTS,
                     "助手当前请求过多，请稍后重试；普通任务接口不受影响。");
         }
+        Long userId;
+        try {
+            userId = currentUserService.requireStableIdentity().userId();
+        } catch (RuntimeException exception) {
+            requestSlots.release();
+            throw exception;
+        }
+        Semaphore userSlot = userSlots.computeIfAbsent(userId,
+                ignored -> new Semaphore(maxConcurrentPerUser, true));
+        if (!userSlot.tryAcquire()) {
+            requestSlots.release();
+            throw new AssistantException("ASSISTANT_BUSY", HttpStatus.TOO_MANY_REQUESTS,
+                    "同一用户的助手请求过多，请等待当前回答完成；普通任务接口不受影响。");
+        }
         try {
             return chatWithBudget(sessionId, question);
         } finally {
+            userSlot.release();
             requestSlots.release();
         }
     }

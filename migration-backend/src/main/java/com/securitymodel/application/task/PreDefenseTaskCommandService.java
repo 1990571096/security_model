@@ -80,13 +80,22 @@ public class PreDefenseTaskCommandService {
 
     @Transactional(rollbackFor = Exception.class)
     public PreDefenseTask create(PreDefenseTaskCommand command) {
-        validateCommand(command);
+        return create(command, null);
+    }
+
+    /** Assistant path: reject a confirmation whose resource/parameter contract changed. */
+    @Transactional(rollbackFor = Exception.class)
+    public PreDefenseTask create(PreDefenseTaskCommand command, String expectedFingerprint) {
+        TaskExecutionPlan plan = requireApprovedPlan(command, expectedFingerprint);
         if (taskMapper.selectCount(Wrappers.<PreDefenseTask>lambdaQuery()
                 .eq(PreDefenseTask::getTaskName, command.getTaskName())) > 0) {
             throw new TaskCommandException("任务名称已存在");
         }
 
         PreDefenseTask task = new PreDefenseTask();
+        // Persist the exact approved final config, not the raw override fragment. Later
+        // edits to catalog defaults cannot silently reinterpret this task's parameters.
+        command.setCustomParams(plan.finalParameters().toString());
         applyCommand(task, command);
         task.setStatus("pending");
         task.setProgress(0);
@@ -105,7 +114,7 @@ public class PreDefenseTaskCommandService {
 
     @Transactional(rollbackFor = Exception.class)
     public PreDefenseTask update(Long taskId, PreDefenseTaskCommand command) {
-        validateCommand(command);
+        resolveCommand(command);
         PreDefenseTask task = lockOwned(taskId);
         if (!"pending".equals(task.getStatus())) {
             throw new TaskCommandException("只有等待中的任务才能编辑");
@@ -155,11 +164,18 @@ public class PreDefenseTaskCommandService {
 
     @Transactional(rollbackFor = Exception.class)
     public Map<String, Object> start(Long taskId) {
+        return start(taskId, null);
+    }
+
+    /** Assistant path: the approved resource/parameter fingerprint must still match. */
+    @Transactional(rollbackFor = Exception.class)
+    public Map<String, Object> start(Long taskId, String expectedFingerprint) {
         PreDefenseTask task = lockOwned(taskId);
         if (!"pending".equals(task.getStatus())) {
             throw new TaskCommandException("只有等待中的任务才能启动");
         }
-        launchTask(task);
+        TaskExecutionPlan plan = requireApprovedPlan(task, expectedFingerprint);
+        launchTask(task, plan);
         operationAuditService.recordTask(
                 taskId, "START", "pending", "running",
                 Map.of("taskId", taskId), "启动 LDD 清洗任务");
@@ -168,14 +184,20 @@ public class PreDefenseTaskCommandService {
 
     @Transactional(rollbackFor = Exception.class)
     public Map<String, Object> retry(Long taskId) {
+        return retry(taskId, null);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public Map<String, Object> retry(Long taskId, String expectedFingerprint) {
         PreDefenseTask task = lockOwned(taskId);
         if (!"failed".equals(task.getStatus())) {
             throw new TaskCommandException("只有失败的任务才能重试");
         }
+        TaskExecutionPlan plan = requireApprovedPlan(task, expectedFingerprint);
         if (taskMapper.resetForRetry(taskId) != 1) {
             throw new TaskCommandException("任务状态已变化，请刷新后重试");
         }
-        launchTask(task);
+        launchTask(task, plan);
         operationAuditService.recordTask(
                 taskId, "RETRY", "failed", "running",
                 Map.of("taskId", taskId), "重试 LDD 清洗任务");
@@ -217,8 +239,66 @@ public class PreDefenseTaskCommandService {
      * exactly like create/update but never inserts or launches anything.
      */
     public PreDefenseTaskCommand validateDraft(PreDefenseTaskCommand command) {
-        validateCommand(command);
+        resolveCommand(command);
         return command;
+    }
+
+    /**
+     * Builds the exact, resource-bound contract a user is asked to approve. The same
+     * method is used at confirmation time, so an algorithm/template/dataset catalog
+     * change after preview invalidates the confirmation instead of silently changing
+     * what will actually run.
+     */
+    public TaskExecutionPlan plan(PreDefenseTask task) {
+        return plan(commandOf(task));
+    }
+
+    public TaskExecutionPlan plan(PreDefenseTaskCommand command) {
+        Resolution resolution = resolveCommand(command);
+        ObjectNode canonical = objectMapper.createObjectNode();
+        canonical.put("datasetId", resolution.dataset().getDatasetId());
+        canonical.put("datasetName", nullSafe(resolution.dataset().getDatasetName()));
+        canonical.put("datasetType", nullSafe(resolution.dataset().getDatasetType()));
+        canonical.put("datasetParseStatus", nullSafe(resolution.dataset().getParseStatus()));
+        canonical.put("datasetSampleCount", resolution.dataset().getSampleCount());
+        canonical.put("datasetFileSize", resolution.dataset().getFileSize());
+        canonical.put("datasetFilePath", nullSafe(resolution.dataset().getFilePath()));
+        canonical.put("datasetParseTime", nullSafe(resolution.dataset().getParseTime()));
+        canonical.put("datasetUpdateTime", nullSafe(resolution.dataset().getUpdateTime()));
+        canonical.put("algorithmId", resolution.algorithm().getAlgorithmId());
+        canonical.put("algorithmName", nullSafe(resolution.algorithm().getAlgorithmName()));
+        canonical.put("algorithmImplementationPath", nullSafe(resolution.algorithm().getImplementationPath()));
+        canonical.put("algorithmDefaultConfig", nullSafe(resolution.algorithm().getDefaultConfig()));
+        canonical.put("algorithmUpdateTime", nullSafe(resolution.algorithm().getUpdateTime()));
+        if (resolution.hyper() != null) {
+            canonical.put("hyperId", resolution.hyper().getTemplateId());
+            canonical.put("hyperName", nullSafe(resolution.hyper().getTemplateName()));
+            canonical.put("hyperParameterConfig", nullSafe(resolution.hyper().getParameterConfig()));
+            canonical.put("hyperUpdateTime", nullSafe(resolution.hyper().getUpdateTime()));
+        }
+        canonical.set("finalParameters", resolution.finalConfig());
+        String fingerprint = executionFingerprintService.sha256(canonical.toString());
+
+        ObjectNode preview = objectMapper.createObjectNode();
+        preview.put("configFingerprint", fingerprint);
+        preview.set("finalParameters", resolution.finalConfig().deepCopy());
+        ObjectNode datasetView = preview.putObject("dataset");
+        datasetView.put("datasetId", resolution.dataset().getDatasetId());
+        datasetView.put("name", nullSafe(resolution.dataset().getDatasetName()));
+        datasetView.put("type", nullSafe(resolution.dataset().getDatasetType()));
+        datasetView.put("sampleCount", resolution.dataset().getSampleCount());
+        datasetView.put("classCount", resolution.dataset().getClassCount());
+        ObjectNode algorithmView = preview.putObject("algorithm");
+        algorithmView.put("algorithmId", resolution.algorithm().getAlgorithmId());
+        algorithmView.put("name", nullSafe(resolution.algorithm().getAlgorithmName()));
+        algorithmView.put("type", nullSafe(resolution.algorithm().getAlgorithmType()));
+        algorithmView.put("defenseStage", nullSafe(resolution.algorithm().getDefenseStage()));
+        if (resolution.hyper() != null) {
+            ObjectNode hyperView = preview.putObject("hyper");
+            hyperView.put("hyperId", resolution.hyper().getTemplateId());
+            hyperView.put("name", nullSafe(resolution.hyper().getTemplateName()));
+        }
+        return new TaskExecutionPlan(fingerprint, resolution.finalConfig(), preview);
     }
 
     private PreDefenseTask lockOwned(Long taskId) {
@@ -230,7 +310,7 @@ public class PreDefenseTaskCommandService {
         return task;
     }
 
-    private void validateCommand(PreDefenseTaskCommand command) {
+    private Resolution resolveCommand(PreDefenseTaskCommand command) {
         if (command == null || command.getTaskName() == null
                 || command.getTaskName().isBlank()) {
             throw new TaskCommandException("任务名称不能为空");
@@ -255,19 +335,39 @@ public class PreDefenseTaskCommandService {
             throw new TaskCommandException("当前平台仅开放已启用的 LDD 训练前防御算法");
         }
 
+        Hyper hyper = command.getHyperId() == null ? null : resourceQueryService.findHyper(command.getHyperId());
         if (command.getHyperId() != null) {
-            Hyper hyper = resourceQueryService.findHyper(command.getHyperId());
             if (hyper == null || !Boolean.TRUE.equals(hyper.getEnabled())
                     || !command.getAlgorithmId().equals(hyper.getAlgorithmId())) {
                 throw new TaskCommandException("超参数模板不存在、未启用或与 LDD 算法不匹配");
             }
         }
         normalizeParams(command);
-        Hyper hyper = command.getHyperId() == null ? null : resourceQueryService.findHyper(command.getHyperId());
-        lddConfigurationPolicy.mergeAndValidate(
+        ObjectNode finalConfig = lddConfigurationPolicy.normalizeAndValidate(
                 algorithm.getDefaultConfig(),
                 hyper == null ? null : hyper.getParameterConfig(),
                 command.getCustomParams());
+        return new Resolution(dataset, algorithm, hyper, finalConfig);
+    }
+
+    private PreDefenseTaskCommand commandOf(PreDefenseTask task) {
+        PreDefenseTaskCommand command = new PreDefenseTaskCommand();
+        command.setTaskId(task.getTaskId());
+        command.setTaskName(task.getTaskName());
+        command.setDescription(task.getDescription());
+        command.setDatasetId(task.getDatasetId());
+        command.setAlgorithmId(task.getAlgorithmId());
+        command.setHyperId(task.getHyperId());
+        command.setCustomParams(task.getCustomParams());
+        return command;
+    }
+
+    private static String nullSafe(Object value) {
+        return value == null ? "" : String.valueOf(value);
+    }
+
+    private record Resolution(Dataset dataset, Algorithm algorithm, Hyper hyper,
+                              ObjectNode finalConfig) {
     }
 
     private void applyCommand(PreDefenseTask task, PreDefenseTaskCommand command) {
@@ -300,10 +400,13 @@ public class PreDefenseTaskCommandService {
     }
 
     private void launchTask(PreDefenseTask task) {
+        launchTask(task, plan(task));
+    }
+
+    private void launchTask(PreDefenseTask task, TaskExecutionPlan approvedPlan) {
         if (!readinessGate.isReady()) {
             throw new TaskCommandException("SCHEDULING_NOT_READY: 启动恢复尚未完成，暂不接受新的执行请求");
         }
-        validateTaskForLaunch(task);
         int attempt = nextAttempt(task.getExecutionSnapshot());
         String runId = UUID.randomUUID().toString();
         // The lease and the task claim share one transaction: losing the GPU slot rolls the
@@ -311,7 +414,7 @@ public class PreDefenseTaskCommandService {
         GpuLease lease = gpuLeaseService.acquire(task.getTaskId(), runId, attempt);
         DefenseTaskRequest request;
         try {
-            request = buildExecutionRequest(task, runId, attempt, lease);
+            request = buildExecutionRequest(task, runId, attempt, lease, approvedPlan.finalParameters());
             ObjectNode quota = taskExecutionQuotaPolicy.validateAndBuildSnapshot(task);
             LocalDateTime startTime = LocalDateTime.now();
             String snapshot = appendExecutionSnapshot(task.getExecutionSnapshot(), request, startTime, quota, lease);
@@ -335,20 +438,30 @@ public class PreDefenseTaskCommandService {
                 null);
     }
 
+    private TaskExecutionPlan requireApprovedPlan(PreDefenseTaskCommand command, String expectedFingerprint) {
+        TaskExecutionPlan plan = plan(command);
+        if (expectedFingerprint != null && !expectedFingerprint.isBlank()
+                && !expectedFingerprint.equals(plan.fingerprint())) {
+            throw new TaskCommandException("ASSISTANT_CONFIRMATION_STALE: 算法、模板或数据集已变化，请重新预览");
+        }
+        return plan;
+    }
+
+    private TaskExecutionPlan requireApprovedPlan(PreDefenseTask task, String expectedFingerprint) {
+        TaskExecutionPlan plan = plan(task);
+        if (expectedFingerprint != null && !expectedFingerprint.isBlank()
+                && !expectedFingerprint.equals(plan.fingerprint())) {
+            throw new TaskCommandException("ASSISTANT_CONFIRMATION_STALE: 算法、模板或数据集已变化，请重新预览");
+        }
+        return plan;
+    }
+
     private void validateTaskForLaunch(PreDefenseTask task) {
-        PreDefenseTaskCommand command = new PreDefenseTaskCommand();
-        command.setTaskId(task.getTaskId());
-        command.setTaskName(task.getTaskName());
-        command.setDescription(task.getDescription());
-        command.setDatasetId(task.getDatasetId());
-        command.setAlgorithmId(task.getAlgorithmId());
-        command.setHyperId(task.getHyperId());
-        command.setCustomParams(task.getCustomParams());
-        validateCommand(command);
+        resolveCommand(commandOf(task));
     }
 
     private DefenseTaskRequest buildExecutionRequest(PreDefenseTask task, String runId, int attempt,
-                                                     GpuLease lease) {
+                                                     GpuLease lease, ObjectNode finalParameters) {
         Dataset dataset = resourceQueryService.findDataset(task.getDatasetId());
         Algorithm algorithm = resourceQueryService.findAlgorithm(task.getAlgorithmId());
         Hyper hyper = task.getHyperId() == null ? null : resourceQueryService.findHyper(task.getHyperId());
@@ -360,7 +473,7 @@ public class PreDefenseTaskCommandService {
                 .stage("pre_defense")
                 .description(task.getDescription())
                 .createdBy(task.getCreateBy())
-                .customParams(task.getCustomParams())
+                .customParams(finalParameters.toString())
                 .dataset(toDatasetRef(dataset))
                 .algorithm(toAlgorithmRef(algorithm))
                 .hyperParameter(toHyperRef(hyper))

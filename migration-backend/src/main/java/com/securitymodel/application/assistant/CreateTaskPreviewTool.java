@@ -48,6 +48,7 @@ public class CreateTaskPreviewTool implements AssistantTool {
         command.setCustomParams(AssistantArgs.optionalObjectText(arguments, "customParams", 20_000));
 
         commandService.validateDraft(command);
+        var plan = commandService.plan(command);
         ObjectNode request = objectMapper.createObjectNode();
         request.put("taskName", command.getTaskName());
         if (command.getDescription() != null) {
@@ -59,9 +60,11 @@ public class CreateTaskPreviewTool implements AssistantTool {
             request.put("hyperId", command.getHyperId());
         }
         request.set("customParams", parseObject(command.getCustomParams()));
+        request.put("expectedConfigFingerprint", plan.fingerprint());
 
         ObjectNode data = request.deepCopy();
         data.put("operation", "create");
+        data.setAll(plan.preview());
         data.put("warning", "创建后任务为 pending，不会自动启动；启动仍需单独预览并确认。");
         data.put("parametersLocked", true);
         String summary = "创建任务预览：仅校验名称、数据集、算法和参数，任务尚未写入、不会自动启动。";

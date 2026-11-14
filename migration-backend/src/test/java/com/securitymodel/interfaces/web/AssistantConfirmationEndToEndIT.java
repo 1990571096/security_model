@@ -10,6 +10,7 @@ import com.securitymodel.application.task.TaskExecutionQuotaPolicy;
 import com.securitymodel.domain.algorithm.Algorithm;
 import com.securitymodel.domain.assistant.AssistantSession;
 import com.securitymodel.domain.dataset.Dataset;
+import com.securitymodel.application.task.DefenseTaskRequest;
 import com.securitymodel.domain.lease.GpuLease;
 import com.securitymodel.infrastructure.executor.DefenseTaskExecutor;
 import com.securitymodel.support.OwnershipE2ESupport;
@@ -24,6 +25,7 @@ import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.mockito.ArgumentCaptor;
 import org.springframework.test.web.servlet.MockMvc;
 
 import java.sql.Connection;
@@ -44,6 +46,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.never;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -283,6 +286,16 @@ class AssistantConfirmationEndToEndIT {
         return algorithm;
     }
 
+    private Algorithm changedAlgorithm() {
+        Algorithm algorithm = algorithm();
+        algorithm.setDefaultConfig("{\"dataset\":\"cifar10\",\"trigger_type\":\"badnets\","
+                + "\"trigger_label\":0,\"poisoned_mode\":\"all2one\",\"poisoned_portion\":0.1,"
+                + "\"batch_size\":128,\"num_epochs\":6,\"lr_poison\":0.01,\"r\":0.5,"
+                + "\"alpha1\":1.0,\"alpha2\":1.0,\"seed\":11}");
+        algorithm.setUpdateTime(LocalDateTime.now().plusSeconds(1));
+        return algorithm;
+    }
+
     private GpuLease lease() {
         GpuLease lease = new GpuLease();
         lease.setSlotId("default-gpu-0");
@@ -360,7 +373,123 @@ class AssistantConfirmationEndToEndIT {
         assertTrue(jdbc.queryForObject(
                 "SELECT current_run_id FROM sys_pre_defense WHERE task_id = ?", String.class, ALICE_PENDING_TASK)
                 .length() > 10);
-        verify(dispatchCoordinator, times(1)).dispatchAfterCommit(any());
+        ArgumentCaptor<DefenseTaskRequest> requestCaptor = ArgumentCaptor.forClass(DefenseTaskRequest.class);
+        verify(dispatchCoordinator, times(1)).dispatchAfterCommit(requestCaptor.capture());
+        assertEquals(objectMapper.readTree(preview).path("preview").path("finalParameters"),
+                objectMapper.readTree(requestCaptor.getValue().getCustomParams()));
+    }
+
+    @Test
+    void concurrentCreateConfirmationExecutesOnce() throws Exception {
+        String alice = login("alice");
+        String taskName = "assistant-concurrent-create-" + UUID.randomUUID();
+        var createArgs = objectMapper.createObjectNode()
+                .put("taskName", taskName)
+                .put("datasetId", 1)
+                .put("algorithmId", 1);
+        createArgs.set("customParams", objectMapper.createObjectNode().put("seed", 11));
+        String preview = mockMvc.perform(post("/api/assistant/tools/preview_create_task/preview")
+                        .header("Authorization", alice)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(createArgs.toString()))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        long confirmationId = objectMapper.readTree(preview).path("confirmationId").asLong();
+        String token = objectMapper.readTree(preview).path("token").asText();
+
+        CountDownLatch ready = new CountDownLatch(2);
+        CountDownLatch go = new CountDownLatch(1);
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            List<Future<Integer>> outcomes = List.of(
+                    pool.submit(() -> confirm(ready, go, alice, confirmationId, token)),
+                    pool.submit(() -> confirm(ready, go, alice, confirmationId, token)));
+            ready.await(5, TimeUnit.SECONDS);
+            go.countDown();
+            for (Future<Integer> outcome : outcomes) {
+                int status = outcome.get(10, TimeUnit.SECONDS);
+                assertTrue(status == 200 || status == 201 || status == 409, "status=" + status);
+            }
+        } finally {
+            pool.shutdownNow();
+        }
+
+        assertEquals(1, jdbc.queryForObject(
+                "SELECT COUNT(*) FROM sys_pre_defense WHERE task_name = ?", Integer.class, taskName));
+    }
+
+    private int confirm(CountDownLatch ready, CountDownLatch go, String token,
+                        long confirmationId, String confirmationToken) throws Exception {
+        ready.countDown();
+        assertTrue(go.await(5, TimeUnit.SECONDS));
+        return mockMvc.perform(post("/api/assistant/confirmations/confirm")
+                        .header("Authorization", token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(Map.of(
+                                "confirmationId", confirmationId, "token", confirmationToken))))
+                .andReturn().getResponse().getStatus();
+    }
+
+    @Test
+    void changingAlgorithmDefaultsAfterPreviewInvalidatesStartWithoutLeasingOrDispatch() throws Exception {
+        String alice = login("alice");
+        insertTask(ALICE_PENDING_TASK, "assistant-pending", "pending", null, 1, null);
+
+        String preview = mockMvc.perform(post("/api/assistant/tools/preview_start_task/preview")
+                        .header("Authorization", alice)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"taskId\":" + ALICE_PENDING_TASK + "}"))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+
+        when(resourceQueryService.findAlgorithm(1L)).thenReturn(changedAlgorithm());
+        long confirmationId = objectMapper.readTree(preview).path("confirmationId").asLong();
+        String token = objectMapper.readTree(preview).path("token").asText();
+        mockMvc.perform(post("/api/assistant/confirmations/confirm")
+                        .header("Authorization", alice)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(Map.of(
+                                "confirmationId", confirmationId, "token", token))))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("ASSISTANT_CONFIRMATION_STALE"));
+
+        assertEquals("pending", jdbc.queryForObject(
+                "SELECT status FROM sys_pre_defense WHERE task_id = ?", String.class, ALICE_PENDING_TASK));
+        verify(gpuLeaseService, never()).acquire(anyLong(), any(), anyInt());
+        verify(dispatchCoordinator, never()).dispatchAfterCommit(any());
+    }
+
+    @Test
+    void changingAlgorithmDefaultsAfterCreatePreviewNeverCreatesTask() throws Exception {
+        String alice = login("alice");
+        String taskName = "assistant-stale-create-" + UUID.randomUUID();
+        var createArgs = objectMapper.createObjectNode()
+                .put("taskName", taskName)
+                .put("datasetId", 1)
+                .put("algorithmId", 1);
+        createArgs.set("customParams", objectMapper.createObjectNode().put("seed", 11));
+
+        String preview = mockMvc.perform(post("/api/assistant/tools/preview_create_task/preview")
+                        .header("Authorization", alice)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(createArgs.toString()))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+
+        when(resourceQueryService.findAlgorithm(1L)).thenReturn(changedAlgorithm());
+        long confirmationId = objectMapper.readTree(preview).path("confirmationId").asLong();
+        String token = objectMapper.readTree(preview).path("token").asText();
+        mockMvc.perform(post("/api/assistant/confirmations/confirm")
+                        .header("Authorization", alice)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(Map.of(
+                                "confirmationId", confirmationId, "token", token))))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("ASSISTANT_CONFIRMATION_STALE"));
+
+        assertEquals(0, jdbc.queryForObject(
+                "SELECT COUNT(*) FROM sys_pre_defense WHERE task_name = ?", Integer.class, taskName));
+        verify(executor, never()).runPreDefense(any());
     }
 
     @Test
@@ -430,6 +559,12 @@ class AssistantConfirmationEndToEndIT {
         assertEquals(1, jdbc.queryForObject(
                 "SELECT COUNT(*) FROM sys_pre_defense_export WHERE task_id = ?",
                 Integer.class, ALICE_EXPORT_TASK));
+        long exportId = jdbc.queryForObject(
+                "SELECT export_id FROM sys_pre_defense_export WHERE task_id = ?",
+                Long.class, ALICE_EXPORT_TASK);
+        mockMvc.perform(get("/api/pre-defense/cleaned-dataset/exports/" + exportId + "/download")
+                        .header("Authorization", login("bob")))
+                .andExpect(status().isForbidden());
     }
 
     private void insertTask(long taskId, String taskName, String status, String runId,

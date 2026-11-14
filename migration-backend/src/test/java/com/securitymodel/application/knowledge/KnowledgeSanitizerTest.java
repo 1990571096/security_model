@@ -50,6 +50,18 @@ class KnowledgeSanitizerTest {
     }
 
     @Test
+    void redactsChineseAndSpacedFilesystemPaths() {
+        String raw = "样本 /data/实验/样本.png 以及 /workspace/项目 一/结果 文件.json "
+                + "Windows D:/研究 数据/样本 集/结果.csv";
+        String sanitized = KnowledgeSanitizer.sanitize(raw);
+
+        assertFalse(sanitized.contains("/data/实验"));
+        assertFalse(sanitized.contains("/workspace/项目"));
+        assertFalse(sanitized.contains("D:/研究"));
+        assertTrue(sanitized.contains("[已过滤路径]"));
+    }
+
+    @Test
     void preservesApiPathsThatAreNotFilesystemPaths() {
         String sanitized = KnowledgeSanitizer.sanitize("POST /api/knowledge/query 返回引用");
         assertTrue(sanitized.contains("/api/knowledge/query"));

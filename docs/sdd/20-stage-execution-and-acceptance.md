@@ -225,7 +225,7 @@ R3-01/02/03/05/06/07/08/09/10 必须含真实 MySQL 证据；R3-04 包含短进�
 
 逐项对应：R3-01 用真实 JDBC 事务回滚证明任务领取、租约、意图三行均不残留（原始 SQL 层，不是完整命令服务回归）；R3-02 用真实库中的 pending 行 + mock 重放验证启动不会先失败；R3-03 单元与真实库条件更新均证明只有一个抢占者；R3-05/06 单元覆盖执行器拒绝、GPU_BUSY、接受后记账失败；R3-08 单元覆盖同体复用、异体 409、进行中 409、失败释放，真实库覆盖跨用户唯一键；R3-09 单元覆盖 5 分钟超时显式失败；R3-10 通过脚本重复执行与回滚表断言。
 
-仍未完成、不得据此宣称 R3 全部验收（2026-11-14 复审结论未变）：R3-02 的“真实 JVM 重启 + 重放执行一次”端到端、R3-04 带意图的短进程崩溃演练、R3-01 的服务层事务回归仍需补；当前证据只到数据库事务与单元 mock。R3-07 旧 run 迟到结果、R3-05 取消与瞬时完成的**条件更新竞争**已补真实 MySQL 证据（`MySqlTaskPersistenceIT.lateOldRunResultAndFinishNeverOverwriteCurrentAttempt`、`cancelAndInstantFinishCannotBothTerminalizeTheSameRun`），但真实命令服务层完整链路仍缺；生产库 `eladmin` 建表仍未执行。
+仍未完成、不得据此宣称 R3 全部验收（2026-11-14 复审结论未变）：R3-02 的“真实 JVM 重启 + 重放执行一次”端到端、R3-04 带意图的短进程崩溃演练、R3-01 的服务层事务回归仍需补；当前证据只到数据库事务与单元 mock，另新增 `TaskCommandServicePipelineIT` 2 项（真实事务、任务 Mapper、GPU 租约、配额、调度意图和协调器，仅替换执行器与资源目录查询）：双线程同任务启动只有 1 个成功、1 个 run、1 条意图、执行器 1 次；取消与瞬时成功竞争只有一个终态。R3-07 旧 run 迟到结果、R3-05 取消与瞬时完成的**条件更新竞争**已补真实 MySQL 证据（`MySqlTaskPersistenceIT.lateOldRunResultAndFinishNeverOverwriteCurrentAttempt`、`cancelAndInstantFinishCannotBothTerminalizeTheSameRun`），但删除—启动、编辑—启动、事务回滚和双派发竞争仍未补真实服务层 IT；生产库 `eladmin` 建表仍未执行。
 
 ## 7. R4：可选 RabbitMQ 与单机独立 Worker
 
@@ -322,12 +322,12 @@ CPU/GPU 利用率采集为可选指标，未启用可显示未知；任务/队�
 1. 新增 `sql/security_model_assistant.sql`：确认凭据、会话、工具审计、日配额四张表；确认 token 只存 SHA-256。
 2. `AssistantToolRegistry` 注册 4 个只读工具和 5 个写预览工具，未知名称拒绝；没有 shell/SQL/任意文件工具。
 3. 只读任务/报告复用 `TaskAccessGuard.requireOwned`，知识检索复用 ACL-first 服务；跨用户 403。
-4. 写工具只返回预览、风险说明、规范请求和上下文哈希；token 为 256-bit 随机值，TTL 默认 300 秒；无确认不写业务表、不领取 GPU。
-5. 确认服务在事务内重校验 user/token/TTL/task-run-attempt-update_time/参数哈希，条件 `pending→consuming` 后执行原命令，并接入 R3 幂等；重复确认返回原结果并带 `confirmationReplayed=true`。
-6. `AssistantChatService` 使用有界模型线程池（4 线程 + 16 队列）和全局 4 请求并发槽；模型调用 Future 最长等待剩余预算并在超时后 `cancel(true)`，工具调用前后检查同一 deadline；6 次模型调用、5 次工具调用、60 秒预算目标。`AssistantQuotaService` 按用户日 50 次条件自增，超出 429。残留：正在同步执行的工具无法被强制中断，只能保证超时后不再发起下一次模型/工具调用。
+4. 写工具只返回预览、风险说明、规范请求和上下文哈希；创建/启动/重试预览重新解析资源并返回 `configFingerprint` 与 `finalParameters`；token 为 256-bit 随机值，TTL 默认 300 秒；无确认不写业务表、不领取 GPU。
+5. 确认服务在事务内重校验 user/token/TTL/task-run-attempt-update_time/参数哈希；create 重新构造命令并比对 `expectedConfigFingerprint`，start/retry 用当前 `plan(task).fingerprint()` 生成上下文哈希；参数或资源变化返回 409 `ASSISTANT_CONFIRMATION_STALE`，不领取 GPU、不写意图、不派发；条件 `pending→consuming` 后执行原命令，并接入 R3 幂等；重复确认返回原结果并带 `confirmationReplayed=true`。
+6. `AssistantChatService` 使用有界模型线程池（4 线程 + 16 队列）、全局 4 请求并发槽和单用户并发槽（`max-concurrent-per-user`，默认 1，范围 1–4）；模型调用 Future 最长等待剩余预算并在超时后 `cancel(true)`，工具调用前后检查同一 deadline；6 次模型调用、5 次工具调用、60 秒预算目标。`AssistantQuotaService` 按用户日 50 次条件自增，超出 429。残留：正在同步执行的工具无法被强制中断，只能保证超时后不再发起下一次模型/工具调用，剩余预算尚未传入 `executeTool`。
 7. 模型端口 `AssistantModel` 默认 `provider=disabled`，明确返回 `model_disabled`；未接真实付费 API，核心任务/报告/知识接口不受影响。
 8. 新增 `/api/assistant/*` 和 `/assistant` 页面；会话 7 天、可删除，审计只存工具名/operator/target/resultCode/durationMs。
-9. 当前证据（2026-11-14 第二轮评审修复及 R3/R7 补测，已提交工作区）：助手核心单测 9 项 + 参数证据 3 项 + 脱敏 5 项；真实 HTTP + MySQL 助手确认/会话链路 10 项（预览零写入、确认只执行一次、重复返回原结果、跨用户 403、删除会话不可复活、并发会话不丢记录，以及 create/start/retry/export 四类写工具的确认写入与状态断言）；最终 `mvn verify -Pmysql-it`（`REDIS_IT=true`）为 **204 项单元测试 + 60 项 MySQL/Redis 集成测试全绿**，日志 `tmp/r8-review-verify4.log`；前端构建沿用 `tmp/r7-frontend.log`。上一提交 `6157500` 的历史证据为 **198 项单元测试 + 52 项集成测试**，日志 `tmp/r7-review-verify3.log`；R7 提交 `8862cd3` 的历史证据为 **188 项单测 + 49 项集成测试**，日志 `tmp/r7-final-verify2.log`。历史数字只对应各自提交。
+9. 当前证据（2026-11-14 R3/R7 可靠性与确认契约收尾，工作区尚未提交）：助手核心单测 10 项 + 参数证据 4 项 + 脱敏 6 项；真实 HTTP + MySQL 助手确认/会话链路 13 项（预览零写入、确认只执行一次、重复返回原结果、跨用户 403、删除会话不可复活、并发会话不丢记录、create/start/retry/export 四类写工具确认写入、预览后算法默认值变化 409 且零租约/零派发、并发同凭据创建只写一次、导出跨用户下载 403）；真实命令服务链路 2 项（双启动竞争、取消/瞬时成功竞争）；最终 `mvn verify -Pmysql-it`（`REDIS_IT=true`）为 **207 项单元测试 + 65 项 MySQL/Redis 集成测试全绿**，日志 `tmp/r8-contract-verify.log`；前端构建沿用 `tmp/r7-frontend.log`。上一提交 `81fe075` 的历史证据为 **204 项单元测试 + 60 项集成测试**，日志 `tmp/r8-review-verify4.log`；更早 `6157500` 为 **198 + 52**（`tmp/r7-review-verify3.log`），`8862cd3` 为 **188 + 49**（`tmp/r7-final-verify2.log`）。历史数字只对应各自提交。
 10. 未做：真实外部模型、真实 LDD、生产库 `eladmin` 建表、组织级双人审批/分布式锁。
 
 ## 11. R8：可选多实例学习验收

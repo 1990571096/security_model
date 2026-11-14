@@ -62,7 +62,8 @@ public class AssistantWriteExecutor {
                 ? request.get("hyperId").asLong() : null);
         command.setCustomParams(request.path("customParams").isObject()
                 ? request.path("customParams").toString() : "{}");
-        PreDefenseTask task = commandService.create(command);
+        PreDefenseTask task = commandService.create(command,
+                request.path("expectedConfigFingerprint").asText(null));
         return new IdempotencyResult(201, objectMapper.valueToTree(Map.of(
                 "taskId", task.getTaskId(),
                 "status", task.getStatus(),
@@ -72,10 +73,11 @@ public class AssistantWriteExecutor {
 
     private IdempotencyResult taskAction(String operation, JsonNode request) {
         Long taskId = request.path("taskId").asLong();
+        String expectedFingerprint = request.path("expectedConfigFingerprint").asText(null);
         Map<String, Object> result = switch (operation) {
-            case "start" -> commandService.start(taskId);
+            case "start" -> commandService.start(taskId, expectedFingerprint);
             case "cancel" -> commandService.cancel(taskId);
-            case "retry" -> commandService.retry(taskId);
+            case "retry" -> commandService.retry(taskId, expectedFingerprint);
             default -> throw new AssistantException("ASSISTANT_OPERATION_NOT_ALLOWED",
                     org.springframework.http.HttpStatus.BAD_REQUEST, "不支持的任务操作");
         };

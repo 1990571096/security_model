@@ -32,7 +32,7 @@
 | 安全 | `TaskAccessGuard`、`JwtAuthenticationFilter`、`OwnershipEndToEndIT` | 已有 owner 授权、账号状态回查和隔离库 HTTP 测试；业务库迁移与测试证据独立记录 |
 | Redis | `ResourceCatalogCache`、ADR-010 | 资源目录缓存已落地，不是分布式锁或任务状态存储 |
 | 知识检索 R6 | `KnowledgeIndexService`、`KnowledgeRetrievalMySqlIT`、`KnowledgeController` | 离线检索、ACL、引用与回答适配器已落地；真实外部模型/embedding 未接 |
-| 受控助手 R7 | `AssistantChatService`、`AssistantConfirmationService`、`AssistantSessionService`、`AssistantModelEvidence` | 工具白名单、预览确认、配额、审计、有界并发和结构化证据已落地；外部模型仍为禁用适配器，五类写工具全量 HTTP 验收未完成 |
+| 受控助手 R7 | `AssistantChatService`、`AssistantConfirmationService`、`AssistantSessionService`、`AssistantModelEvidence` | 工具白名单、预览确认、配额、审计、有界并发、单用户并发槽、结构化参数证据与资源指纹确认已落地；外部模型仍为禁用适配器，五类写工具全量 HTTP 验收、JVM 重启与真实命令服务层其余竞争仍未完成 |
 | 质量门禁 | `.github/workflows/migration-quality.yml` | 配置有 Maven/MySQL/Redis/Vite；进程守卫测试已改为 Windows/Linux 双实现，远端 Actions 结果仍需实际查询 |
 
 所有文件名相对于仓库根 `F:\Study\postgraduate\毕业论文\security_model`。开始每轮前执行 `git status --short`，阅读相关 SDD 与源码，保留其他人已有修改；与表格事实不一致时，先提交事实差异供复核，不得沿用过期结论。
@@ -178,8 +178,10 @@ Redis 保持 MySQL 回源；新增缓存必须提供 key/TTL/失效/穿透/击�
 - 入口：`AssistantController`（chat/confirm/tools/preview/sessions/audits/status），页面 `/assistant`。
 - 端口：`AssistantModel` 默认 `provider=disabled`；新增供应商适配器只改 provider，不改 `AssistantChatService`。
 - allow-list：`AssistantToolRegistry` + `ParameterGuideTool`、`TaskSummaryTool`、`ReportSummaryTool`、`KnowledgeSearchTool`、`CreateTaskPreviewTool`、`StartTaskPreviewTool`、`CancelTaskPreviewTool`、`RetryTaskPreviewTool`、`ExportTaskPreviewTool`。
-- 写安全：`AssistantPreviewService` 只生成 token 哈希；`AssistantConfirmationService` 重校验 + 原子消费；`AssistantWriteExecutor` 才调用原命令服务与 R3 幂等。
-- 证据：`AssistantChatServiceTest`、`AssistantConfirmationServiceTest`、`AssistantConfirmationEndToEndIT`、`AssistantToolRegistryTest`；细节见 `09` §5.10、`20` §10、ADR-021。
+- 写安全：`AssistantPreviewService` 只生成 token 哈希；`AssistantConfirmationService` 重校验 + 原子消费；create 比对 `expectedConfigFingerprint`，start/retry 比对当前 `plan(task).fingerprint()`；`AssistantWriteExecutor` 才调用原命令服务与 R3 幂等。
+- 外发边界：`KnowledgeSanitizer` 覆盖中文/空格/嵌套路径、凭据与联系方式；`AssistantModelEvidence` 按参数名投影 `type/default/min/max/options`，真实 LDD schema 不被 400 字截断。
+- 并发边界：模型线程池 4/16、全局请求槽 4、单用户并发槽默认 1（`max-concurrent-per-user`）；同步工具仍不可强制中断，剩余预算未传入 `executeTool`。
+- 证据：`AssistantChatServiceTest`、`AssistantConfirmationServiceTest`、`AssistantConfirmationEndToEndIT`、`TaskCommandServicePipelineIT`、`KnowledgeSanitizerTest`、`AssistantModelEvidenceTest`；细节见 `09` §5.10、`20` §10、ADR-021。
 
 ## 11. R8：可选分布式验收
 

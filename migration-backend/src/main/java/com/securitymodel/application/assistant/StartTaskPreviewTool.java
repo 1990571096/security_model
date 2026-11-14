@@ -52,17 +52,20 @@ public class StartTaskPreviewTool implements AssistantTool {
         command.setHyperId(task.getHyperId());
         command.setCustomParams(task.getCustomParams());
         commandService.validateDraft(command);
+        var plan = commandService.plan(task);
 
         ObjectNode request = objectMapper.createObjectNode();
         request.put("taskId", task.getTaskId());
+        request.put("expectedConfigFingerprint", plan.fingerprint());
         ObjectNode data = request.deepCopy();
         data.put("operation", "start");
         data.put("taskName", task.getTaskName());
         data.put("status", task.getStatus());
+        data.setAll(plan.preview());
         data.put("warning", "确认后会占用单 GPU 槽并启动真实任务；不会自动修改 128 batch / 5 epochs。");
         String summary = "启动预览：任务 #" + taskId + " 当前为 pending，参数已通过校验；确认前不会领取 GPU 或启动进程。";
         return new AssistantToolResult(summary, data, "start", request, task.getTaskId(),
                 task.getCurrentRunId(),
-                AssistantContextHasher.taskState("start", task, ""));
+                AssistantContextHasher.taskState("start", task, plan.fingerprint()));
     }
 }

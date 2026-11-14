@@ -4,10 +4,13 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.securitymodel.application.audit.AuthenticatedUser;
 import com.securitymodel.application.audit.CurrentUserService;
 import com.securitymodel.application.task.IdempotencyResult;
+import com.securitymodel.application.task.PreDefenseTaskCommandService;
 import com.securitymodel.application.task.TaskAccessGuard;
+import com.securitymodel.application.task.TaskExecutionPlan;
 import com.securitymodel.domain.assistant.AssistantConfirmation;
 import com.securitymodel.domain.task.PreDefenseTask;
 import com.securitymodel.infrastructure.persistence.mapper.AssistantConfirmationMapper;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpStatus;
 
@@ -28,8 +31,15 @@ class AssistantConfirmationServiceTest {
     private final AssistantConfirmationMapper mapper = mock(AssistantConfirmationMapper.class);
     private final AssistantWriteExecutor executor = mock(AssistantWriteExecutor.class);
     private final TaskAccessGuard guard = mock(TaskAccessGuard.class);
+    private final PreDefenseTaskCommandService commandService = mock(PreDefenseTaskCommandService.class);
     private final AssistantAuditService audit = mock(AssistantAuditService.class);
     private final CurrentUserService currentUser = mock(CurrentUserService.class);
+
+    @BeforeEach
+    void defaultFingerprint() {
+        when(commandService.plan(any(PreDefenseTask.class))).thenReturn(new TaskExecutionPlan(
+                "fingerprint", objectMapper.createObjectNode(), objectMapper.createObjectNode()));
+    }
 
     @Test
     void crossUserConfirmationIsForbidden() {
@@ -137,7 +147,9 @@ class AssistantConfirmationServiceTest {
         confirmation.setOperation("start");
         confirmation.setTargetTaskId(5L);
         confirmation.setRequestJson("{\"taskId\":5}");
-        confirmation.setContextHash(AssistantContextHasher.taskState("start", task, ""));
+        when(commandService.plan(task)).thenReturn(new TaskExecutionPlan("fingerprint",
+                objectMapper.createObjectNode(), objectMapper.createObjectNode()));
+        confirmation.setContextHash(AssistantContextHasher.taskState("start", task, "fingerprint"));
         when(mapper.findById(1L)).thenReturn(confirmation);
         when(currentUser.requireStableIdentity()).thenReturn(new AuthenticatedUser(1L, "alice", false));
         when(guard.requireOwnedForUpdate(5L)).thenReturn(task);
@@ -156,7 +168,7 @@ class AssistantConfirmationServiceTest {
     }
 
     private AssistantConfirmationService service() {
-        return new AssistantConfirmationService(mapper, executor, guard, audit,
+        return new AssistantConfirmationService(mapper, executor, guard, commandService, audit,
                 currentUser, objectMapper);
     }
 

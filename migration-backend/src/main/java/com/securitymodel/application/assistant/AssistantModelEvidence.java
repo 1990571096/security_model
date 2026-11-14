@@ -76,8 +76,10 @@ final class AssistantModelEvidence {
                 copyText(objectMapper, item, algorithm, "name");
                 copyText(objectMapper, item, algorithm, "type");
                 copyText(objectMapper, item, algorithm, "defenseStage");
-                copyText(objectMapper, item, algorithm, "defaultConfig", 400);
-                copyText(objectMapper, item, algorithm, "configSchema", 400);
+                // Keep parameter constraints structured. Serializing configSchema as a
+                // string and cutting it at a fixed offset drops min/max/options that come
+                // after that offset (the real LDD schema is longer than 400 chars).
+                copyProjectedParameters(objectMapper, item, algorithm);
             }
         }
         JsonNode datasets = data.get("datasets");
@@ -97,6 +99,124 @@ final class AssistantModelEvidence {
                 copyText(objectMapper, item, dataset, "classCount");
             }
         }
+    }
+
+    private static void copyProjectedParameters(ObjectMapper objectMapper, JsonNode source,
+                                                 ObjectNode target) {
+        JsonNode schema = parseObject(objectMapper, source.get("configSchema"));
+        JsonNode defaults = parseObject(objectMapper, source.get("defaultConfig"));
+        ObjectNode projected = target.putObject("parameters");
+        int count = 0;
+        java.util.Set<String> keys = new java.util.LinkedHashSet<>();
+        // The model needs the parameters that actually determine an LDD run first.
+        keys.addAll(java.util.List.of("batch_size", "num_epochs", "dataset", "trigger_type",
+                "trigger_label", "poisoned_mode", "poisoned_portion", "seed"));
+        if (schema != null && schema.isObject()) {
+            schema.fieldNames().forEachRemaining(keys::add);
+        }
+        if (defaults != null && defaults.isObject()) {
+            defaults.fieldNames().forEachRemaining(keys::add);
+        }
+        for (String key : keys) {
+            if (count++ >= 30) {
+                break;
+            }
+            ObjectNode parameter = projected.putObject(key);
+            JsonNode meta = schema != null && schema.isObject() ? schema.get(key) : null;
+            if (meta != null && meta.isObject()) {
+                copyText(objectMapper, meta, parameter, "type");
+                copyValue(objectMapper, meta, parameter, "default", 120);
+                copyValue(objectMapper, meta, parameter, "min", 120);
+                copyValue(objectMapper, meta, parameter, "max", 120);
+                copyOptions(objectMapper, meta.get("options"), parameter);
+            }
+            JsonNode defaultValue = meta != null && meta.has("default")
+                    ? meta.get("default")
+                    : defaults != null ? defaults.get(key) : null;
+            if (defaultValue != null && !defaultValue.isNull()) {
+                copySanitizedValue(objectMapper, defaultValue, parameter, "default", 120);
+            }
+        }
+    }
+
+    private static JsonNode parseObject(ObjectMapper objectMapper, JsonNode raw) {
+        if (raw == null || raw.isNull()) {
+            return null;
+        }
+        JsonNode value = raw.isTextual() ? parseText(objectMapper, raw.asText()) : raw;
+        return value != null && value.isObject() ? value : null;
+    }
+
+    private static JsonNode parseText(ObjectMapper objectMapper, String raw) {
+        try {
+            return objectMapper.readTree(raw);
+        } catch (Exception exception) {
+            return null;
+        }
+    }
+
+    private static void copyOptions(ObjectMapper objectMapper, JsonNode options, ObjectNode target) {
+        if (options == null || !options.isArray()) {
+            return;
+        }
+        ArrayNode safe = target.putArray("options");
+        int count = 0;
+        for (JsonNode option : options) {
+            if (count++ >= 20) {
+                break;
+            }
+            copySanitizedValue(objectMapper, option, safe, null, 80);
+        }
+    }
+
+    private static void copyValue(ObjectMapper objectMapper, JsonNode source, ObjectNode target,
+                                  String field, int maxChars) {
+        JsonNode value = source.get(field);
+        if (value != null && !value.isNull()) {
+            copySanitizedValue(objectMapper, value, target, field, maxChars);
+        }
+    }
+
+    private static void copySanitizedValue(ObjectMapper objectMapper, JsonNode value, ObjectNode target,
+                                           String field, int maxChars) {
+        JsonNode safe = sanitizeValue(objectMapper, value, maxChars);
+        if (safe == null || field == null) {
+            return;
+        }
+        target.set(field, safe);
+    }
+
+    private static void copySanitizedValue(ObjectMapper objectMapper, JsonNode value, ArrayNode target,
+                                           String field, int maxChars) {
+        JsonNode safe = sanitizeValue(objectMapper, value, maxChars);
+        if (safe != null) {
+            target.add(safe);
+        }
+    }
+
+    private static JsonNode sanitizeValue(ObjectMapper objectMapper, JsonNode value, int maxChars) {
+        if (value == null || value.isNull()) {
+            return null;
+        }
+        if (value.isNumber() || value.isBoolean()) {
+            return value.deepCopy();
+        }
+        if (value.isTextual()) {
+            return objectMapper.getNodeFactory().textNode(
+                    KnowledgeSanitizer.forModel(value.asText(), maxChars));
+        }
+        if (value.isArray()) {
+            ArrayNode safe = objectMapper.createArrayNode();
+            for (JsonNode item : value) {
+                JsonNode child = sanitizeValue(objectMapper, item, Math.min(maxChars, 80));
+                if (child != null) {
+                    safe.add(child);
+                }
+            }
+            return safe;
+        }
+        return objectMapper.getNodeFactory().textNode(
+                KnowledgeSanitizer.forModel(value.toString(), maxChars));
     }
 
     private static void copyText(ObjectMapper objectMapper, JsonNode source, ObjectNode target, String field) {

@@ -10,12 +10,16 @@ import org.junit.jupiter.api.Test;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -170,7 +174,7 @@ class AssistantChatServiceTest {
             }
             return AssistantModel.ModelReply.answer("ok", "fake");
         };
-        AssistantChatService service = service(registry, model, null, 5);
+        AssistantChatService service = service(registry, model, null, 5, 4);
         CountDownLatch start = new CountDownLatch(1);
         java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(5);
         AtomicInteger busy = new AtomicInteger();
@@ -245,6 +249,58 @@ class AssistantChatServiceTest {
         assertFalse(toolMessage.contains("sk-short"));
     }
 
+    @Test
+    void oneUserBlockedDoesNotConsumeAnotherUsersCapacityAndBlocksSameUserTwice() throws Exception {
+        CountDownLatch modelEntered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        AtomicInteger calls = new AtomicInteger();
+        AssistantModel model = request -> {
+            if (calls.incrementAndGet() == 1) {
+                modelEntered.countDown();
+                try {
+                    release.await(5, TimeUnit.SECONDS);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+            return AssistantModel.ModelReply.answer("ok", "fake");
+        };
+        AtomicLong currentUser = new AtomicLong(2L);
+        CurrentUserService user = mock(CurrentUserService.class);
+        when(user.requireStableIdentity()).thenAnswer(ignored ->
+                new AuthenticatedUser(currentUser.get(), "u" + currentUser.get(), false));
+        AssistantQuotaService quota = mock(AssistantQuotaService.class);
+        when(quota.remaining()).thenReturn(50);
+        AssistantSessionService sessions = mock(AssistantSessionService.class);
+        AssistantSession session = new AssistantSession();
+        session.setSessionId(7L);
+        when(sessions.getOrCreate(any(), anyLong(), any())).thenReturn(session);
+        AssistantChatService service = new AssistantChatService(
+                model, new AssistantToolRegistry(List.of()), mock(AssistantPreviewService.class),
+                mock(AssistantAuditService.class), quota, sessions, user, objectMapper, 6, 5, 60, 1);
+
+        var pool = Executors.newSingleThreadExecutor();
+        try {
+            Future<AssistantChatResponse> blockedUser = pool.submit(() -> service.chat(null, "slow"));
+            assertTrue(modelEntered.await(5, TimeUnit.SECONDS));
+
+            currentUser.set(3L);
+            AssistantChatResponse other = service.chat(null, "fast");
+            assertEquals("answered", other.status());
+
+            currentUser.set(2L);
+            AssistantException busy = assertThrows(AssistantException.class,
+                    () -> service.chat(null, "same-user"));
+            assertEquals("ASSISTANT_BUSY", busy.getCode());
+
+            release.countDown();
+            assertEquals("answered", blockedUser.get(5, TimeUnit.SECONDS).status());
+        } finally {
+            release.countDown();
+            pool.shutdownNow();
+        }
+    }
+
     private AssistantChatService service(AssistantToolRegistry registry, AssistantModel model,
                                          AssistantPreviewService previewService) {
         return service(registry, model, previewService, 60);
@@ -252,6 +308,12 @@ class AssistantChatServiceTest {
 
     private AssistantChatService service(AssistantToolRegistry registry, AssistantModel model,
                                          AssistantPreviewService previewService, int timeoutSeconds) {
+        return service(registry, model, previewService, timeoutSeconds, 1);
+    }
+
+    private AssistantChatService service(AssistantToolRegistry registry, AssistantModel model,
+                                         AssistantPreviewService previewService, int timeoutSeconds,
+                                         int maxConcurrentPerUser) {
         AssistantQuotaService quota = mock(AssistantQuotaService.class);
         when(quota.remaining()).thenReturn(50);
         AssistantSessionService sessions = mock(AssistantSessionService.class);
@@ -264,7 +326,7 @@ class AssistantChatServiceTest {
         when(currentUser.requireStableIdentity()).thenReturn(new AuthenticatedUser(2L, "alice", false));
         return new AssistantChatService(model, registry, preview,
                 mock(AssistantAuditService.class), quota, sessions, currentUser, objectMapper, 6, 5,
-                timeoutSeconds);
+                timeoutSeconds, maxConcurrentPerUser);
     }
 
     private AssistantModel sequence(AssistantModel.ModelReply... replies) {

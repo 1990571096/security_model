@@ -52,17 +52,20 @@ public class RetryTaskPreviewTool implements AssistantTool {
         command.setHyperId(task.getHyperId());
         command.setCustomParams(task.getCustomParams());
         commandService.validateDraft(command);
+        var plan = commandService.plan(task);
 
         ObjectNode request = objectMapper.createObjectNode();
         request.put("taskId", task.getTaskId());
+        request.put("expectedConfigFingerprint", plan.fingerprint());
         ObjectNode data = request.deepCopy();
         data.put("operation", "retry");
         data.put("taskName", task.getTaskName());
         data.put("status", task.getStatus());
+        data.setAll(plan.preview());
         data.put("warning", "确认后会重置失败状态、生成新 run 并重新占用 GPU；仍使用原参数。");
         String summary = "重试预览：任务 #" + taskId + " 当前为 failed，原参数通过校验；确认前不会重置或启动。";
         return new AssistantToolResult(summary, data, "retry", request, task.getTaskId(),
                 task.getCurrentRunId(),
-                AssistantContextHasher.taskState("retry", task, ""));
+                AssistantContextHasher.taskState("retry", task, plan.fingerprint()));
     }
 }

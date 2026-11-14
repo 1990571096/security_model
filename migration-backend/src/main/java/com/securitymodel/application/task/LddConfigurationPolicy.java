@@ -31,6 +31,11 @@ public class LddConfigurationPolicy {
     }
 
     public void mergeAndValidate(String algorithmDefaults, String hyperConfig, String customParams) {
+        normalizeAndValidate(algorithmDefaults, hyperConfig, customParams);
+    }
+
+    /** Returns the exact normalized configuration that must be persisted and dispatched. */
+    public ObjectNode normalizeAndValidate(String algorithmDefaults, String hyperConfig, String customParams) {
         ObjectNode merged = parseObject(algorithmDefaults, "算法默认配置");
         merged.setAll(parseObject(hyperConfig, "超参数模板配置"));
         ObjectNode custom = parseObject(customParams, "自定义参数");
@@ -61,6 +66,7 @@ public class LddConfigurationPolicy {
         if (merged.has("data_path")) {
             requireText(merged, "data_path");
         }
+        return merged;
     }
 
     private ObjectNode parseObject(String raw, String fieldName) {

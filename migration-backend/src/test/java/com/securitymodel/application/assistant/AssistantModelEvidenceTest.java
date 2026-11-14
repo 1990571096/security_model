@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.junit.jupiter.api.Test;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -35,6 +36,49 @@ class AssistantModelEvidenceTest {
         assertFalse(evidence.contains("F:/private"));
         assertFalse(evidence.contains("sk-1234567890abcdef"));
         assertFalse(evidence.contains("13800138000"));
+    }
+
+    @Test
+    void realLddSchemaKeepsBatchAndEpochConstraintsWithinBudget() throws Exception {
+        java.nio.file.Path seed = java.nio.file.Path.of("..", "sql", "security_model_vab_seed.sql");
+        String sql = java.nio.file.Files.readString(seed);
+        String defaultConfig = quotedJson(sql, "{\"dataset\":\"cifar10\"");
+        String configSchema = quotedJson(sql, "{\"dataset\":{\"type\":\"select\"");
+        assertTrue(!defaultConfig.isBlank() && !configSchema.isBlank(), "LDD seed must contain real config");
+        assertTrue(configSchema.length() > 400, "real LDD schema must be longer than the old truncation limit");
+
+        ObjectNode data = objectMapper.createObjectNode();
+        ObjectNode algorithm = data.putArray("algorithms").addObject();
+        algorithm.put("algorithmId", 1);
+        algorithm.put("name", "LDD (VaB)");
+        algorithm.put("defenseStage", "pre");
+        algorithm.put("defaultConfig", defaultConfig);
+        algorithm.put("configSchema", configSchema);
+        data.putArray("datasets").addObject().put("datasetId", 7).put("name", "cifar10");
+
+        String evidence = AssistantModelEvidence.forTool(objectMapper, "get_parameter_guide",
+                "可用算法 1 个", data);
+
+        assertFalse(evidence.length() > 3200);
+        ObjectNode parsed = (ObjectNode) objectMapper.readTree(evidence);
+        assertFalse(parsed.path("truncated").asBoolean());
+        ObjectNode parameters = (ObjectNode) parsed.path("evidence").path("algorithms").get(0).path("parameters");
+        assertEquals(16, parameters.path("batch_size").path("min").asInt());
+        assertEquals(512, parameters.path("batch_size").path("max").asInt());
+        assertEquals(128, parameters.path("batch_size").path("default").asInt());
+        assertEquals(1, parameters.path("num_epochs").path("min").asInt());
+        assertEquals(200, parameters.path("num_epochs").path("max").asInt());
+        assertEquals(5, parameters.path("num_epochs").path("default").asInt());
+    }
+
+    private String quotedJson(String sql, String prefix) {
+        int start = sql.indexOf("'" + prefix);
+        if (start < 0) {
+            return "";
+        }
+        start++;
+        int end = sql.indexOf("'", start);
+        return end < 0 ? "" : sql.substring(start, end);
     }
 
     @Test

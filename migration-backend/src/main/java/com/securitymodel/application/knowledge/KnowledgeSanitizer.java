@@ -9,14 +9,16 @@ import java.util.regex.Pattern;
  */
 public final class KnowledgeSanitizer {
 
+    private static final String PATH_TOKEN = "[^\\s，。；、）)\"'`]+";
     private static final Pattern WINDOWS_PATH =
-            Pattern.compile("(?i)\\b[A-Z]:[/\\\\][^\\s，。；、）)]+");
+            Pattern.compile("(?i)\\b[A-Z]:[/\\\\](?:" + PATH_TOKEN + "|\\s+" + PATH_TOKEN + ")+");
     private static final Pattern UNC_PATH =
-            Pattern.compile("\\\\\\\\[^\\s，。；、）)]+");
+            Pattern.compile("\\\\\\\\" + PATH_TOKEN + "(?:[/\\\\]" + PATH_TOKEN
+                    + "|\\s+" + PATH_TOKEN + ")*");
     private static final Pattern UNIX_PATH =
-            Pattern.compile("(?i)(?<![A-Za-z0-9])/(?:home|users|tmp|var|opt|root|etc|usr|mnt|media|private|"
+            Pattern.compile("(?i)(?<![\\p{L}\\p{N}])/(?:home|users|tmp|var|opt|root|etc|usr|mnt|media|private|"
                     + "proc|sys|workspace|workspaces|data|app|srv|build|project|projects)"
-                    + "(?:/[A-Za-z0-9._-]+)+");
+                    + "(?:/" + PATH_TOKEN + "|\\s+" + PATH_TOKEN + ")+");
     private static final Pattern BEARER =
             Pattern.compile("(?i)bearer\\s+[A-Za-z0-9._~+/-]+=*");
     private static final Pattern SECRET_ASSIGNMENT =
