@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.securitymodel.application.task.DefenseTaskRequest;
 import com.securitymodel.application.task.ExecutionFingerprintService;
 import com.securitymodel.application.task.GpuLeaseService;
+import com.securitymodel.infrastructure.observability.TaskRuntimeMetrics;
 import com.securitymodel.infrastructure.persistence.mapper.PreDefenseTaskMapper;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -86,7 +87,8 @@ class PythonLddTaskExecutorProcessTest {
         return new PythonLddTaskExecutor(taskMapper, objectMapper, fingerprint, leaseService,
                 new ExecutorArtifactPolicy(objectMapper, 0),
                 new AttemptProcessRegistry(objectMapper, workspace.toString()),
-                new ExecutorProcessGuard(objectMapper), "python", script.toString(), timeoutSeconds);
+                new ExecutorProcessGuard(objectMapper), mock(TaskRuntimeMetrics.class),
+                "python", script.toString(), timeoutSeconds);
     }
 
     private DefenseTaskRequest request(long taskId, String runId) {

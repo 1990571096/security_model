@@ -115,7 +115,7 @@ class OwnershipEndToEndIT {
         try {
             mockMvc.perform(get("/api/pre-defense/" + OwnershipE2ESupport.BOB_TASK)
                             .header("Authorization", bob))
-                    .andExpect(status().isForbidden());
+                    .andExpect(status().isUnauthorized());
         } finally {
             OwnershipE2ESupport.setEnabled(OwnershipE2ESupport.BOB_ID, true);
         }
@@ -127,13 +127,33 @@ class OwnershipEndToEndIT {
         String ghost = "Bearer " + signedToken("ghost", 9999L, true);
         mockMvc.perform(get("/api/pre-defense/" + OwnershipE2ESupport.ALICE_TASK)
                         .header("Authorization", ghost))
-                .andExpect(status().isForbidden());
+                .andExpect(status().isUnauthorized());
 
-        // Token without userId (pre-R1 rollout): cannot be mapped to an owner either way.
+        // Token without userId (pre-R1 rollout): authenticated but cannot be mapped to an owner.
         String legacy = "Bearer " + signedToken("alice", null, false);
         mockMvc.perform(get("/api/pre-defense/" + OwnershipE2ESupport.ALICE_TASK)
                         .header("Authorization", legacy))
                 .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void actuatorAndObservabilitySummaryRequireAdmin() throws Exception {
+        // Health is public; aggregate metrics and the admin summary are not.
+        mockMvc.perform(get("/actuator/health"))
+                .andExpect(status().isOk());
+        mockMvc.perform(get("/actuator/metrics"))
+                .andExpect(status().isUnauthorized());
+
+        String alice = login("alice");
+        mockMvc.perform(get("/api/observability/summary")
+                        .header("Authorization", alice))
+                .andExpect(status().isForbidden());
+
+        String admin = login("admin");
+        mockMvc.perform(get("/api/observability/summary")
+                        .header("Authorization", admin))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.scope").value("all-users"));
     }
 
     @Test

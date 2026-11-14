@@ -246,6 +246,19 @@ R3-01/02/03/05/06/07/08/09/10 必须含真实 MySQL 证据；R3-04 包含短进�
 
 CPU/GPU 利用率采集为可选指标，未启用可显示未知；任务/队列/槽位/缓存指标为必选。未做 R4 时不显示虚构 Outbox/DLQ 数据。
 
+### R5 实施记录（2026-11-13）
+
+| 需求 ID | 实现 | 证据/结果 | 未完成边界 |
+| --- | --- | --- | --- |
+| R5-01 | `TaskRuntimeMetrics` 聚合任务状态、陈旧 running、执行池、槽位、恢复和执行耗时 | 单元测试编译/运行；指标标签低基数 | 未做真实 MySQL 长时观测 |
+| R5-02 | `RequestCorrelationFilter` + MDC taskId/runId/attempt + logback pattern | `RequestCorrelationFilterTest` 2 项 | 未做日志脱敏全量审计 |
+| R5-03 | Redis hit/miss/degraded 计数 + generation 条件回填 + 提交后失效 | `ResourceCatalogCacheTest` 10 项；`ResourceQueryServiceTest` 4 项；`ResourceCatalogCacheRedisIT` 1 项真实 Redis 并发回填/代际测试通过 | 未注入真实 Redis 宕机（停止共享 Redis 会影响本机其他服务，未执行） |
+| R5-04 | `/api/observability/summary` 管理员汇总；统计页读真实计数 | 服务单测 2 项；真实 Security 链 IT 覆盖管理员 200/普通用户 403；管理端不返回 taskId/userId | 前端管理卡片仅在管理员 200 时显示 |
+| R5-05 | `/actuator/health` 匿名；metrics/info 仅 `ROLE_ADMIN`；`show-details=never`；显式 401 entry point | `OwnershipEndToEndIT` 真实 Security 链覆盖 health 200、metrics 匿名 401、普通用户 summary 403、管理员 summary 200 | 未测试 env/heapdump 等未暴露端点（配置未开启） |
+| R5-06 | 06 迁移版启动/停止/备份/排障、08 Redis 配置、`.env.example` | 文档 | 未从干净隔离库完整照手册演练 |
+
+本机单测为 **127 项，0 失败/0 跳过**；`REDIS_IT=true` 时另有 1 项真实 Redis 缓存代际 IT；前端 `npm run build` 通过；MySQL IT 41 项全绿。不得据此宣称 R5 全部验收或“生产可观测体系已完成”。
+
 ## 9. R6：有引用的知识检索与外部模型
 
 前置 R1/R5。默认先采用本地全文/关键词检索，复用 MySQL 或成熟嵌入式索引，不部署本地模型、不新增向量数据库。中文切词/排序采用可验证方案写 ADR；以后引入 embedding 不作为本阶段默认门槛。

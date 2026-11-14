@@ -99,7 +99,7 @@ mvn -B -f migration-backend/pom.xml verify
 - 验收覆盖缓存命中不查库、未命中回源并回填；Redis 不可用场景由缓存网关降级语义保证。
 
 最近一次记录的普通 Maven 验证和 MySQL profile 验证通过；该记录不代表本轮文档编辑后重新执行。
-本机 Redis 不可用时，资源接口按缓存网关实现回源 MySQL。Redis 命中率指标列入后续可观测性迭代。
+本机 Redis 不可用时，资源接口按缓存网关回源 MySQL。R5 已新增命中/未命中/降级计数和 key 代际保护，见 ADR-019 与 `09` §5.8；真实 Redis 宕机与并发回填故障注入仍未执行。
 
 ## 技术引入约束
 

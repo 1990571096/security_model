@@ -355,5 +355,18 @@ Agent 采用外部大模型 API，本机不部署大模型。生成模型和 emb
 
 验收：单元测试覆盖条件抢占、执行器拒绝、接受后记账失败、GPU_BUSY 重放、pending 重放、submitting 隔离、5 分钟超时、幂等同体/异体/并发/失败释放；真实 MySQL IT 覆盖意图唯一键、条件抢占、回滚无残留、pending 扫描筛选、幂等键跨用户与过期。完整计数与剩余未跑项见 `09` 第 9 节。
 
+## ADR-019：R5 可观测性、缓存代际与最小暴露
+
+日期：2026-11-13；状态：**代码已实施并通过本机单元测试、真实 Redis 代际测试与前端构建，未在生产环境或 Redis 宕机注入下验收**。
+
+1. **指标来源**：`TaskRuntimeMetrics` 每 30 秒从 MySQL 聚合任务状态和进度陈旧数，从 `ThreadPoolTaskExecutor` 读取执行池，从 `GpuLeaseService` 读取槽位；指标标签只使用 status/state/result/outcome 等低基数枚举，禁止 taskId/runId/userId。数据库短暂不可用时保留上次值并标记刷新失败，不让指标接口反向影响任务。
+2. **耗时与恢复**：执行器按 `success/failed/canceled/interrupted` 记录时长；启动恢复每次运行记录 completed/failed；不把失败码原文作为标签。
+3. **日志关联**：请求过滤器为每个请求生成或校验 `X-Request-Id` 并写入 MDC，执行线程写入 taskId/runId/attempt；logback pattern 统一输出，敏感凭据、密码和完整路径不写入日志。
+4. **缓存代际**：Redis 仍是可重建缓存，MySQL 是唯一真相。读路径先观察 key 代际，再读值；miss 后加载 MySQL，只有代际未变才条件写回。提交后失效先递增代际再删除；TTL 只作兜底。Redis 故障回源 MySQL，并计数 degraded。
+5. **暴露面**：`/actuator/health` 匿名但 `show-details=never`；`/actuator/metrics`、`/actuator/info` 与 `/api/observability/summary` 仅管理员 JWT。管理端汇总不返回 taskId/userId/路径/Token。未认证请求统一返回 401，已认证但权限不足返回 403；真实 Security 链 IT 覆盖 health 匿名 200、metrics 匿名 401、普通用户 summary 403、管理员 summary 200。
+6. **前端口径**：统计页读取真实任务计数，排除 demo；CPU/GPU 利用率、ASR、样本保留率没有真实采集源时显示未采集，不写演示数字。
+
+边界：新增 `ResourceCatalogCacheRedisIT` 已在本机真实 Redis 验证“读取中被 evict 时旧值不回填”，`OwnershipEndToEndIT` 已用真实 Security 链验证 Actuator 与管理汇总鉴权；Redis 宕机、真实 MySQL 长时间观测、CI 远端结果尚未验证；生产库未建表，不能写成“生产可观测体系已完成”。
+
 
 

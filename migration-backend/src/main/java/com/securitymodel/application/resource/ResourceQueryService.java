@@ -47,24 +47,14 @@ public class ResourceQueryService {
     }
 
     public Dataset findDataset(Long datasetId) {
-        return cache.get("security-model:resource:dataset:" + datasetId, Dataset.class)
-                .orElseGet(() -> {
-                    Dataset dataset = datasetMapper.selectById(datasetId);
-                    if (dataset != null) {
-                        cache.put("security-model:resource:dataset:" + datasetId, dataset);
-                    }
-                    return dataset;
-                });
+        return cache.getOrLoad("security-model:resource:dataset:" + datasetId, Dataset.class,
+                () -> datasetMapper.selectById(datasetId)).orElse(null);
     }
 
     public List<Dataset> findDatasets() {
-        return cache.getList(ResourceCatalogCache.DATASET_LIST, Dataset.class)
-                .orElseGet(() -> {
-                    List<Dataset> datasets = datasetMapper.selectList(
-                            Wrappers.<Dataset>lambdaQuery().orderByDesc(Dataset::getDatasetId));
-                    cache.put(ResourceCatalogCache.DATASET_LIST, datasets);
-                    return datasets;
-                });
+        return cache.getListOrLoad(ResourceCatalogCache.DATASET_LIST, Dataset.class,
+                () -> datasetMapper.selectList(
+                        Wrappers.<Dataset>lambdaQuery().orderByDesc(Dataset::getDatasetId))).orElse(List.of());
     }
 
     public Map<Long, Dataset> findDatasetsByIds(Collection<Long> ids) {
@@ -86,24 +76,14 @@ public class ResourceQueryService {
     }
 
     public Algorithm findAlgorithm(Long algorithmId) {
-        return cache.get("security-model:resource:algorithm:" + algorithmId, Algorithm.class)
-                .orElseGet(() -> {
-                    Algorithm algorithm = algorithmMapper.selectById(algorithmId);
-                    if (algorithm != null) {
-                        cache.put("security-model:resource:algorithm:" + algorithmId, algorithm);
-                    }
-                    return algorithm;
-                });
+        return cache.getOrLoad("security-model:resource:algorithm:" + algorithmId, Algorithm.class,
+                () -> algorithmMapper.selectById(algorithmId)).orElse(null);
     }
 
     public List<Algorithm> findAlgorithms() {
-        return cache.getList(ResourceCatalogCache.ALGORITHM_LIST, Algorithm.class)
-                .orElseGet(() -> {
-                    List<Algorithm> algorithms = algorithmMapper.selectList(
-                            Wrappers.<Algorithm>lambdaQuery().orderByDesc(Algorithm::getAlgorithmId));
-                    cache.put(ResourceCatalogCache.ALGORITHM_LIST, algorithms);
-                    return algorithms;
-                });
+        return cache.getListOrLoad(ResourceCatalogCache.ALGORITHM_LIST, Algorithm.class,
+                () -> algorithmMapper.selectList(
+                        Wrappers.<Algorithm>lambdaQuery().orderByDesc(Algorithm::getAlgorithmId))).orElse(List.of());
     }
 
     public Map<Long, Algorithm> findAlgorithmsByIds(Collection<Long> ids) {
@@ -112,14 +92,10 @@ public class ResourceQueryService {
     }
 
     public List<Hyper> findAvailableHyper() {
-        return cache.getList(ResourceCatalogCache.HYPER_LIST, Hyper.class)
-                .orElseGet(() -> {
-                    List<Hyper> hypers = hyperMapper.selectList(Wrappers.<Hyper>lambdaQuery()
-                            .eq(Hyper::getEnabled, true)
-                            .orderByDesc(Hyper::getTemplateId));
-                    cache.put(ResourceCatalogCache.HYPER_LIST, hypers);
-                    return hypers;
-                });
+        return cache.getListOrLoad(ResourceCatalogCache.HYPER_LIST, Hyper.class,
+                () -> hyperMapper.selectList(Wrappers.<Hyper>lambdaQuery()
+                        .eq(Hyper::getEnabled, true)
+                        .orderByDesc(Hyper::getTemplateId))).orElse(List.of());
     }
 
     public Hyper findHyper(Long templateId) {

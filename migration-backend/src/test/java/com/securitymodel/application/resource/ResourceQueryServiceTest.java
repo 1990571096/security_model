@@ -1,6 +1,5 @@
 package com.securitymodel.application.resource;
 
-import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.securitymodel.domain.algorithm.Algorithm;
 import com.securitymodel.domain.dataset.Dataset;
 import com.securitymodel.domain.hyper.Hyper;
@@ -12,9 +11,11 @@ import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.Optional;
+import java.util.function.Supplier;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 class ResourceQueryServiceTest {
@@ -28,34 +29,32 @@ class ResourceQueryServiceTest {
     void cacheHitAvoidsDatabaseReadForDatasetCatalog() {
         Dataset dataset = new Dataset();
         dataset.setDatasetId(8L);
-        when(cache.getList(ResourceCatalogCache.DATASET_LIST, Dataset.class))
+        when(cache.getListOrLoad(eq(ResourceCatalogCache.DATASET_LIST), eq(Dataset.class), any()))
                 .thenReturn(Optional.of(List.of(dataset)));
 
         assertEquals(List.of(dataset), service.findDatasets());
 
         verifyNoInteractions(datasets);
-        verify(cache, never()).put(any(), any());
     }
 
     @Test
-    void cacheMissReadsDatabaseAndWarmsDatasetCatalog() {
+    void cacheMissRunsTheDatabaseLoaderForDatasetCatalog() {
         Dataset dataset = new Dataset();
         dataset.setDatasetId(9L);
-        when(cache.getList(ResourceCatalogCache.DATASET_LIST, Dataset.class))
-                .thenReturn(Optional.empty());
         when(datasets.selectList(any())).thenReturn(List.of(dataset));
+        when(cache.getListOrLoad(eq(ResourceCatalogCache.DATASET_LIST), eq(Dataset.class), any()))
+                .thenAnswer(invocation -> Optional.of(invocation.getArgument(2, Supplier.class).get()));
 
         assertEquals(List.of(dataset), service.findDatasets());
 
         verify(datasets).selectList(any());
-        verify(cache).put(ResourceCatalogCache.DATASET_LIST, List.of(dataset));
     }
 
     @Test
     void cacheHitAvoidsDatabaseReadForAlgorithmById() {
         Algorithm algorithm = new Algorithm();
         algorithm.setAlgorithmId(11L);
-        when(cache.get("security-model:resource:algorithm:11", Algorithm.class))
+        when(cache.getOrLoad(eq("security-model:resource:algorithm:11"), eq(Algorithm.class), any()))
                 .thenReturn(Optional.of(algorithm));
 
         assertEquals(algorithm, service.findAlgorithm(11L));
@@ -65,15 +64,14 @@ class ResourceQueryServiceTest {
 
     @Test
     void redisFailureIsHandledByCacheGatewayAndQueryCanFallback() {
-        when(cache.getList(ResourceCatalogCache.HYPER_LIST, Hyper.class))
-                .thenReturn(Optional.empty());
         Hyper hyper = new Hyper();
         hyper.setTemplateId(12L);
         when(hypers.selectList(any())).thenReturn(List.of(hyper));
+        when(cache.getListOrLoad(eq(ResourceCatalogCache.HYPER_LIST), eq(Hyper.class), any()))
+                .thenAnswer(invocation -> Optional.of(invocation.getArgument(2, Supplier.class).get()));
 
         assertEquals(List.of(hyper), service.findAvailableHyper());
 
         verify(hypers).selectList(any());
-        verify(cache).put(ResourceCatalogCache.HYPER_LIST, List.of(hyper));
     }
 }

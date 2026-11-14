@@ -14,6 +14,10 @@ export function getTaskStatistics() {
   return http.get('/api/task-progress/statistics')
 }
 
+export function getObservabilitySummary() {
+  return http.get('/api/observability/summary')
+}
+
 export function getExecutorStatus() {
   return http.get('/api/task-progress/executor-status')
 }

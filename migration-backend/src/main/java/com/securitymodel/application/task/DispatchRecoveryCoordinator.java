@@ -3,6 +3,7 @@ package com.securitymodel.application.task;
 import com.securitymodel.domain.task.PreDefenseTask;
 import com.securitymodel.domain.task.TaskDispatchIntent;
 import com.securitymodel.infrastructure.executor.AttemptProcessRegistry;
+import com.securitymodel.infrastructure.observability.TaskRuntimeMetrics;
 import com.securitymodel.infrastructure.persistence.mapper.PreDefenseTaskMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -31,6 +32,7 @@ public class DispatchRecoveryCoordinator {
     private final GpuLeaseService gpuLeaseService;
     private final TaskDispatchCoordinator dispatchCoordinator;
     private final SchedulingReadinessGate readinessGate;
+    private final TaskRuntimeMetrics runtimeMetrics;
     private final long pendingScanAgeSeconds;
     private final long pendingExpireSeconds;
     private final int scanBatchSize;
@@ -42,6 +44,7 @@ public class DispatchRecoveryCoordinator {
             GpuLeaseService gpuLeaseService,
             TaskDispatchCoordinator dispatchCoordinator,
             SchedulingReadinessGate readinessGate,
+            TaskRuntimeMetrics runtimeMetrics,
             @Value("${security-model.dispatch.pending-scan-age-seconds:30}") long pendingScanAgeSeconds,
             @Value("${security-model.dispatch.pending-expire-seconds:300}") long pendingExpireSeconds,
             @Value("${security-model.dispatch.scan-batch-size:20}") int scanBatchSize) {
@@ -51,6 +54,7 @@ public class DispatchRecoveryCoordinator {
         this.gpuLeaseService = gpuLeaseService;
         this.dispatchCoordinator = dispatchCoordinator;
         this.readinessGate = readinessGate;
+        this.runtimeMetrics = runtimeMetrics;
         this.pendingScanAgeSeconds = pendingScanAgeSeconds;
         this.pendingExpireSeconds = pendingExpireSeconds;
         this.scanBatchSize = scanBatchSize;
@@ -62,6 +66,7 @@ public class DispatchRecoveryCoordinator {
                         .eq(PreDefenseTask::getStatus, "running"));
         int recovered = 0;
         int replayed = 0;
+        boolean hadError = false;
         try {
             for (PreDefenseTask task : running) {
                 try {
@@ -86,6 +91,7 @@ public class DispatchRecoveryCoordinator {
                     recovered += convergeUncertain(task, intent);
                 } catch (Exception exception) {
                     // One task's recovery failure must not leave the whole scheduler gated forever.
+                    hadError = true;
                     log.error("启动恢复单任务失败: taskId={}, runId={}, reason={}",
                             task.getTaskId(), task.getCurrentRunId(), exception.getMessage());
                     recovered++;
@@ -97,6 +103,7 @@ public class DispatchRecoveryCoordinator {
                         running.size(), replayed, recovered);
             }
             readinessGate.markReady();
+            runtimeMetrics.recordRecovery(!hadError);
         }
     }
 

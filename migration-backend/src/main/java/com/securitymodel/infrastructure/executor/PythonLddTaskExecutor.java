@@ -17,6 +17,8 @@ import org.springframework.util.StringUtils;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import com.securitymodel.infrastructure.observability.TaskRuntimeMetrics;
+import org.slf4j.MDC;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.OffsetDateTime;
@@ -39,6 +41,7 @@ public class PythonLddTaskExecutor implements DefenseTaskExecutor {
     private final ExecutorArtifactPolicy artifactPolicy;
     private final AttemptProcessRegistry processRegistry;
     private final ExecutorProcessGuard processGuard;
+    private final TaskRuntimeMetrics runtimeMetrics;
     private final String pythonExecutable;
     private final String pythonScript;
     private final long timeoutSeconds;
@@ -53,6 +56,7 @@ public class PythonLddTaskExecutor implements DefenseTaskExecutor {
             ExecutorArtifactPolicy artifactPolicy,
             AttemptProcessRegistry processRegistry,
             ExecutorProcessGuard processGuard,
+            TaskRuntimeMetrics runtimeMetrics,
             @Value("${security-model.executor.python.executable:python}") String pythonExecutable,
             @Value("${security-model.executor.python.script:}") String pythonScript,
             @Value("${security-model.executor.python.timeout-seconds:3600}") long timeoutSeconds) {
@@ -63,6 +67,7 @@ public class PythonLddTaskExecutor implements DefenseTaskExecutor {
         this.artifactPolicy = artifactPolicy;
         this.processRegistry = processRegistry;
         this.processGuard = processGuard;
+        this.runtimeMetrics = runtimeMetrics;
         this.pythonExecutable = pythonExecutable;
         this.pythonScript = pythonScript;
         this.timeoutSeconds = timeoutSeconds;
@@ -72,9 +77,15 @@ public class PythonLddTaskExecutor implements DefenseTaskExecutor {
     @Async("taskAsync")
     public void runPreDefense(DefenseTaskRequest request) {
         String startedAt = OffsetDateTime.now().toString();
+        long metricsStarted = System.nanoTime();
+        String metricOutcome = "failed";
+        MDC.put("taskId", String.valueOf(request.getTaskId()));
+        MDC.put("runId", request.getRunId() == null ? "" : request.getRunId());
+        MDC.put("attempt", String.valueOf(request.getAttempt()));
         ExecutionContext context = null;
         try {
             if (isCanceled(request)) {
+                metricOutcome = "canceled";
                 return;
             }
             context = createContext(request);
@@ -83,19 +94,29 @@ public class PythonLddTaskExecutor implements DefenseTaskExecutor {
             String status = validateResult(result, request);
             persistResult(request, result);
             finish(request, status, "success".equals(status) ? 100 : 0);
+            metricOutcome = "success".equals(status) ? "success" : "failed";
         } catch (CanceledException exception) {
+            metricOutcome = "canceled";
             log.info("LDD task canceled: taskId={}, runId={}", request.getTaskId(), request.getRunId());
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
+            metricOutcome = "interrupted";
             if (!isCanceled(request)) {
                 fail(request, context, startedAt, "TASK_INTERRUPTED", "LDD 执行线程被中断");
             }
         } catch (Exception exception) {
+            metricOutcome = "failed";
             if (!isCanceled(request)) {
                 fail(request, context, startedAt, classify(exception), stripCode(exception.getMessage()));
                 log.error("LDD task failed: taskId={}, runId={}", request.getTaskId(), request.getRunId(), exception);
+            } else {
+                metricOutcome = "canceled";
             }
         } finally {
+            MDC.remove("taskId");
+            MDC.remove("runId");
+            MDC.remove("attempt");
+            runtimeMetrics.recordExecution(metricOutcome, System.nanoTime() - metricsStarted);
             canceledRuns.remove(request.getRunId());
             Process process = activeProcesses.remove(request.getRunId());
             Path taskDir = context == null ? null : context.taskDir();

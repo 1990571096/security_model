@@ -350,7 +350,8 @@ class MySqlTaskPersistenceIT {
                 intentMapper, new com.fasterxml.jackson.databind.ObjectMapper());
         DispatchRecoveryCoordinator coordinator = new DispatchRecoveryCoordinator(
                 taskMapper, realIntents, mock(com.securitymodel.infrastructure.executor.AttemptProcessRegistry.class),
-                mock(GpuLeaseService.class), replay, new SchedulingReadinessGate(), 30, 300, 20);
+                mock(GpuLeaseService.class), replay, new SchedulingReadinessGate(),
+                mock(com.securitymodel.infrastructure.observability.TaskRuntimeMetrics.class), 30, 300, 20);
 
         coordinator.recoverAtStartup();
 
@@ -623,7 +624,8 @@ class MySqlTaskPersistenceIT {
                 mapper, mock(TaskDispatchIntentService.class),
                 mock(com.securitymodel.infrastructure.executor.AttemptProcessRegistry.class),
                 mock(GpuLeaseService.class), mock(TaskDispatchCoordinator.class),
-                new SchedulingReadinessGate(), 30, 300, 20));
+                new SchedulingReadinessGate(),
+                mock(com.securitymodel.infrastructure.observability.TaskRuntimeMetrics.class), 30, 300, 20));
     }
 
     private static void createIsolatedSchema() {

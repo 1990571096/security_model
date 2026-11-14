@@ -119,3 +119,63 @@ mvn -pl eladmin-system -am test "-Denforcer.skip=true" "-Dsecurity-model.skip-te
 - 清洗子集导出已使用本地异步线程执行，适合单机演示；正式部署可替换为消息队列和独立 worker。
 - LDD 外部工程、Python 环境、数据集路径和产物目录依赖本机配置。
 - Spring Boot 3、Vue 3 升级已记录为后续阶段，不在当前闭环中强制迁移。
+
+## 迁移版 R5 运行、观测与备份（2026-11-13）
+
+以下命令针对 Spring Boot 3 迁移版，旧 ELADMIN 命令仅保留为历史记录。
+
+### 数据库初始化顺序
+
+只在新开发库执行；生产库 `eladmin` 的迁移仍需要单独授权、执行窗口、备份路径、执行人与回滚方案。
+
+```sql
+SOURCE sql/eladmin.sql;
+SOURCE sql/security_model_mvp_seed.sql;
+SOURCE sql/security_model_execution_snapshot.sql;
+SOURCE sql/security_model_task_run_context.sql;
+SOURCE sql/security_model_clean_subset_export.sql;
+SOURCE sql/security_model_operation_audit.sql;
+SOURCE sql/security_model_ownership.sql;
+SOURCE sql/security_model_gpu_lease.sql;
+SOURCE sql/security_model_gpu_lease_block.sql;
+SOURCE sql/security_model_task_dispatch.sql;
+SOURCE sql/security_model_request_idempotency.sql;
+```
+
+所有脚本均使用 `CREATE TABLE IF NOT EXISTS`，可重复执行；回滚脚本只删除本阶段新增表，不删除业务任务。R3 两张表没有外键到任务表，回滚不会级联删除任务。
+
+### 启动与停止
+
+1. 复制 `.env.example` 为不入库的 `.env`，填入本机数据库密码和至少 32 字节的 `SECURITY_MODEL_JWT_SECRET`。
+2. 在 PowerShell 中将变量加载到当前进程，不要把密码写入脚本或仓库。
+3. 启动：`mvn -B -f migration-backend/pom.xml spring-boot:run`
+4. 前端：`cd migration-frontend && npm ci && npm run dev`
+5. 停止：在运行窗口按 `Ctrl+C`；确认 8100 端口没有残留 Java 进程后再重启。
+6. 启动后先访问匿名健康检查 `GET http://localhost:8100/actuator/health`，只返回状态，不泄露数据库连接或环境变量。
+
+### 观测接口与权限
+
+- `GET /actuator/health`：匿名可读，`show-details=never`。
+- `GET /actuator/metrics`、`GET /actuator/info`：仅管理员 JWT；匿名返回 401。
+- `GET /api/observability/summary`：仅管理员；返回任务状态计数、执行池、GPU 槽位和缓存计数，不返回 taskId/userId/路径。
+- 指标名：`security_model_task_count`、`security_model_stale_running_tasks`、`security_model_executor_tasks`、`security_model_gpu_slot`、`security_model_recovery_total`、`security_model_task_execution_duration`、`security_model_cache_requests`、`security_model_cache_stale_fill_skipped_total`。
+- 指标标签只有 status/state/result/outcome 等低基数枚举；taskId、runId、userId 不得作为标签。
+- 日志格式包含 `requestId`、`taskId`、`runId`、`attempt`；请求头 `X-Request-Id` 只接受 8–64 位安全字符，否则生成 UUID。日志不记录 token、数据库密码、完整数据集路径。
+
+### 备份与回滚
+
+备份必须放在仓库外，且不得提交 Git。以下命令只作为模板，路径和数据库名由执行人替换；生产执行前仍需单独授权。
+
+```powershell
+# 在 cmd 中执行，避免 PowerShell 对 --result-file 表达式的重定向歧义
+cmd /c "mysqldump --single-transaction --routines --triggers -h 127.0.0.1 -P 3306 -u root -p eladmin --result-file=D:\db-backup\eladmin-before-r5.sql"
+```
+
+回滚顺序：停止应用 → 确认无写入 → 按需执行 `security_model_request_idempotency_rollback.sql`、`security_model_task_dispatch_rollback.sql`、`security_model_gpu_lease_block_rollback.sql`、`security_model_gpu_lease_rollback.sql`。回滚不会删除任务表；生产回滚前必须再次核对备份与业务影响。
+
+### 排障
+
+- Redis 不可用：资源查询应继续回源 MySQL，日志出现缓存降级计数；不要因为缓存失败阻塞任务创建。
+- 指标为空：确认管理员 JWT、`management.endpoints.web.exposure.include` 和 `TaskRuntimeMetrics` 的 30 秒刷新是否执行；数据库短暂不可用时保留上次值并标记刷新失败。
+- 缓存更新后仍读旧值：检查 key 代际是否在提交后递增；TTL 只是兜底，不能替代代际失效。
+- 任务统计包含演示数据：确认查询使用 `data_origin != 'demo'`；普通用户统计只包含本人任务。

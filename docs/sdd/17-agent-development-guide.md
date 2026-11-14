@@ -151,6 +151,8 @@ mvn -B -f migration-backend/pom.xml verify -Pmysql-it
 
 Redis 保持 MySQL 回源；新增缓存必须提供 key/TTL/失效/穿透/击穿/故障降级及测试。先量化热点和查询开销，优先统计/配置目录，不能把任务状态放在 Redis 当唯一真相。提供本地 Compose 或等价启动手册（MySQL、Redis，R4 后才加 RabbitMQ），配置通过环境变量传入，绝不提交真实密码。CI 增加相应集成测试并记录远端结果。
 
+> R5 状态（2026-11-13）：**代码已实施，自动化与本机验证部分完成，待外审**。已落地 `TaskRuntimeMetrics`（任务/槽位/执行池/恢复/耗时）、请求与任务日志 MDC、Redis 代际防旧值回填与 hit/miss/degraded 计数、管理员 `/api/observability/summary`、Actuator 最小暴露（health 匿名，metrics/info 仅管理员），统计页和运行监控页改为真实数据，不再展示硬编码 ASR/CPU/节点数字。真实 Redis 并发回填测试已通过，真实 Security 链 IT 覆盖 health 匿名 200、metrics 匿名 401、普通用户 summary 403、管理员 summary 200；边界：生产库未建表；Redis 宕机、长时 MySQL 观测、CI 远端结果尚未执行。
+
 ## 9. R6：RAG 知识检索
 
 **价值和范围**：服务于 LDD 参数释义、错误码、实验规范和 SDD 问答，不查询任务实时状态。先选少量有版本的 Markdown/算法说明/经允许的报告摘要，不默认摄入个人简历、论文草稿、原始数据集和用户隐私文件。文档解析、chunk、元数据、ACL、版本、引用和删除更新都需定义。

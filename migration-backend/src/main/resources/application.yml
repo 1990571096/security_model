@@ -25,9 +25,10 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info
+        include: health,info,metrics
   endpoint:
     health:
+      show-details: never
       probes:
         enabled: true
 
@@ -51,3 +52,8 @@ security-model:
     scan-batch-size: ${SECURITY_MODEL_DISPATCH_SCAN_BATCH_SIZE:20}
     scan-interval-ms: ${SECURITY_MODEL_DISPATCH_SCAN_INTERVAL_MS:10000}
     scan-initial-delay-ms: ${SECURITY_MODEL_DISPATCH_SCAN_INITIAL_DELAY_MS:30000}
+  observability:
+    # A running task whose update_time is older than this is counted as stale.
+    stale-progress-seconds: ${SECURITY_MODEL_OBSERVABILITY_STALE_PROGRESS_SECONDS:600}
+    refresh-interval-ms: ${SECURITY_MODEL_OBSERVABILITY_REFRESH_INTERVAL_MS:30000}
+    refresh-initial-delay-ms: ${SECURITY_MODEL_OBSERVABILITY_REFRESH_INITIAL_DELAY_MS:30000}

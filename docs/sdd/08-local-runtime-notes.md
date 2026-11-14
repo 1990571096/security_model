@@ -7,11 +7,16 @@ Date: 2026-07-11
 The Spring Boot 3 migration backend uses Redis as an optional cache for resource catalog
 reads. MySQL remains the source of truth. Cache read, write, serialization, or eviction
 failures fall back to MySQL and do not fail resource operations. The cache uses a five-minute
-TTL and resource mutations evict affected entries after commit.
+TTL and resource mutations evict affected entries after commit. Each key also has a
+generation counter; a reader that missed before an update may only refill the cache when the
+generation it observed is still current. Eviction increments the generation first, so a slow
+reader cannot put a pre-update value back after commit. Cache hit/miss/degraded and
+stale-refill counts are exposed as bounded Micrometer counters (no task or user tags).
 
 Default connection settings are `localhost:6379`. Override them with `REDIS_HOST`,
 `REDIS_PORT`, `REDIS_PASSWORD`, `REDIS_CONNECT_TIMEOUT`, and `REDIS_COMMAND_TIMEOUT`.
-Redis is not required for the MySQL integration-test profile.
+Redis is not required for the MySQL integration-test profile. If Redis is down, all reads
+fall back to MySQL and the `security_model_cache_requests{result=degraded}` counter grows.
 
 The Redis Windows service may be present on the developer machine for both the legacy
 ELADMIN project and the migration backend.
@@ -43,6 +48,9 @@ Expected Redis response:
 PONG
 ```
 
+Redis 缓存代际的真实集成测试默认跳过；本机 Redis 可用时用 `REDIS_IT=true` 运行
+`ResourceCatalogCacheRedisIT`，验证“读取中被 evict 的旧值不回填”。CI 不启动 Redis 时该测试跳过，不影响其他测试。
+
 ## MySQL
 
 The migration backend's `application.yml` supports environment variable overrides:
@@ -60,6 +68,17 @@ The migration backend's `application.yml` supports environment variable override
 - `REDIS_COMMAND_TIMEOUT`
 - `SECURITY_MODEL_JWT_SECRET`
 - `SECURITY_MODEL_JWT_VALIDITY`
+- `SECURITY_MODEL_OBSERVABILITY_STALE_PROGRESS_SECONDS`
+- `SECURITY_MODEL_OBSERVABILITY_REFRESH_INTERVAL_MS`
+- `SECURITY_MODEL_OBSERVABILITY_REFRESH_INITIAL_DELAY_MS`
+
+Admin-only observability:
+- `GET /actuator/health` anonymous, details hidden.
+- `GET /actuator/metrics` and `GET /api/observability/summary` require an admin JWT.
+- Aggregate metrics never use `taskId`, `runId` or `userId` as tags.
+- The statistics page now reads `GET /api/task-progress/statistics`; it no longer displays
+  hardcoded ASR/retention figures. CPU/GPU utilization and algorithm ASR remain uncollected
+  and are shown as unavailable, not estimated.
 
 Defaults remain compatible with the old local config:
 

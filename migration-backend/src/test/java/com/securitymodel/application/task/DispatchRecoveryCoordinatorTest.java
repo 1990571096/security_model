@@ -3,6 +3,7 @@ package com.securitymodel.application.task;
 import com.securitymodel.domain.task.PreDefenseTask;
 import com.securitymodel.domain.task.TaskDispatchIntent;
 import com.securitymodel.infrastructure.executor.AttemptProcessRegistry;
+import com.securitymodel.infrastructure.observability.TaskRuntimeMetrics;
 import com.securitymodel.infrastructure.persistence.mapper.PreDefenseTaskMapper;
 import org.junit.jupiter.api.Test;
 
@@ -24,9 +25,10 @@ class DispatchRecoveryCoordinatorTest {
     private final GpuLeaseService gpuLeaseService = mock(GpuLeaseService.class);
     private final TaskDispatchCoordinator dispatchCoordinator = mock(TaskDispatchCoordinator.class);
     private final SchedulingReadinessGate gate = new SchedulingReadinessGate();
+    private final TaskRuntimeMetrics runtimeMetrics = mock(TaskRuntimeMetrics.class);
     private final DispatchRecoveryCoordinator coordinator = new DispatchRecoveryCoordinator(
             taskMapper, intentService, processRegistry, gpuLeaseService, dispatchCoordinator,
-            gate, 30, 300, 20);
+            gate, runtimeMetrics, 30, 300, 20);
 
     @Test
     void pendingIntentIsReplayedAndNotFailedBeforeDispatch() {

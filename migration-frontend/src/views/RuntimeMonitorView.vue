@@ -1,15 +1,15 @@
 <template>
-  <div class="page">
+  <div class="page" v-loading="loading">
     <section class="hero-band monitor-hero">
       <div>
         <span class="eyebrow">RUNTIME OBSERVABILITY</span>
         <h2>运行监控中心</h2>
-        <p>集中展示安全防御任务的运行状态、资源占用、执行节点与系统事件，为实验调度、汇报截图和运行态展示提供统一视图。</p>
+        <p>任务、执行池和 GPU 槽位来自当前后端；CPU/GPU 利用率、节点拓扑和事件流没有真实采集源时不展示估算值。</p>
       </div>
       <div class="hero-summary monitor-summary">
-        <span>平台状态</span>
-        <strong>运行正常</strong>
-        <small>最近更新：2026-09-11 15:42:18</small>
+        <span>调度状态</span>
+        <strong>{{ executor.acceptingTasks ? '可接受任务' : '已停止接收' }}</strong>
+        <small>最近刷新：{{ refreshedAt }}</small>
       </div>
     </section>
 
@@ -25,19 +25,33 @@
     </section>
 
     <section class="monitor-resource-grid">
-      <el-card v-for="resource in resourceUsage" :key="resource.name" class="resource-card" shadow="never">
+      <el-card class="resource-card" shadow="never">
         <div class="resource-card-head">
-          <div>
-            <span>{{ resource.name }}</span>
-            <strong>{{ resource.percent }}%</strong>
-          </div>
-          <el-tag :type="resource.type" effect="light">{{ resource.status }}</el-tag>
+          <div><span>执行池占用</span><strong>{{ poolPercent }}%</strong></div>
+          <el-tag type="success" effect="light">真实计数</el-tag>
         </div>
-        <el-progress :percentage="resource.percent" :stroke-width="10" :color="resource.color" />
+        <el-progress :percentage="poolPercent" :stroke-width="10" color="#2f80ed" />
         <div class="resource-meta">
-          <span>{{ resource.used }} / {{ resource.total }}</span>
-          <span>{{ resource.trend }}</span>
+          <span>活动 {{ executor.activeCount ?? 0 }} / 最大 {{ executor.maxPoolSize ?? 0 }}</span>
+          <span>队列 {{ executor.queueSize ?? 0 }}</span>
         </div>
+      </el-card>
+      <el-card class="resource-card" shadow="never">
+        <div class="resource-card-head">
+          <div><span>GPU 单槽</span><strong>{{ gpuSlot.state || 'unknown' }}</strong></div>
+          <el-tag :type="gpuSlot.state === 'blocked' ? 'danger' : 'success'" effect="light">租约状态</el-tag>
+        </div>
+        <p class="table-caption">槽位 {{ gpuSlot.slotId || '未登记' }}；blocked 时不会因 TTL 过期自动释放。</p>
+        <div class="resource-meta">
+          <span>{{ gpuSlot.blockedReason || gpuSlot.leasedUntil || '无活动租约' }}</span>
+        </div>
+      </el-card>
+      <el-card class="resource-card" shadow="never">
+        <div class="resource-card-head">
+          <div><span>CPU / GPU 利用率</span><strong>未采集</strong></div>
+          <el-tag type="info" effect="light">无采集源</el-tag>
+        </div>
+        <p class="table-caption">当前没有 CPU/GPU 采集器，页面不展示硬编码百分比；仅展示任务与槽位事实。</p>
       </el-card>
     </section>
 
@@ -45,166 +59,90 @@
       <el-card shadow="never">
         <template #header>
           <div class="card-heading">
-            <div>
-              <strong>当前运行任务</strong>
-              <span class="table-caption">展示正在执行和排队调度的防御任务</span>
-            </div>
-            <el-button type="primary" plain>刷新状态</el-button>
+            <div><strong>当前运行任务</strong><span class="table-caption">当前账号 owner 范围内的 running 任务；不展示其他用户任务</span></div>
+            <el-button type="primary" plain @click="load">刷新状态</el-button>
           </div>
         </template>
-
         <el-table :data="runningTasks" class="monitor-table">
-          <el-table-column prop="name" label="任务名称" min-width="180" />
-          <el-table-column prop="algorithm" label="算法" width="130" />
-          <el-table-column prop="dataset" label="数据集" min-width="160" />
-          <el-table-column prop="stage" label="当前阶段" width="130">
-            <template #default="{ row }">
-              <el-tag effect="light">{{ row.stage }}</el-tag>
-            </template>
+          <el-table-column prop="taskName" label="任务名称" min-width="180" />
+          <el-table-column prop="algorithmName" label="算法" width="130" />
+          <el-table-column prop="datasetName" label="数据集" min-width="160" />
+          <el-table-column label="进度" width="180">
+            <template #default="{ row }"><el-progress :percentage="row.progress || 0" :stroke-width="8" /></template>
           </el-table-column>
-          <el-table-column prop="node" label="执行节点" width="125" />
-          <el-table-column label="进度" width="160">
-            <template #default="{ row }">
-              <el-progress :percentage="row.progress" :stroke-width="8" />
-            </template>
-          </el-table-column>
-          <el-table-column prop="elapsed" label="已运行" width="110" />
-          <el-table-column prop="remain" label="预计剩余" width="110" />
-          <el-table-column label="状态" width="100">
-            <template #default="{ row }">
-              <el-tag :type="row.statusType" effect="light">{{ row.status }}</el-tag>
-            </template>
+          <el-table-column label="已运行" width="120">
+            <template #default="{ row }">{{ formatDuration(row.runningDuration) }}</template>
           </el-table-column>
         </el-table>
+        <el-empty v-if="!runningTasks.length" description="当前没有运行中的任务" />
       </el-card>
 
-      <el-card shadow="never">
-        <template #header>
-          <div class="card-heading">
-            <div>
-              <strong>最近 8 小时吞吐趋势</strong>
-              <span class="table-caption">任务提交、完成与平均耗时变化</span>
-            </div>
-          </div>
-        </template>
-        <div class="monitor-trend-chart">
-          <div v-for="item in trendData" :key="item.time" class="trend-column">
-            <div class="trend-bars">
-              <span :style="{ height: `${item.submitted}%` }"></span>
-              <i :style="{ height: `${item.finished}%` }"></i>
-            </div>
-            <strong>{{ item.time }}</strong>
-            <small>{{ item.duration }}m</small>
-          </div>
-        </div>
-        <div class="chart-legend">
-          <span><i class="legend-total"></i>提交任务</span>
-          <span><i class="legend-success"></i>完成任务</span>
-          <em>平均执行时长 36.8 分钟</em>
+      <el-card shadow="never" v-if="adminSummary">
+        <template #header><div class="card-heading"><div><strong>全局观测</strong><span class="table-caption">仅管理员可见，不含 taskId/userId</span></div><el-tag type="warning">管理端</el-tag></div></template>
+        <div class="definition-list">
+          <div><span>进度陈旧</span><p>{{ adminSummary.staleRunningTasks ?? 0 }} 个 running 任务超过阈值未更新</p></div>
+          <div><span>缓存</span><p>命中 {{ adminSummary.cache?.hit ?? 0 }} / 未命中 {{ adminSummary.cache?.miss ?? 0 }} / 降级 {{ adminSummary.cache?.degraded ?? 0 }}</p></div>
+          <div><span>槽位</span><p>{{ adminSummary.gpuSlot?.state || 'unknown' }} · {{ adminSummary.gpuSlot?.slotId || '未登记' }}</p></div>
         </div>
       </el-card>
-    </section>
-
-    <section class="content-grid monitor-secondary-grid">
-      <el-card shadow="never">
-        <template #header>
-          <div class="card-heading">
-            <div>
-              <strong>执行节点状态</strong>
-              <span class="table-caption">覆盖 GPU 节点、CPU 节点与审计节点</span>
-            </div>
-          </div>
-        </template>
-        <div class="node-grid">
-          <div v-for="node in nodes" :key="node.name" class="node-card">
-            <div class="node-card-head">
-              <div>
-                <strong>{{ node.name }}</strong>
-                <span>{{ node.type }}</span>
-              </div>
-              <el-tag :type="node.statusType" effect="light">{{ node.status }}</el-tag>
-            </div>
-            <div class="node-metrics">
-              <div><span>任务</span><strong>{{ node.tasks }}</strong></div>
-              <div><span>CPU</span><strong>{{ node.cpu }}%</strong></div>
-              <div><span>内存</span><strong>{{ node.memory }}%</strong></div>
-              <div><span>GPU</span><strong>{{ node.gpu }}</strong></div>
-            </div>
-            <p>最后心跳：{{ node.heartbeat }}</p>
-          </div>
-        </div>
-      </el-card>
-
-      <el-card shadow="never">
-        <template #header>
-          <div class="card-heading">
-            <div>
-              <strong>告警与运行事件</strong>
-              <span class="table-caption">记录任务调度、资源波动和报告归档情况</span>
-            </div>
-          </div>
-        </template>
-        <div class="monitor-alert-list">
-          <div v-for="event in events" :key="event.time + event.title" class="monitor-event">
-            <span class="event-time">{{ event.time }}</span>
-            <i :class="event.level"></i>
-            <div>
-              <strong>{{ event.title }}</strong>
-              <p>{{ event.desc }}</p>
-            </div>
-          </div>
-        </div>
+      <el-card shadow="never" v-else>
+        <template #header><strong>告警与运行事件</strong></template>
+        <el-alert title="事件流未接入" type="info" :closable="false" show-icon description="当前没有持久化事件流，页面不展示虚构告警或伪造吞吐趋势。" />
       </el-card>
     </section>
   </div>
 </template>
 
 <script setup>
-const overviewStats = [
-  { label: '运行中任务', value: '4', desc: '训练前、训练中、训练后任务同步执行', badge: '实时', type: 'success' },
-  { label: '等待队列', value: '3', desc: '按资源类型与优先级自动排队', badge: '调度中', type: 'warning' },
-  { label: '活跃节点', value: '4 / 5', desc: '1 个审计节点处于维护窗口', badge: '可用', type: 'primary' },
-  { label: '今日完成', value: '18', desc: '成功率 94.7%，平均耗时 36.8 分钟', badge: '稳定', type: 'success' }
-]
+import { computed, onMounted, ref } from 'vue'
+import { getExecutorStatus, getObservabilitySummary, getRunningTasks } from '../api/task'
 
-const resourceUsage = [
-  { name: 'CPU 使用率', percent: 62, used: '9.9 Core', total: '16 Core', status: '正常', type: 'success', color: '#2f80ed', trend: '较 1 小时前 +8%' },
-  { name: '内存使用率', percent: 71, used: '45.4 GB', total: '64 GB', status: '稳定', type: 'success', color: '#21a366', trend: '缓存命中率 86%' },
-  { name: 'GPU 使用率', percent: 78, used: '18.7 GB', total: '24 GB · RTX 3090', status: '繁忙', type: 'warning', color: '#e6a23c', trend: '3 个任务占用中' },
-  { name: '磁盘使用率', percent: 46, used: '0.92 TB', total: '2 TB', status: '充足', type: 'primary', color: '#6f7bd9', trend: '报告归档正常' }
-]
+const loading = ref(false)
+const executor = ref({})
+const gpuSlot = ref({})
+const runningTasks = ref([])
+const adminSummary = ref(null)
+const refreshedAt = ref('')
 
-const runningTasks = [
-  { name: 'CIFAR-10 LDD 主实验', algorithm: 'LDD', dataset: 'CIFAR-10 Backdoor Benchmark', stage: '异常样本清洗', node: 'gpu-node-01', progress: 76, elapsed: '00:42:18', remain: '00:13:40', status: '运行中', statusType: 'success' },
-  { name: 'GTSRB 数据清洗验证', algorithm: 'Spectral Signature', dataset: 'GTSRB Traffic Signs', stage: '特征谱分析', node: 'gpu-node-02', progress: 58, elapsed: '00:31:06', remain: '00:22:10', status: '运行中', statusType: 'success' },
-  { name: '梯度异常监测实验', algorithm: 'Gradient Shield', dataset: 'Tiny-ImageNet Defense Set', stage: '梯度监控', node: 'cpu-node-02', progress: 44, elapsed: '00:18:22', remain: '00:27:50', status: '运行中', statusType: 'success' },
-  { name: '模型后门审计任务', algorithm: 'Neural Cleanse', dataset: 'ResNet-18 Audit Pool', stage: '触发器反演', node: 'audit-node-01', progress: 12, elapsed: '00:04:18', remain: '00:38:00', status: '排队中', statusType: 'warning' }
-]
+const poolPercent = computed(() => {
+  const max = Number(executor.value.maxPoolSize || 0)
+  return max > 0 ? Math.min(100, Math.round((Number(executor.value.activeCount || 0) / max) * 100)) : 0
+})
 
-const trendData = [
-  { time: '08:00', submitted: 38, finished: 28, duration: 42 },
-  { time: '09:00', submitted: 52, finished: 45, duration: 39 },
-  { time: '10:00', submitted: 74, finished: 61, duration: 37 },
-  { time: '11:00', submitted: 48, finished: 43, duration: 35 },
-  { time: '12:00', submitted: 36, finished: 32, duration: 33 },
-  { time: '13:00', submitted: 64, finished: 57, duration: 38 },
-  { time: '14:00', submitted: 82, finished: 70, duration: 41 },
-  { time: '15:00', submitted: 68, finished: 62, duration: 36 }
-]
+const overviewStats = computed(() => [
+  { label: '运行中任务', value: executor.value.activeCount ?? 0, desc: '执行池 activityCount', badge: '实时', type: 'success' },
+  { label: '等待队列', value: executor.value.queueSize ?? 0, desc: '尚未被线程接手的提交', badge: '队列', type: 'warning' },
+  { label: 'GPU 槽位', value: gpuSlot.value.state || 'unknown', desc: '单槽租约，不显示虚构节点', badge: '租约', type: gpuSlot.value.state === 'blocked' ? 'danger' : 'success' },
+  { label: '可接收任务', value: executor.value.acceptingTasks ? '是' : '否', desc: '执行池 shutdown/terminated 状态', badge: '调度', type: 'primary' }
+])
 
-const nodes = [
-  { name: 'gpu-node-01', type: 'RTX 3090 训练服务器', tasks: 2, cpu: 66, memory: 74, gpu: '78%', status: '运行中', statusType: 'success', heartbeat: '3 秒前' },
-  { name: 'gpu-node-02', type: 'RTX 3090 训练服务器', tasks: 1, cpu: 54, memory: 68, gpu: '64%', status: '运行中', statusType: 'success', heartbeat: '5 秒前' },
-  { name: 'cpu-node-01', type: 'CPU 清洗节点', tasks: 0, cpu: 18, memory: 31, gpu: '无', status: '空闲', statusType: 'primary', heartbeat: '4 秒前' },
-  { name: 'cpu-node-02', type: 'CPU 调度节点', tasks: 1, cpu: 52, memory: 49, gpu: '无', status: '运行中', statusType: 'success', heartbeat: '6 秒前' },
-  { name: 'audit-node-01', type: '模型审计节点', tasks: 0, cpu: 12, memory: 22, gpu: '预留', status: '维护中', statusType: 'info', heartbeat: '12 分钟前' }
-]
+function formatDuration(millis) {
+  const value = Number(millis || 0)
+  const totalSeconds = Math.floor(value / 1000)
+  const hours = String(Math.floor(totalSeconds / 3600)).padStart(2, '0')
+  const minutes = String(Math.floor((totalSeconds % 3600) / 60)).padStart(2, '0')
+  const seconds = String(totalSeconds % 60).padStart(2, '0')
+  return `${hours}:${minutes}:${seconds}`
+}
 
-const events = [
-  { time: '15:41', level: 'warning', title: 'GPU 节点资源接近繁忙阈值', desc: 'gpu-node-01 显存占用达到 78%，调度器已限制低优先级任务进入。' },
-  { time: '15:36', level: 'success', title: '自动重试任务执行成功', desc: 'TASK-20260911-006 在第二次重试后完成清洗索引生成，报告已进入归档队列。' },
-  { time: '15:24', level: 'success', title: '节点心跳恢复', desc: 'gpu-node-02 网络心跳恢复稳定，当前可继续承载训练中防御任务。' },
-  { time: '15:08', level: 'primary', title: '清洗结果报告已归档', desc: 'CIFAR-10 LDD 主实验生成异常样本索引、保留样本清单与指标对比摘要。' },
-  { time: '14:52', level: 'primary', title: '参数快照写入完成', desc: '训练批次、轮数、模型结构和数据版本已写入实验台账，便于复现实验流程。' }
-]
+async function load() {
+  loading.value = true
+  try {
+    const [statusResponse, runningResponse] = await Promise.all([getExecutorStatus(), getRunningTasks()])
+    executor.value = statusResponse.data || {}
+    gpuSlot.value = executor.value.gpuSlot || {}
+    runningTasks.value = runningResponse.data || []
+    refreshedAt.value = new Date().toLocaleString()
+    try {
+      const adminResponse = await getObservabilitySummary()
+      adminSummary.value = adminResponse.data || null
+    } catch (error) {
+      adminSummary.value = null
+    }
+  } finally {
+    loading.value = false
+  }
+}
+
+onMounted(load)
 </script>

@@ -2,6 +2,7 @@ package com.securitymodel.application.task;
 
 import com.securitymodel.domain.task.PreDefenseTask;
 import com.securitymodel.infrastructure.executor.AttemptProcessRegistry;
+import com.securitymodel.infrastructure.observability.TaskRuntimeMetrics;
 import com.securitymodel.infrastructure.persistence.mapper.PreDefenseTaskMapper;
 import org.junit.jupiter.api.Test;
 
@@ -24,7 +25,7 @@ class TaskRecoveryRunnerTest {
     private final TaskDispatchCoordinator dispatchCoordinator = mock(TaskDispatchCoordinator.class);
     private final DispatchRecoveryCoordinator coordinator = new DispatchRecoveryCoordinator(
             taskMapper, intentService, processRegistry, gpuLeaseService, dispatchCoordinator,
-            readinessGate, 30, 300, 20);
+            readinessGate, mock(TaskRuntimeMetrics.class), 30, 300, 20);
     private final TaskRecoveryRunner recoveryRunner = new TaskRecoveryRunner(coordinator);
 
     @Test
