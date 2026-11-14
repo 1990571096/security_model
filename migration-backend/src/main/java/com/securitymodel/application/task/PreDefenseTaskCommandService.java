@@ -204,6 +204,15 @@ public class PreDefenseTaskCommandService {
         return taskAccessGuard.requireReadable(taskId);
     }
 
+    /**
+     * Validation-only entry for the assistant preview. It normalizes the mutable command
+     * exactly like create/update but never inserts or launches anything.
+     */
+    public PreDefenseTaskCommand validateDraft(PreDefenseTaskCommand command) {
+        validateCommand(command);
+        return command;
+    }
+
     private void validateCommand(PreDefenseTaskCommand command) {
         if (command == null || command.getTaskName() == null
                 || command.getTaskName().isBlank()) {

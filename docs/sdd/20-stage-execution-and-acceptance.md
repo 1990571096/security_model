@@ -318,6 +318,18 @@ CPU/GPU 利用率采集为可选指标，未启用可显示未知；任务/队�
 
 模型调用额度和会话保留期是可配置工程默认值，不等于获准使用付费供应商或外发新增数据类型。
 
+实施记录（2026-11-14，模型适配器待接入）：
+1. 新增 `sql/security_model_assistant.sql`：确认凭据、会话、工具审计、日配额四张表；确认 token 只存 SHA-256。
+2. `AssistantToolRegistry` 注册 4 个只读工具和 5 个写预览工具，未知名称拒绝；没有 shell/SQL/任意文件工具。
+3. 只读任务/报告复用 `TaskAccessGuard.requireOwned`，知识检索复用 ACL-first 服务；跨用户 403。
+4. 写工具只返回预览、风险说明、规范请求和上下文哈希；token 为 256-bit 随机值，TTL 默认 300 秒；无确认不写业务表、不领取 GPU。
+5. 确认服务在事务内重校验 user/token/TTL/task-run-attempt-update_time/参数哈希，条件 `pending→consuming` 后执行原命令，并接入 R3 幂等；重复确认返回原结果并带 `confirmationReplayed=true`。
+6. `AssistantChatService` 强制 6 次模型调用、5 次工具调用、60 秒上限；`AssistantQuotaService` 按用户日 50 次条件自增，超出 429。
+7. 模型端口 `AssistantModel` 默认 `provider=disabled`，明确返回 `model_disabled`；未接真实付费 API，核心任务/报告/知识接口不受影响。
+8. 新增 `/api/assistant/*` 和 `/assistant` 页面；会话 7 天、可删除，审计只存工具名/operator/target/resultCode/durationMs。
+9. 当前证据：助手核心单测 14 项；真实 HTTP + MySQL 确认链路 3 项（预览零写入、确认只执行一次、重复返回原结果、跨用户 403、模型关闭时核心 API 仍可用）；最终 `mvn verify -Pmysql-it`（`REDIS_IT=true`）为 **188 项单元测试 + 49 项 MySQL/Redis 集成测试全绿**；前端构建通过。
+10. 未做：真实外部模型、真实 LDD、生产库 `eladmin` 建表、组织级双人审批/分布式锁。
+
 ## 11. R8：可选多实例学习验收
 
 仅用户选择且 R4/R5 已通过后实施。单机两个独立进程/容器可验证控制面竞争，但不能据此宣称多机 GPU 高可用。

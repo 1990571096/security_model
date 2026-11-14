@@ -34,6 +34,10 @@
           <el-icon><Search /></el-icon>
           <span>知识检索</span>
         </el-menu-item>
+        <el-menu-item index="/assistant">
+          <el-icon><ChatDotRound /></el-icon>
+          <span>实验助手</span>
+        </el-menu-item>
         <el-menu-item index="/statistics">
           <el-icon><TrendCharts /></el-icon>
           <span>数据统计</span>
@@ -80,6 +84,7 @@
         <router-link to="/tasks">任务</router-link>
         <router-link to="/runtime-monitor">监控</router-link>
         <router-link to="/knowledge">知识</router-link>
+        <router-link to="/assistant">助手</router-link>
         <router-link to="/statistics">统计</router-link>
         <router-link to="/cases">案例</router-link>
         <router-link to="/defense/pre">训练前</router-link>
@@ -99,6 +104,7 @@ import { useRoute, useRouter } from 'vue-router'
 import {
   Collection,
   Cpu,
+  ChatDotRound,
   DataAnalysis,
   Lock,
   Monitor,
@@ -121,6 +127,7 @@ const pageTitles = {
   '/tasks': '安全防御任务',
   '/runtime-monitor': '运行监控',
   '/knowledge': '知识检索',
+  '/assistant': '受控实验助手',
   '/datasets': '数据集资源',
   '/algorithms': '算法资源',
   '/training-defense': '参数配置台账',

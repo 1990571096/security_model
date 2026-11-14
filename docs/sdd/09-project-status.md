@@ -262,6 +262,23 @@ Vue 2 工程继续作为业务回归和回滚基线，不参与迁移版主流�
 | 验证（本机） | `mvn verify -Pmysql-it`（`REDIS_IT=true`）→ **174 项单元测试，0 失败/0 跳过；45 项 MySQL IT + 1 项真实 Redis IT 全绿**；Python 11/11；前端 `npm run build` 通过（element chunk 947.11 kB 警告仍在）；未跑真实 LDD | `tmp/r6-final-verify3.log`、`tmp/r6-python-tests.log`、`tmp/r6-frontend.log` |
 | 未做/阻塞 | 外部模型供应商、费用上限、数据留存未获人类授权，不能真实外发；生产库 `eladmin` 未建表；真实语料规模、模型质量与 20 题之外的失败样例未评估 | 20 §9 |
 
+## 5.10 R7 实施记录：受控实验助手（2026-11-14，模型适配器待接入）
+
+| 变更 | 事实 | 证据 |
+| --- | --- | --- |
+| 助手 schema | 新增 `sys_assistant_confirmation`、`sys_assistant_session`、`sys_assistant_tool_audit`、`sys_assistant_usage_daily`；确认 token 只存 SHA-256，会话按用户 7 天保留 | `sql/security_model_assistant.sql` |
+| 工具白名单 | 显式注册 4 个只读工具（参数说明、本人任务摘要、本人报告摘要、知识检索）和 5 个写工具（创建/启动/取消/重试/导出）；未知工具名直接拒绝，无 shell/任意 SQL/任意文件工具 | `AssistantToolRegistry`、`AssistantToolDescriptor` |
+| 只读授权 | 任务和报告工具复用 `TaskAccessGuard.requireOwned`；知识工具复用 ACL-first 检索；跨用户直接 403 | `TaskSummaryTool`、`ReportSummaryTool`、`KnowledgeSearchTool` |
+| 预览不写 | 写工具只做状态/参数校验并返回脱敏预览、风险说明、规范请求和上下文哈希；创建预览不会写库，启动预览不会领取 GPU | `CreateTaskPreviewTool`、`StartTaskPreviewTool`、`AssistantPreviewService` |
+| 一次性确认 | 预览发 256-bit 随机 token，数据库仅存哈希，TTL 默认 300 秒；确认时重校验用户/token/过期/task-run-attempt-update_time/参数哈希，条件消费后才调用原命令服务 | `AssistantConfirmationService`、`AssistantConfirmationMapper` |
+| 防重复与幂等 | 已消费 token 返回原结果并标记 `confirmationReplayed=true`；确认事务接入 R3 `RequestIdempotencyService`；命令失败回滚会恢复 pending，不产生半截写 | `AssistantWriteExecutor`、`AssistantConfirmationEndToEndIT` |
+| 配额与时限 | 每用户每日默认 50 次，数据库条件自增，超出 429；每次最多 6 次模型调用、5 次工具调用、60 秒；核心 API 不受影响 | `AssistantQuotaService`、`AssistantChatService` |
+| 模型端口 | 业务只依赖 `AssistantModel`；默认 `provider=disabled`，明确返回 `model_disabled`；未来新增供应商适配器并切换 provider，不改编排和确认流程 | `AssistantModel`、`DisabledAssistantModel` |
+| 审计与会话 | 工具审计只存工具名/operator/target/resultCode/durationMs，不存 prompt、参数正文或凭据；会话只存问题、状态、工具名、确认 ID、引用 ID；用户可删除自己的会话 | `AssistantAuditService`、`AssistantSessionService`、`AssistantRetentionJob` |
+| API/前端 | `POST /api/assistant/chat`、确认、工具目录、预览、会话列表/详情/删除、审计、状态；新增 `/assistant` 页面，展示模型不可用、工具结果、引用和待确认操作 | `AssistantController`、`AssistantView.vue`、`src/api/assistant.js` |
+| 验证（本机） | 2026-11-14 `mvn verify -Pmysql-it`（`REDIS_IT=true`）→ **188 项单元测试 + 49 项 MySQL/Redis 集成测试全绿**；助手 HTTP+MySQL 确认链路 3 项；前端构建通过；未跑真实 LDD | `tmp/r7-final-verify2.log`、`tmp/r7-http-it1.log`、`tmp/r7-frontend.log` |
+| 未做/阻塞 | 未接真实外部模型；未做真实 LDD；生产库 `eladmin` 未执行助手建表；确认流不是组织级双人审批 | ADR-021、20 §10 |
+
 ## 6. 待完成与优化建议
 
 ### P0：正式实验闭环
@@ -275,12 +292,13 @@ Vue 2 工程继续作为业务回归和回滚基线，不参与迁移版主流�
 1. **R1（已实施，评审“有条件通过”；生产迁移未执行）**：稳定用户 ID 归属、任务/报告/日志/产物/导出授权、共享资源写权限收敛、历史数据迁移。验收见 17 号指导书 R1。
 2. **R2（可靠性修复完成，待复审）**：GPU 单槽租约、进程记录/整树回收、隔离槽位与探测、启动就绪门、导出失败收敛、产物清单/保留期均已有实现与本机证据；2026-11-14 已修复评审 P1-1~P1-4。剩余真实 LDD/6GB 实测、生产库建表/迁移和日志运行期限额。
 3. **R6（离线检索与适配器完成，外部模型联调阻塞）**：MySQL 文档/版本/chunk、ACL 前置检索、确定性中文切词与 IDF 排序、引用 API、知识页和通用模型适配器已落地；缺供应商/预算/数据留存授权，未真实外发，生产库未建表。详见 §5.9 与 ADR-020。
-4. 持续补迁移版领域服务和 API 集成测试；现有 MySQL 集成测试仅覆盖任务原子领取、状态竞争和恢复扫描，不代表完整端到端覆盖。
-4. 补充 Python 依赖锁定、部署复现和应用重启演练。
-5. 继续补充 Redis 缓存命中率、失效和不可用降级的观测指标。
-6. 只有跨进程/多实例调度成为明确需求后，再评估 Outbox + RabbitMQ 和独立 Worker。
-7. 视需要将日志轮询升级为 SSE；SSE 属于服务端推送，不替代任务消息队列。
-8. 补齐数据集“登记 → 验证 → 可用”的状态推进，消除 `parse_status` 死路。
+4. **R7（受控工具与确认流完成，模型适配器待接入）**：4 个只读工具 + 5 个预览写工具、一次性确认、R3 幂等、日配额、会话/审计和助手页已落地；外部模型默认关闭，未做真实 LDD，生产库未建表。详见 §5.10 与 ADR-021。
+5. 持续补迁移版领域服务和 API 集成测试；现有 MySQL 集成测试仅覆盖任务原子领取、状态竞争和恢复扫描，不代表完整端到端覆盖。
+6. 补充 Python 依赖锁定、部署复现和应用重启演练。
+7. 继续补充 Redis 缓存命中率、失效和不可用降级的观测指标。
+8. 只有跨进程/多实例调度成为明确需求后，再评估 Outbox + RabbitMQ 和独立 Worker。
+9. 视需要将日志轮询升级为 SSE；SSE 属于服务端推送，不替代任务消息队列。
+10. 补齐数据集“登记 → 验证 → 可用”的状态推进，消除 `parse_status` 死路。
 
 ### P2：迁移收尾与平台增强
 
@@ -335,3 +353,4 @@ Vue 2 工程继续作为业务回归和回滚基线，不参与迁移版主流�
 - Redis 已进入迁移版依赖和运行配置，用于可重建资源目录；任务状态、报告和执行快照仍由 MySQL 保存。Redis 故障时缓存层降级回源 MySQL。
 - CI 工作流包含 MySQL 8.4 集成测试和前端生产构建；本次未查询 GitHub Actions 运行记录，不能据配置推断远端已通过。
 - 最近一次记录的本地普通 Maven 验证、MySQL profile 验证和前端生产构建结果见 `docs/sdd/16-engineering-improvement-roadmap.md`；R1 仅重跑普通 Maven 验证，前端未改动也未重跑构建。
+- 2026-11-14 R7 最终验证：`mvn -B -f migration-backend/pom.xml verify -Pmysql-it`（`MYSQL_IT_PASSWORD`、`REDIS_IT=true`）→ **188 项单元测试 + 49 项 MySQL/Redis 集成测试全部通过，BUILD SUCCESS**；前端 `npm run build` 通过。助手新增 14 项单测与 3 项真实 HTTP+MySQL 确认测试；测试执行器为 Mockito 替身，没有启动 Python/LDD。生产库仍未执行 R6/R7 建表脚本。日志：`tmp/r7-final-verify2.log`。

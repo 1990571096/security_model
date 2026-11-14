@@ -21,6 +21,7 @@ SOURCE sql/security_model_execution_snapshot.sql;
 SOURCE sql/security_model_task_run_context.sql;
 SOURCE sql/security_model_clean_subset_export.sql;
 SOURCE sql/security_model_knowledge.sql;
+SOURCE sql/security_model_assistant.sql;
 ```
 
 已有开发库：
@@ -31,6 +32,7 @@ SOURCE sql/security_model_execution_snapshot.sql;
 SOURCE sql/security_model_task_run_context.sql;
 SOURCE sql/security_model_clean_subset_export.sql;
 SOURCE sql/security_model_knowledge.sql;
+SOURCE sql/security_model_assistant.sql;
 ```
 
 seed 脚本不删除历史表和权限数据，只隐藏训练中、训练后及无关后台菜单，并禁用历史 mock baseline。当前展示算法为 `LDD`。
@@ -143,6 +145,7 @@ SOURCE sql/security_model_gpu_lease_block.sql;
 SOURCE sql/security_model_task_dispatch.sql;
 SOURCE sql/security_model_request_idempotency.sql;
 SOURCE sql/security_model_knowledge.sql;
+SOURCE sql/security_model_assistant.sql;
 ```
 
 所有脚本均使用 `CREATE TABLE IF NOT EXISTS`，可重复执行；回滚脚本只删除本阶段新增表，不删除业务任务。R3 两张表没有外键到任务表，回滚不会级联删除任务。
@@ -172,6 +175,15 @@ SOURCE sql/security_model_knowledge.sql;
 - 外部模型默认 `security-model.knowledge.model.enabled=false`；`security-model.knowledge.model.provider` 选择一个适配器（默认 `openai-compatible`），新增供应商时只增加实现并切换 provider，不改查询业务。只有同时配置 `base-url`、`name`、`api-key` 才可能调用，且仍受超时、一次重试和引用校验约束。没有供应商/费用/数据留存授权时保持关闭，页面显示 `retrieval_only` 或 `model_not_configured`，不得写成联调完成。
 - 验收查询 `POST /api/knowledge/query` 的 `status` 为 `answered`/`retrieval_only`/`unknown`；`citations` 必须带 sourceKey、version、章节和行号。`GET /api/knowledge/status` 只返回 active 文档数。
 
+### 受控实验助手
+
+- 入口：`/assistant` 页面或 `/api/assistant/*`。模型默认 `security-model.assistant.model.provider=disabled`、`enabled=false`；只有实现并选择 `AssistantModel` 适配器后才启用自然语言编排。
+- 上限：每请求最多 6 次模型调用、5 次工具调用、60 秒；每用户每日默认 50 次，超出 429；核心任务 API 不受影响。
+- 读写边界：`get_parameter_guide`、`get_my_task_summary`、`get_my_report_summary`、`search_knowledge` 只读；`preview_create_task`、`preview_start_task`、`preview_cancel_task`、`preview_retry_task`、`preview_export_task` 只生成预览。
+- 写操作必须调用确认接口：预览返回 `confirmationId` 与一次性 `token`，TTL 默认 300 秒；服务端只存 token 的 SHA-256。确认后重校验用户、task/run/attempt、参数哈希和状态，并返回 `confirmationReplayed`。
+- 审计表 `sys_assistant_tool_audit` 只存工具名、operator、目标、结果码和耗时；不存 prompt、参数正文或 token。会话 7 天，用户可删除自己的会话。
+- 未配置模型时页面明确显示 `model_disabled`，不得写成“助手联调完成”。
+
 ### 备份与回滚
 
 备份必须放在仓库外，且不得提交 Git。以下命令只作为模板，路径和数据库名由执行人替换；生产执行前仍需单独授权。
@@ -181,7 +193,7 @@ SOURCE sql/security_model_knowledge.sql;
 cmd /c "mysqldump --single-transaction --routines --triggers -h 127.0.0.1 -P 3306 -u root -p eladmin --result-file=D:\db-backup\eladmin-before-r5.sql"
 ```
 
-回滚顺序：停止应用 → 确认无写入 → 按需执行 `security_model_knowledge_rollback.sql`、`security_model_request_idempotency_rollback.sql`、`security_model_task_dispatch_rollback.sql`、`security_model_gpu_lease_block_rollback.sql`、`security_model_gpu_lease_rollback.sql`。回滚不会删除任务表；生产回滚前必须再次核对备份与业务影响。
+回滚顺序：停止应用 → 确认无写入 → 按需执行 `security_model_assistant_rollback.sql`、`security_model_knowledge_rollback.sql`、`security_model_request_idempotency_rollback.sql`、`security_model_task_dispatch_rollback.sql`、`security_model_gpu_lease_block_rollback.sql`、`security_model_gpu_lease_rollback.sql`。回滚不会删除任务表；生产回滚前必须再次核对备份与业务影响。
 
 ### 排障
 

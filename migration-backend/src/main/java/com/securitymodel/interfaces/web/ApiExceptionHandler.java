@@ -43,6 +43,18 @@ public class ApiExceptionHandler {
                 "message", exception.getMessage()));
     }
 
+    @ExceptionHandler(com.securitymodel.application.assistant.AssistantException.class)
+    public ResponseEntity<Map<String, Object>> handleAssistant(
+            com.securitymodel.application.assistant.AssistantException exception,
+            HttpServletRequest request) {
+        return ResponseEntity.status(exception.getStatus()).body(Map.of(
+                "code", exception.getCode(),
+                "message", exception.getMessage() == null ? "助手请求失败" : exception.getMessage(),
+                "path", request.getRequestURI(),
+                "timestamp", OffsetDateTime.now().toString()
+        ));
+    }
+
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public ResponseEntity<Map<String, Object>> handleValidation(MethodArgumentNotValidException exception) {
         var error = exception.getBindingResult().getFieldError();

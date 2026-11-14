@@ -172,6 +172,13 @@ Redis 保持 MySQL 回源；新增缓存必须提供 key/TTL/失效/穿透/击�
 
 **验收**：配置草稿合法但不会自行启动任务；无权限的任务详情/报告无法通过 Agent 获取；恶意文档指令不能触发写操作；重复确认只执行一次；所有工具调用可按用户和 run ID 审计；模型不可用时明确失败并保持已有业务可用。
 
+**当前实现落点（2026-11-14，外部模型待接入）**：
+- 入口：`AssistantController`（chat/confirm/tools/preview/sessions/audits/status），页面 `/assistant`。
+- 端口：`AssistantModel` 默认 `provider=disabled`；新增供应商适配器只改 provider，不改 `AssistantChatService`。
+- allow-list：`AssistantToolRegistry` + `ParameterGuideTool`、`TaskSummaryTool`、`ReportSummaryTool`、`KnowledgeSearchTool`、`CreateTaskPreviewTool`、`StartTaskPreviewTool`、`CancelTaskPreviewTool`、`RetryTaskPreviewTool`、`ExportTaskPreviewTool`。
+- 写安全：`AssistantPreviewService` 只生成 token 哈希；`AssistantConfirmationService` 重校验 + 原子消费；`AssistantWriteExecutor` 才调用原命令服务与 R3 幂等。
+- 证据：`AssistantChatServiceTest`、`AssistantConfirmationServiceTest`、`AssistantConfirmationEndToEndIT`、`AssistantToolRegistryTest`；细节见 `09` §5.10、`20` §10、ADR-021。
+
 ## 11. R8：可选分布式验收
 
 只有 R4 完成才开始。两台 Worker 或两个隔离容器真实测试重复消息、租约交接和取消；GPU 资源登记与调度不等于 Kubernetes 调度。共享存储版本、校验和、生命周期和权限要与 Worker 绑定。性能指标记录环境、样本数、并发数和置信范围，不从一台 3090 机器的演示图推导集群吞吐。没有多实例测试条件时在简历中描述为单机独立 Worker，不称“分布式高可用”。

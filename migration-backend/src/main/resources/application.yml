@@ -75,3 +75,17 @@ security-model:
       timeout-seconds: ${SECURITY_MODEL_KNOWLEDGE_MODEL_TIMEOUT_SECONDS:30}
       max-retries: ${SECURITY_MODEL_KNOWLEDGE_MODEL_MAX_RETRIES:1}
       max-citation-chars: ${SECURITY_MODEL_KNOWLEDGE_MODEL_MAX_CITATION_CHARS:600}
+  assistant:
+    # R7: provider is deliberately not configured yet. Core APIs remain available.
+    daily-request-limit: ${SECURITY_MODEL_ASSISTANT_DAILY_REQUEST_LIMIT:50}
+    max-model-calls: ${SECURITY_MODEL_ASSISTANT_MAX_MODEL_CALLS:6}
+    max-tool-calls: ${SECURITY_MODEL_ASSISTANT_MAX_TOOL_CALLS:5}
+    timeout-seconds: ${SECURITY_MODEL_ASSISTANT_TIMEOUT_SECONDS:60}
+    confirmation-ttl-seconds: ${SECURITY_MODEL_ASSISTANT_CONFIRMATION_TTL_SECONDS:300}
+    max-pending-confirmations: ${SECURITY_MODEL_ASSISTANT_MAX_PENDING_CONFIRMATIONS:10}
+    session-ttl-days: ${SECURITY_MODEL_ASSISTANT_SESSION_TTL_DAYS:7}
+    cleanup-interval-ms: ${SECURITY_MODEL_ASSISTANT_CLEANUP_INTERVAL_MS:21600000}
+    model:
+      # Only one adapter is selected; implement AssistantModel to add a provider.
+      provider: ${SECURITY_MODEL_ASSISTANT_MODEL_PROVIDER:disabled}
+      enabled: ${SECURITY_MODEL_ASSISTANT_MODEL_ENABLED:false}
