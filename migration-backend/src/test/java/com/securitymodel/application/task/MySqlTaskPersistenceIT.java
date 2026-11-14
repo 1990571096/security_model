@@ -22,6 +22,8 @@ import org.springframework.transaction.annotation.Transactional;
 import com.baomidou.mybatisplus.autoconfigure.MybatisPlusAutoConfiguration;
 
 import java.lang.reflect.InvocationTargetException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.lang.reflect.Proxy;
 import java.sql.DriverManager;
 import java.sql.Statement;
@@ -41,7 +43,9 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -428,6 +432,78 @@ class MySqlTaskPersistenceIT {
 
         verify(replay).replayPending(intent, task);
         assertEquals("running", taskMapper.selectById(taskId).getStatus());
+    }
+
+    @Test
+    void independentJvmCommitsPendingIntentAndRecoveryReplaysExactlyOnce() throws Exception {
+        long taskId = System.currentTimeMillis() * 1000 + 700;
+        String output = runCrashWindow(taskId, "pending");
+        assertTrue(output.startsWith("COMMITTED " + taskId), output);
+
+        assertEquals("running", taskMapper.selectById(taskId).getStatus());
+        TaskDispatchIntent intent = intentMapper.findByRun(taskId, "run-crash-" + taskId, 1);
+        assertNotNull(intent);
+        assertEquals("pending", intent.getStatus());
+
+        PreDefenseTask task = taskMapper.selectById(taskId);
+        TaskDispatchCoordinator replay = mock(TaskDispatchCoordinator.class);
+        when(replay.replayPending(intent, task)).thenReturn(true);
+        TaskDispatchIntentService realIntents = new TaskDispatchIntentService(
+                intentMapper, new com.fasterxml.jackson.databind.ObjectMapper());
+        DispatchRecoveryCoordinator coordinator = new DispatchRecoveryCoordinator(
+                taskMapper, realIntents,
+                mock(com.securitymodel.infrastructure.executor.AttemptProcessRegistry.class),
+                mock(GpuLeaseService.class), replay, new SchedulingReadinessGate(),
+                mock(com.securitymodel.infrastructure.observability.TaskRuntimeMetrics.class), 30, 300, 20);
+
+        coordinator.recoverAtStartup();
+
+        verify(replay, times(1)).replayPending(intent, task);
+        assertEquals("pending", intentMapper.findByRun(taskId, "run-crash-" + taskId, 1).getStatus());
+    }
+
+    @Test
+    void independentJvmCommitOfSubmittingIntentIsConvergedWithoutReplay() throws Exception {
+        long taskId = System.currentTimeMillis() * 1000 + 701;
+        String output = runCrashWindow(taskId, "submitting");
+        assertTrue(output.startsWith("COMMITTED " + taskId), output);
+
+        TaskDispatchIntent intent = intentMapper.findByRun(taskId, "run-crash-" + taskId, 1);
+        assertNotNull(intent);
+        assertEquals("submitting", intent.getStatus());
+        PreDefenseTask task = taskMapper.selectById(taskId);
+
+        TaskDispatchCoordinator replay = mock(TaskDispatchCoordinator.class);
+        TaskDispatchIntentService realIntents = new TaskDispatchIntentService(
+                intentMapper, new com.fasterxml.jackson.databind.ObjectMapper());
+        DispatchRecoveryCoordinator coordinator = new DispatchRecoveryCoordinator(
+                taskMapper, realIntents,
+                mock(com.securitymodel.infrastructure.executor.AttemptProcessRegistry.class),
+                mock(GpuLeaseService.class), replay, new SchedulingReadinessGate(),
+                mock(com.securitymodel.infrastructure.observability.TaskRuntimeMetrics.class), 30, 300, 20);
+
+        coordinator.recoverAtStartup();
+
+        verify(replay, times(0)).replayPending(any(), any());
+        verify(replay, times(1)).failAndAbandon(org.mockito.ArgumentMatchers.eq(taskId),
+                org.mockito.ArgumentMatchers.eq("run-crash-" + taskId),
+                org.mockito.ArgumentMatchers.eq(1),
+                org.mockito.ArgumentMatchers.eq("DISPATCH_UNCERTAIN"),
+                org.mockito.ArgumentMatchers.anyString());
+    }
+
+    private String runCrashWindow(long taskId, String intentStatus) throws Exception {
+        String java = Path.of(System.getProperty("java.home"), "bin",
+                System.getProperty("os.name").toLowerCase().contains("win") ? "java.exe" : "java")
+                .toString();
+        Process child = new ProcessBuilder(java, "-cp",
+                System.getProperty("surefire.test.class.path", System.getProperty("java.class.path")),
+                CrashWindowChildMain.class.getName(), schemaUrl(), USERNAME, PASSWORD,
+                String.valueOf(taskId), intentStatus)
+                .redirectErrorStream(true)
+                .start();
+        assertTrue(child.waitFor(15, TimeUnit.SECONDS), "crash child did not exit");
+        return new String(child.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
     }
 
     @Test

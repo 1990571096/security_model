@@ -181,7 +181,7 @@ Redis 保持 MySQL 回源；新增缓存必须提供 key/TTL/失效/穿透/击�
 - 写安全：`AssistantPreviewService` 只生成 token 哈希；`AssistantConfirmationService` 重校验 + 原子消费；create 比对 `expectedConfigFingerprint`，start/retry 比对当前 `plan(task).fingerprint()`；`AssistantWriteExecutor` 才调用原命令服务与 R3 幂等。
 - 外发边界：`KnowledgeSanitizer` 覆盖中文/空格/嵌套路径、凭据与联系方式；`AssistantModelEvidence` 按参数名投影 `type/default/min/max/options`，真实 LDD schema 不被 400 字截断。
 - 并发边界：模型线程池 4/16、全局请求槽 4、单用户并发槽默认 1（`max-concurrent-per-user`）；同步工具仍不可强制中断，剩余预算未传入 `executeTool`。
-- 证据：`AssistantChatServiceTest`、`AssistantConfirmationServiceTest`、`AssistantConfirmationEndToEndIT`（17 项）、`TaskCommandServicePipelineIT`（5 项）、`KnowledgeSanitizerTest`、`AssistantModelEvidenceTest`；细节见 `09` §5.10、`20` §10 与 §6.6。
+- 证据：`AssistantChatServiceTest`、`AssistantConfirmationServiceTest`、`AssistantConfirmationEndToEndIT`（17 项）、`TaskCommandServicePipelineIT`（6 项）、`TaskCancellationDispatcherTest`（2 项）、`KnowledgeSanitizerTest`、`AssistantModelEvidenceTest`；细节见 `09` §5.10、`20` §10 与 §6.6。
 
 ## 11. R8：可选分布式验收
 

@@ -14,6 +14,7 @@ import com.securitymodel.domain.lease.GpuLease;
 import com.securitymodel.domain.task.PreDefenseTask;
 import com.securitymodel.infrastructure.executor.DefenseTaskExecutor;
 import com.securitymodel.infrastructure.persistence.mapper.PreDefenseTaskMapper;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -37,6 +38,7 @@ public class PreDefenseTaskCommandService {
     private final GpuLeaseService gpuLeaseService;
     private final ExecutionFingerprintService executionFingerprintService;
     private final AfterCommitTaskDispatcher afterCommitTaskDispatcher;
+    private final TaskCancellationDispatcher taskCancellationDispatcher;
     private final ObjectMapper objectMapper;
     private final OperationAuditService operationAuditService;
     private final CurrentUserService currentUserService;
@@ -61,6 +63,31 @@ public class PreDefenseTaskCommandService {
             SchedulingReadinessGate readinessGate,
             TaskDispatchIntentService dispatchIntentService,
             TaskDispatchCoordinator dispatchCoordinator) {
+        this(taskMapper, resourceQueryService, defenseTaskExecutor, lddConfigurationPolicy,
+                taskExecutionQuotaPolicy, gpuLeaseService, executionFingerprintService,
+                afterCommitTaskDispatcher, objectMapper, operationAuditService, currentUserService,
+                taskAccessGuard, readinessGate, dispatchIntentService, dispatchCoordinator,
+                new TaskCancellationDispatcher());
+    }
+
+    @Autowired
+    public PreDefenseTaskCommandService(
+            PreDefenseTaskMapper taskMapper,
+            ResourceQueryService resourceQueryService,
+            DefenseTaskExecutor defenseTaskExecutor,
+            LddConfigurationPolicy lddConfigurationPolicy,
+            TaskExecutionQuotaPolicy taskExecutionQuotaPolicy,
+            GpuLeaseService gpuLeaseService,
+            ExecutionFingerprintService executionFingerprintService,
+            AfterCommitTaskDispatcher afterCommitTaskDispatcher,
+            ObjectMapper objectMapper,
+            OperationAuditService operationAuditService,
+            CurrentUserService currentUserService,
+            TaskAccessGuard taskAccessGuard,
+            SchedulingReadinessGate readinessGate,
+            TaskDispatchIntentService dispatchIntentService,
+            TaskDispatchCoordinator dispatchCoordinator,
+            TaskCancellationDispatcher taskCancellationDispatcher) {
         this.taskMapper = taskMapper;
         this.resourceQueryService = resourceQueryService;
         this.defenseTaskExecutor = defenseTaskExecutor;
@@ -69,6 +96,7 @@ public class PreDefenseTaskCommandService {
         this.gpuLeaseService = gpuLeaseService;
         this.executionFingerprintService = executionFingerprintService;
         this.afterCommitTaskDispatcher = afterCommitTaskDispatcher;
+        this.taskCancellationDispatcher = taskCancellationDispatcher;
         this.objectMapper = objectMapper;
         this.operationAuditService = operationAuditService;
         this.currentUserService = currentUserService;
@@ -220,9 +248,8 @@ public class PreDefenseTaskCommandService {
         }
         dispatchIntentService.abandon(taskId, task.getCurrentRunId(), task.getCurrentAttempt(),
                 "TASK_CANCELED", LocalDateTime.now());
-        afterCommitTaskDispatcher.dispatch(
-                () -> defenseTaskExecutor.cancelPreDefense(taskId, task.getCurrentRunId()),
-                null);
+        taskCancellationDispatcher.dispatch(
+                () -> defenseTaskExecutor.cancelPreDefense(taskId, task.getCurrentRunId()));
         operationAuditService.recordTask(
                 taskId, "CANCEL", "running", "canceled",
                 Map.of("taskId", taskId), "取消 LDD 清洗任务");

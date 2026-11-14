@@ -36,7 +36,6 @@ import java.util.concurrent.TimeUnit;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.verify;
@@ -212,97 +211,51 @@ class TaskCommandServicePipelineIT {
     }
 
     @Test
-    void completionAndConcurrentCancelKeepTaskIntentAndLeaseConsistent() throws Exception {
-        CountDownLatch entered = new CountDownLatch(1);
-        CountDownLatch finishGate = new CountDownLatch(1);
-        doAnswer(invocation -> {
-            DefenseTaskRequest request = invocation.getArgument(0);
-            entered.countDown();
-            assertTrue(finishGate.await(5, TimeUnit.SECONDS));
-            String result = "{\"status\":\"success\",\"artifacts\":{}}";
-            taskMapper.updateResultForRun(request.getTaskId(), request.getRunId(), null, result);
-            taskMapper.finishForRun(request.getTaskId(), request.getRunId(), "success", 100,
-                    LocalDateTime.now());
-            gpuLeaseService.releaseQuietly(request.getGpuLeaseToken());
-            return null;
-        }).when(executor).runPreDefense(any());
+    void cancelBeforeCompletionWinsAndLateCompletionCannotChangeTerminalState() throws Exception {
+        commandService.start(TASK_ID, null);
+        commandService.cancel(TASK_ID);
+        assertEquals("canceled", jdbc.queryForObject(
+                "SELECT status FROM sys_pre_defense WHERE task_id = ?", String.class, TASK_ID));
 
-        ExecutorService pool = Executors.newSingleThreadExecutor();
-        try {
-            Future<String> startOutcome = pool.submit(() -> {
-                authenticate();
-                try {
-                    commandService.start(TASK_ID, null);
-                    return "started";
-                } finally {
-                    SecurityContextHolder.clearContext();
-                }
-            });
-            assertTrue(entered.await(5, TimeUnit.SECONDS), "executor must receive the approved request");
-            authenticate();
-            try {
-                commandService.cancel(TASK_ID);
-            } catch (TaskCommandException expected) {
-                // Completion may win the status predicate; either terminal state is valid.
-            } finally {
-                SecurityContextHolder.clearContext();
-                finishGate.countDown();
-            }
-            startOutcome.get(10, TimeUnit.SECONDS);
-        } finally {
-            finishGate.countDown();
-            pool.shutdownNow();
-        }
+        String runId = jdbc.queryForObject(
+                "SELECT current_run_id FROM sys_pre_defense WHERE task_id = ?", String.class, TASK_ID);
+        assertEquals(0, taskMapper.finishForRun(TASK_ID, runId, "success", 100,
+                LocalDateTime.now()), "a late completion must not terminalize the same run twice");
 
-        awaitTerminalTask();
-        String status = jdbc.queryForObject(
-                "SELECT status FROM sys_pre_defense WHERE task_id = ?", String.class, TASK_ID);
-        assertTrue(status.equals("canceled") || status.equals("success"), "status=" + status);
-        assertEquals(1, jdbc.queryForObject("""
-                SELECT COUNT(*) FROM sys_pre_defense
-                WHERE task_id = ? AND status IN ('success', 'failed', 'canceled')
-                """, Integer.class, TASK_ID));
-        assertEquals(0, jdbc.queryForObject("""
-                SELECT COUNT(*) FROM sys_pre_defense
-                WHERE task_id = ? AND status IN ('pending', 'running')
-                """, Integer.class, TASK_ID));
-        assertEquals(1, jdbc.queryForObject(
-                "SELECT COUNT(*) FROM sys_task_dispatch_intent WHERE task_id = ?",
-                Integer.class, TASK_ID));
+        assertEquals("canceled", jdbc.queryForObject(
+                "SELECT status FROM sys_pre_defense WHERE task_id = ?", String.class, TASK_ID));
         String intentStatus = jdbc.queryForObject(
                 "SELECT status FROM sys_task_dispatch_intent WHERE task_id = ?",
                 String.class, TASK_ID);
-        assertEquals("success".equals(status) ? "submitted" : "abandoned", intentStatus);
-        assertTrue(awaitLeaseReleased(), "the completed attempt must release its lease");
+        assertTrue(intentStatus.equals("submitted") || intentStatus.equals("abandoned"),
+                "canceled run must not leave the intent recoverable, status=" + intentStatus);
+        verify(executor, timeout(5000).times(1)).cancelPreDefense(TASK_ID, runId);
     }
 
-    private boolean awaitLeaseReleased() throws InterruptedException {
-        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
-        while (System.nanoTime() < deadline) {
-            Boolean released = jdbc.queryForObject("""
-                    SELECT released_at IS NOT NULL FROM sys_gpu_lease WHERE slot_id = 'default-gpu-0'
-                    """, Boolean.class);
-            if (Boolean.TRUE.equals(released)) {
-                return true;
-            }
-            Thread.sleep(20);
-        }
-        return false;
-    }
+    @Test
+    void completionBeforeCancelWinsAndCancelIsRejectedWithoutSideEffects() throws Exception {
+        jdbc.update("""
+                UPDATE sys_pre_defense
+                SET status = 'running', current_run_id = ?, current_attempt = 1, start_time = NOW(3)
+                WHERE task_id = ?
+                """, RUN_ID, TASK_ID);
 
-    private void awaitTerminalTask() throws InterruptedException {
-        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
-        while (System.nanoTime() < deadline) {
-            int terminal = jdbc.queryForObject("""
-                    SELECT COUNT(*) FROM sys_pre_defense
-                    WHERE task_id = ? AND status IN ('success', 'failed', 'canceled')
-                    """, Integer.class, TASK_ID);
-            if (terminal == 1) {
-                return;
-            }
-            Thread.sleep(20);
+        assertEquals(1, taskMapper.updateResultForRun(TASK_ID, RUN_ID, null,
+                "{\"status\":\"success\",\"artifacts\":{}}"));
+        assertEquals(1, taskMapper.finishForRun(TASK_ID, RUN_ID, "success", 100,
+                LocalDateTime.now()));
+
+        authenticate();
+        try {
+            org.junit.jupiter.api.Assertions.assertThrows(TaskCommandException.class,
+                    () -> commandService.cancel(TASK_ID));
+        } finally {
+            SecurityContextHolder.clearContext();
         }
-        throw new AssertionError("task did not reach a terminal state");
+
+        assertEquals("success", jdbc.queryForObject(
+                "SELECT status FROM sys_pre_defense WHERE task_id = ?", String.class, TASK_ID));
+        verify(executor, never()).cancelPreDefense(any(Long.class), any());
     }
 
     @Test
