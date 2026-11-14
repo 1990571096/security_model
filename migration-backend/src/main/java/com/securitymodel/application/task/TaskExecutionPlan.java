@@ -12,11 +12,23 @@ public final class TaskExecutionPlan {
     private final String fingerprint;
     private final ObjectNode finalParameters;
     private final ObjectNode preview;
+    private final DefenseResourceRef dataset;
+    private final DefenseResourceRef algorithm;
+    private final DefenseResourceRef hyper;
 
     public TaskExecutionPlan(String fingerprint, ObjectNode finalParameters, ObjectNode preview) {
+        this(fingerprint, finalParameters, preview, null, null, null);
+    }
+
+    public TaskExecutionPlan(String fingerprint, ObjectNode finalParameters, ObjectNode preview,
+                             DefenseResourceRef dataset, DefenseResourceRef algorithm,
+                             DefenseResourceRef hyper) {
         this.fingerprint = fingerprint;
         this.finalParameters = finalParameters;
         this.preview = preview;
+        this.dataset = dataset;
+        this.algorithm = algorithm;
+        this.hyper = hyper;
     }
 
     public String fingerprint() {
@@ -29,5 +41,17 @@ public final class TaskExecutionPlan {
 
     public ObjectNode preview() {
         return preview;
+    }
+
+    public DefenseResourceRef dataset() {
+        return dataset;
+    }
+
+    public DefenseResourceRef algorithm() {
+        return algorithm;
+    }
+
+    public DefenseResourceRef hyper() {
+        return hyper;
     }
 }

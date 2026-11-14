@@ -225,7 +225,22 @@ R3-01/02/03/05/06/07/08/09/10 必须含真实 MySQL 证据；R3-04 包含短进�
 
 逐项对应：R3-01 用真实 JDBC 事务回滚证明任务领取、租约、意图三行均不残留（原始 SQL 层，不是完整命令服务回归）；R3-02 用真实库中的 pending 行 + mock 重放验证启动不会先失败；R3-03 单元与真实库条件更新均证明只有一个抢占者；R3-05/06 单元覆盖执行器拒绝、GPU_BUSY、接受后记账失败；R3-08 单元覆盖同体复用、异体 409、进行中 409、失败释放，真实库覆盖跨用户唯一键；R3-09 单元覆盖 5 分钟超时显式失败；R3-10 通过脚本重复执行与回滚表断言。
 
-仍未完成、不得据此宣称 R3 全部验收（2026-11-14 复审结论未变）：R3-02 的“真实 JVM 重启 + 重放执行一次”端到端、R3-04 带意图的短进程崩溃演练、R3-01 的服务层事务回归仍需补；当前证据只到数据库事务与单元 mock，另新增 `TaskCommandServicePipelineIT` 2 项（真实事务、任务 Mapper、GPU 租约、配额、调度意图和协调器，仅替换执行器与资源目录查询）：双线程同任务启动只有 1 个成功、1 个 run、1 条意图、执行器 1 次；取消与瞬时成功竞争只有一个终态。R3-07 旧 run 迟到结果、R3-05 取消与瞬时完成的**条件更新竞争**已补真实 MySQL 证据（`MySqlTaskPersistenceIT.lateOldRunResultAndFinishNeverOverwriteCurrentAttempt`、`cancelAndInstantFinishCannotBothTerminalizeTheSameRun`），但删除—启动、编辑—启动、事务回滚和双派发竞争仍未补真实服务层 IT；生产库 `eladmin` 建表仍未执行。
+仍未完成、不得据此宣称 R3 全部验收（2026-11-14 复审结论未变）：R3-02 的“真实 JVM 重启 + 重放执行一次”端到端、R3-04 带意图的短进程崩溃演练、R3-01 的服务层事务异常回滚仍需补。`TaskCommandServicePipelineIT` 已扩至 5 项（真实事务、任务 Mapper、GPU 租约、配额、调度意图和协调器，仅替换执行器与资源目录查询）：双启动只有 1 个成功/1 个 run/1 条意图/执行器 1 次；删除—启动不执行已删除任务；编辑—启动请求参数与库中最终版本一致；取消与瞬时成功只有一个终态；执行器完成回调与并发取消后任务/意图/租约一致。双派发竞争尚未单列 replay 并发测试；N4 真实 JVM 崩溃恢复仍未补；生产库 `eladmin` 建表仍未执行。
+
+### 6.6 N1–N6 可靠性与确认闭环（2026-11-14，未提交）
+
+| 编号 | 本轮结果 | 证据与边界 |
+|---|---|---|
+| N1 完整冻结执行计划 | 已实现 | `ResourceQueryService.findDatasetAuthoritative/findAlgorithmAuthoritative` 直读 MySQL；`TaskExecutionPlan` 保存 dataset/algorithm/hyper `DefenseResourceRef` 与最终参数；`buildExecutionRequest` 只从计划构造，不再二次查询。`PreDefenseTaskCommandServiceTest.startBuildsRequestOnlyFromOneAuthoritativePlan` 断言权威读取各 1 次、缓存读取 0 次；`approvedPlanKeepsCompleteSnapshotWhenCatalogRowsMutateAfterPlanning` 断言计划生成后修改资源对象不改变快照。规则为“权威读 + 确认指纹二次校验 + 请求只用快照”，不是资源行锁/版本号锁定；并发更新发生在二次校验前返回 409 且零派发，发生在计划读取后则使用该完整快照。 |
+| N2 删除—启动/编辑—启动/双派发竞争 | 部分完成 | `TaskCommandServicePipelineIT` 5 项通过：双启动、删除—启动、编辑—启动、取消/瞬时成功、完成回调与并发取消。删除—启动断言已删除任务零执行；编辑—启动断言请求参数与库中最终参数版本一致，不混合。双派发竞争由双启动 + 唯一意图覆盖，未单列“两个 dispatch 线程同时 replay 同一 intent”。 |
+| N3 真实完成与回滚链路 | 部分完成 | 新增执行器完成回调测试：短执行器经 `updateResultForRun/finishForRun/releaseQuietly` 完成，主线程并发 `cancel`；断言任务只一个终态、意图为 `submitted` 或 `abandoned`、租约最终释放。仍是 Mockito 执行器替身，不是 `PythonLddTaskExecutor` 真实进程；事务异常无残留依赖既有 `MySqlTaskPersistenceIT`，本轮未新增服务层异常回滚 IT。 |
+| N4 真实进程崩溃恢复 | 未完成 | 仍只有 `MySqlTaskPersistenceIT.pendingIntentIsReplayedFromRealDatabaseWithoutBeingFailed`（mock 重放）与 `OrphanProcessCrashDrillTest`（强杀进程树），没有独立 JVM 在“提交后退出/抢占后退出/接受后记账前退出”三个窗口的 MySQL 恢复证据。 |
+| N5 五类写工具确认矩阵 | 部分完成 | `AssistantConfirmationEndToEndIT` 17 项：create/start/retry/cancel/export 均有首次与重复或并发同凭据证据；cancel 有过期/跨用户；start/create 有资源变化 409 且零租约/零派发；export 有跨用户下载 403。未单列错误 token 篡改测试；副作用断言覆盖任务数、run 数、意图/执行次数、导出记录数中的适用项。 |
+| N6 质量门禁与文档同步 | 部分完成 | 本机 `mvn verify -Pmysql-it` 209 + 72 全绿；前端 `npm run build` 通过；`.github/workflows/migration-quality.yml` 已是 `ubuntu-latest` + Temurin 17，但未实际触发远端运行，不能用本机 Windows/Java 20 结果替代。 |
+
+**附带修正**：`AfterCommitTaskDispatcher` 改为在事务提交后把派发任务提交到 `taskAsync` 线程池，避免长 LDD 执行占用 HTTP 启动请求与事务连接；测试/非 Spring 调用仍可用无参构造保持同步，单元测试不受影响。`TaskCommandServicePipelineIT` 的完成回调与并发取消依赖该改动。
+
+**结论**：N1 完成，N2/N3/N5 有可核验的部分证据，N4 未完成，N6 仅本机门禁通过。R3/R7 继续保持“部分实现、部分验收”。
 
 ## 7. R4：可选 RabbitMQ 与单机独立 Worker
 
@@ -327,7 +342,7 @@ CPU/GPU 利用率采集为可选指标，未启用可显示未知；任务/队�
 6. `AssistantChatService` 使用有界模型线程池（4 线程 + 16 队列）、全局 4 请求并发槽和单用户并发槽（`max-concurrent-per-user`，默认 1，范围 1–4）；模型调用 Future 最长等待剩余预算并在超时后 `cancel(true)`，工具调用前后检查同一 deadline；6 次模型调用、5 次工具调用、60 秒预算目标。`AssistantQuotaService` 按用户日 50 次条件自增，超出 429。残留：正在同步执行的工具无法被强制中断，只能保证超时后不再发起下一次模型/工具调用，剩余预算尚未传入 `executeTool`。
 7. 模型端口 `AssistantModel` 默认 `provider=disabled`，明确返回 `model_disabled`；未接真实付费 API，核心任务/报告/知识接口不受影响。
 8. 新增 `/api/assistant/*` 和 `/assistant` 页面；会话 7 天、可删除，审计只存工具名/operator/target/resultCode/durationMs。
-9. 当前证据（2026-11-14 R3/R7 可靠性与确认契约收尾，已提交 `d7d02fb`，未推送）：助手核心单测 10 项 + 参数证据 4 项 + 脱敏 6 项；真实 HTTP + MySQL 助手确认/会话链路 13 项（预览零写入、确认只执行一次、重复返回原结果、跨用户 403、删除会话不可复活、并发会话不丢记录、create/start/retry/export 四类写工具确认写入、预览后算法默认值变化 409 且零租约/零派发、并发同凭据创建只写一次、导出跨用户下载 403）；真实命令服务链路 2 项（双启动竞争、取消/瞬时成功竞争）；最终 `mvn verify -Pmysql-it`（`REDIS_IT=true`）为 **207 项单元测试 + 65 项 MySQL/Redis 集成测试全绿**，日志 `tmp/r8-contract-verify.log`；前端构建沿用 `tmp/r7-frontend.log`。上一提交 `81fe075` 的历史证据为 **204 项单元测试 + 60 项集成测试**，日志 `tmp/r8-review-verify4.log`；更早 `6157500` 为 **198 + 52**（`tmp/r7-review-verify3.log`），`8862cd3` 为 **188 + 49**（`tmp/r7-final-verify2.log`）。历史数字只对应各自提交。
+9. 当前证据（2026-11-14 N1–N6 可靠性/确认闭环，未提交）：助手核心单测 10 项 + 参数证据 4 项 + 脱敏 6 项；真实 HTTP + MySQL 助手确认/会话链路 17 项（五类写工具首次/重复/并发、预览零写入、重复返回原结果、跨用户 403、删除会话不可复活、并发会话不丢记录、预览后算法默认值变化 409 且零租约/零派发、导出跨用户下载 403）；真实命令服务链路 5 项（双启动、删除—启动、编辑—启动、取消/瞬时成功、完成回调与并发取消）；最终 `mvn verify -Pmysql-it`（`REDIS_IT=true`）为 **209 项单元测试 + 72 项 MySQL/Redis 集成测试全绿**，日志 `tmp/r9-full-verify.log`；前端本轮 `npm run build` 通过，日志 `tmp/r9-frontend-build.log`。N4 独立 JVM 崩溃恢复、N5 篡改 token 单列、N6 Ubuntu Java 17 远端 CI 仍未完成，R3/R7 仍不得整体验收。
 10. 未做：真实外部模型、真实 LDD、生产库 `eladmin` 建表、组织级双人审批/分布式锁。
 
 ## 11. R8：可选多实例学习验收

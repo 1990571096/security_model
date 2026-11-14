@@ -12,6 +12,7 @@ import com.securitymodel.support.OwnershipE2ESupport;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
@@ -35,6 +36,7 @@ import java.util.concurrent.TimeUnit;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.verify;
@@ -65,6 +67,8 @@ class TaskCommandServicePipelineIT {
     private ObjectMapper objectMapper;
     @Autowired
     private PreDefenseTaskMapper taskMapper;
+    @Autowired
+    private GpuLeaseService gpuLeaseService;
     @MockBean
     private DefenseTaskExecutor executor;
     @MockBean
@@ -91,8 +95,8 @@ class TaskCommandServicePipelineIT {
                 ) VALUES (?, 'pipeline-race', 'pending', 1, 1, ?, 0,
                     'alice', NOW(3), NOW(3), 2, 'user')
                 """, TASK_ID, finalConfig());
-        when(resourceQueryService.findDataset(1L)).thenReturn(dataset());
-        when(resourceQueryService.findAlgorithm(1L)).thenReturn(algorithm());
+        when(resourceQueryService.findDatasetAuthoritative(1L)).thenReturn(dataset());
+        when(resourceQueryService.findAlgorithmAuthoritative(1L)).thenReturn(algorithm());
         authenticate();
     }
 
@@ -135,6 +139,170 @@ class TaskCommandServicePipelineIT {
                 "SELECT COUNT(*) FROM sys_task_dispatch_intent WHERE task_id = ?", Integer.class, TASK_ID));
         verify(executor, timeout(5000).times(1)).runPreDefense(any());
         verify(executor, never()).cancelPreDefense(any(Long.class), any());
+    }
+
+    @Test
+    void editAndStartRaceNeverBuildsRequestFromTwoParameterVersions() throws Exception {
+        CountDownLatch ready = new CountDownLatch(2);
+        CountDownLatch go = new CountDownLatch(1);
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            List<Future<String>> outcomes = List.of(
+                    pool.submit(() -> edit(ready, go)),
+                    pool.submit(() -> start(ready, go)));
+            ready.await(5, TimeUnit.SECONDS);
+            go.countDown();
+            for (Future<String> outcome : outcomes) {
+                outcome.get(10, TimeUnit.SECONDS);
+            }
+        } finally {
+            pool.shutdownNow();
+        }
+
+        String status = jdbc.queryForObject(
+                "SELECT status FROM sys_pre_defense WHERE task_id = ?", String.class, TASK_ID);
+        if ("running".equals(status)) {
+            ArgumentCaptor<DefenseTaskRequest> request = ArgumentCaptor.forClass(DefenseTaskRequest.class);
+            verify(executor, timeout(5000).times(1)).runPreDefense(request.capture());
+            String stored = jdbc.queryForObject(
+                    "SELECT custom_params FROM sys_pre_defense WHERE task_id = ?", String.class, TASK_ID);
+            assertEquals(objectMapper.readTree(stored).path("batch_size").asInt(),
+                    objectMapper.readTree(request.getValue().getCustomParams())
+                            .path("batch_size").asInt());
+        } else {
+            assertEquals("pending", status);
+            verify(executor, never()).runPreDefense(any());
+        }
+    }
+
+    @Test
+    void deleteAndStartRaceNeverExecutesADeletedTask() throws Exception {
+        CountDownLatch ready = new CountDownLatch(2);
+        CountDownLatch go = new CountDownLatch(1);
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        try {
+            List<Future<String>> outcomes = List.of(
+                    pool.submit(() -> delete(ready, go)),
+                    pool.submit(() -> start(ready, go)));
+            ready.await(5, TimeUnit.SECONDS);
+            go.countDown();
+            for (Future<String> outcome : outcomes) {
+                outcome.get(10, TimeUnit.SECONDS);
+            }
+        } finally {
+            pool.shutdownNow();
+        }
+
+        int remaining = jdbc.queryForObject(
+                "SELECT COUNT(*) FROM sys_pre_defense WHERE task_id = ?", Integer.class, TASK_ID);
+        if (remaining == 1) {
+            assertEquals("running", jdbc.queryForObject(
+                    "SELECT status FROM sys_pre_defense WHERE task_id = ?", String.class, TASK_ID));
+            assertEquals(1, jdbc.queryForObject(
+                    "SELECT COUNT(*) FROM sys_task_dispatch_intent WHERE task_id = ?",
+                    Integer.class, TASK_ID));
+            verify(executor, timeout(5000).times(1)).runPreDefense(any());
+        } else {
+            assertEquals(0, remaining, "delete must remove the row exactly once");
+            assertEquals(0, jdbc.queryForObject(
+                    "SELECT COUNT(*) FROM sys_task_dispatch_intent WHERE task_id = ?",
+                    Integer.class, TASK_ID));
+            verify(executor, never()).runPreDefense(any());
+        }
+    }
+
+    @Test
+    void completionAndConcurrentCancelKeepTaskIntentAndLeaseConsistent() throws Exception {
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch finishGate = new CountDownLatch(1);
+        doAnswer(invocation -> {
+            DefenseTaskRequest request = invocation.getArgument(0);
+            entered.countDown();
+            assertTrue(finishGate.await(5, TimeUnit.SECONDS));
+            String result = "{\"status\":\"success\",\"artifacts\":{}}";
+            taskMapper.updateResultForRun(request.getTaskId(), request.getRunId(), null, result);
+            taskMapper.finishForRun(request.getTaskId(), request.getRunId(), "success", 100,
+                    LocalDateTime.now());
+            gpuLeaseService.releaseQuietly(request.getGpuLeaseToken());
+            return null;
+        }).when(executor).runPreDefense(any());
+
+        ExecutorService pool = Executors.newSingleThreadExecutor();
+        try {
+            Future<String> startOutcome = pool.submit(() -> {
+                authenticate();
+                try {
+                    commandService.start(TASK_ID, null);
+                    return "started";
+                } finally {
+                    SecurityContextHolder.clearContext();
+                }
+            });
+            assertTrue(entered.await(5, TimeUnit.SECONDS), "executor must receive the approved request");
+            authenticate();
+            try {
+                commandService.cancel(TASK_ID);
+            } catch (TaskCommandException expected) {
+                // Completion may win the status predicate; either terminal state is valid.
+            } finally {
+                SecurityContextHolder.clearContext();
+                finishGate.countDown();
+            }
+            startOutcome.get(10, TimeUnit.SECONDS);
+        } finally {
+            finishGate.countDown();
+            pool.shutdownNow();
+        }
+
+        awaitTerminalTask();
+        String status = jdbc.queryForObject(
+                "SELECT status FROM sys_pre_defense WHERE task_id = ?", String.class, TASK_ID);
+        assertTrue(status.equals("canceled") || status.equals("success"), "status=" + status);
+        assertEquals(1, jdbc.queryForObject("""
+                SELECT COUNT(*) FROM sys_pre_defense
+                WHERE task_id = ? AND status IN ('success', 'failed', 'canceled')
+                """, Integer.class, TASK_ID));
+        assertEquals(0, jdbc.queryForObject("""
+                SELECT COUNT(*) FROM sys_pre_defense
+                WHERE task_id = ? AND status IN ('pending', 'running')
+                """, Integer.class, TASK_ID));
+        assertEquals(1, jdbc.queryForObject(
+                "SELECT COUNT(*) FROM sys_task_dispatch_intent WHERE task_id = ?",
+                Integer.class, TASK_ID));
+        String intentStatus = jdbc.queryForObject(
+                "SELECT status FROM sys_task_dispatch_intent WHERE task_id = ?",
+                String.class, TASK_ID);
+        assertEquals("success".equals(status) ? "submitted" : "abandoned", intentStatus);
+        assertTrue(awaitLeaseReleased(), "the completed attempt must release its lease");
+    }
+
+    private boolean awaitLeaseReleased() throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        while (System.nanoTime() < deadline) {
+            Boolean released = jdbc.queryForObject("""
+                    SELECT released_at IS NOT NULL FROM sys_gpu_lease WHERE slot_id = 'default-gpu-0'
+                    """, Boolean.class);
+            if (Boolean.TRUE.equals(released)) {
+                return true;
+            }
+            Thread.sleep(20);
+        }
+        return false;
+    }
+
+    private void awaitTerminalTask() throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        while (System.nanoTime() < deadline) {
+            int terminal = jdbc.queryForObject("""
+                    SELECT COUNT(*) FROM sys_pre_defense
+                    WHERE task_id = ? AND status IN ('success', 'failed', 'canceled')
+                    """, Integer.class, TASK_ID);
+            if (terminal == 1) {
+                return;
+            }
+            Thread.sleep(20);
+        }
+        throw new AssertionError("task did not reach a terminal state");
     }
 
     @Test
@@ -195,6 +363,45 @@ class TaskCommandServicePipelineIT {
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
             return "interrupted";
+        }
+    }
+
+    private String edit(CountDownLatch ready, CountDownLatch go) {
+        authenticate();
+        ready.countDown();
+        try {
+            assertTrue(go.await(5, TimeUnit.SECONDS));
+            PreDefenseTaskCommand command = new PreDefenseTaskCommand();
+            command.setTaskName("pipeline-race-edited");
+            command.setDatasetId(1L);
+            command.setAlgorithmId(1L);
+            command.setCustomParams(finalConfig().replace("\"batch_size\":128", "\"batch_size\":64"));
+            commandService.update(TASK_ID, command);
+            return "edited";
+        } catch (TaskCommandException expected) {
+            return "rejected";
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            return "interrupted";
+        } finally {
+            SecurityContextHolder.clearContext();
+        }
+    }
+
+    private String delete(CountDownLatch ready, CountDownLatch go) {
+        authenticate();
+        ready.countDown();
+        try {
+            assertTrue(go.await(5, TimeUnit.SECONDS));
+            commandService.delete(List.of(TASK_ID));
+            return "deleted";
+        } catch (TaskCommandException expected) {
+            return "rejected";
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            return "interrupted";
+        } finally {
+            SecurityContextHolder.clearContext();
         }
     }
 

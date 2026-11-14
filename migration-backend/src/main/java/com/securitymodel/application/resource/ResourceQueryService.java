@@ -51,6 +51,14 @@ public class ResourceQueryService {
                 () -> datasetMapper.selectById(datasetId)).orElse(null);
     }
 
+    /**
+     * Authoritative catalog read for an execution contract. Preview/confirm/launch must
+     * share the same MySQL row, not a possibly stale Redis copy.
+     */
+    public Dataset findDatasetAuthoritative(Long datasetId) {
+        return datasetMapper.selectById(datasetId);
+    }
+
     public List<Dataset> findDatasets() {
         return cache.getListOrLoad(ResourceCatalogCache.DATASET_LIST, Dataset.class,
                 () -> datasetMapper.selectList(
@@ -78,6 +86,10 @@ public class ResourceQueryService {
     public Algorithm findAlgorithm(Long algorithmId) {
         return cache.getOrLoad("security-model:resource:algorithm:" + algorithmId, Algorithm.class,
                 () -> algorithmMapper.selectById(algorithmId)).orElse(null);
+    }
+
+    public Algorithm findAlgorithmAuthoritative(Long algorithmId) {
+        return algorithmMapper.selectById(algorithmId);
     }
 
     public List<Algorithm> findAlgorithms() {

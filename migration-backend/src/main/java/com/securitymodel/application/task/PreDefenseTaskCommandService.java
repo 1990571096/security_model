@@ -298,7 +298,9 @@ public class PreDefenseTaskCommandService {
             hyperView.put("hyperId", resolution.hyper().getTemplateId());
             hyperView.put("name", nullSafe(resolution.hyper().getTemplateName()));
         }
-        return new TaskExecutionPlan(fingerprint, resolution.finalConfig(), preview);
+        return new TaskExecutionPlan(fingerprint, resolution.finalConfig(), preview,
+                toDatasetRef(resolution.dataset()), toAlgorithmRef(resolution.algorithm()),
+                toHyperRef(resolution.hyper()));
     }
 
     private PreDefenseTask lockOwned(Long taskId) {
@@ -322,13 +324,13 @@ public class PreDefenseTaskCommandService {
             throw new TaskCommandException("算法ID不能为空");
         }
 
-        Dataset dataset = resourceQueryService.findDataset(command.getDatasetId());
+        Dataset dataset = resourceQueryService.findDatasetAuthoritative(command.getDatasetId());
         if (dataset == null || !Boolean.TRUE.equals(dataset.getEnabled())
                 || !"success".equals(dataset.getParseStatus())) {
             throw new TaskCommandException("指定的数据集不存在或未解析成功");
         }
 
-        Algorithm algorithm = resourceQueryService.findAlgorithm(command.getAlgorithmId());
+        Algorithm algorithm = resourceQueryService.findAlgorithmAuthoritative(command.getAlgorithmId());
         if (algorithm == null || !Boolean.TRUE.equals(algorithm.getEnabled())
                 || !"pre".equals(algorithm.getDefenseStage())
                 || !LDD_IMPLEMENTATION.equals(algorithm.getImplementationPath())) {
@@ -414,7 +416,7 @@ public class PreDefenseTaskCommandService {
         GpuLease lease = gpuLeaseService.acquire(task.getTaskId(), runId, attempt);
         DefenseTaskRequest request;
         try {
-            request = buildExecutionRequest(task, runId, attempt, lease, approvedPlan.finalParameters());
+            request = buildExecutionRequest(task, runId, attempt, lease, approvedPlan);
             ObjectNode quota = taskExecutionQuotaPolicy.validateAndBuildSnapshot(task);
             LocalDateTime startTime = LocalDateTime.now();
             String snapshot = appendExecutionSnapshot(task.getExecutionSnapshot(), request, startTime, quota, lease);
@@ -461,10 +463,9 @@ public class PreDefenseTaskCommandService {
     }
 
     private DefenseTaskRequest buildExecutionRequest(PreDefenseTask task, String runId, int attempt,
-                                                     GpuLease lease, ObjectNode finalParameters) {
-        Dataset dataset = resourceQueryService.findDataset(task.getDatasetId());
-        Algorithm algorithm = resourceQueryService.findAlgorithm(task.getAlgorithmId());
-        Hyper hyper = task.getHyperId() == null ? null : resourceQueryService.findHyper(task.getHyperId());
+                                                     GpuLease lease, TaskExecutionPlan approvedPlan) {
+        // Build only from the approved plan. Re-querying the catalog here would allow the
+        // fingerprint check and the actual request to observe two different resource versions.
         return DefenseTaskRequest.builder()
                 .taskId(task.getTaskId())
                 .attempt(attempt)
@@ -473,10 +474,10 @@ public class PreDefenseTaskCommandService {
                 .stage("pre_defense")
                 .description(task.getDescription())
                 .createdBy(task.getCreateBy())
-                .customParams(finalParameters.toString())
-                .dataset(toDatasetRef(dataset))
-                .algorithm(toAlgorithmRef(algorithm))
-                .hyperParameter(toHyperRef(hyper))
+                .customParams(approvedPlan.finalParameters().toString())
+                .dataset(approvedPlan.dataset())
+                .algorithm(approvedPlan.algorithm())
+                .hyperParameter(approvedPlan.hyper())
                 .gpuLeaseToken(lease.getLeaseToken())
                 .gpuSlotId(lease.getSlotId())
                 .gpuFencingToken(lease.getFencingToken())

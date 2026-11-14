@@ -25,6 +25,8 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import org.mockito.ArgumentCaptor;
@@ -77,6 +79,8 @@ class PreDefenseTaskCommandServiceTest {
         when(taskMapper.selectList(any())).thenReturn(List.of());
         when(resourceQueryService.findDataset(1L)).thenReturn(dataset());
         when(resourceQueryService.findAlgorithm(2L)).thenReturn(algorithm());
+        when(resourceQueryService.findDatasetAuthoritative(1L)).thenReturn(dataset());
+        when(resourceQueryService.findAlgorithmAuthoritative(2L)).thenReturn(algorithm());
         when(currentUserService.username()).thenReturn("tester");
         when(gpuLeaseService.acquire(any(), any(), any())).thenReturn(gpuLease());
     }
@@ -121,6 +125,46 @@ class PreDefenseTaskCommandServiceTest {
         assertEquals(2, attempts.get(1).path("attempt").asInt());
         assertNotEquals("previous-run", attempts.get(1).path("runId").asText());
         verify(dispatchCoordinator).dispatchAfterCommit(any(DefenseTaskRequest.class));
+    }
+
+    @Test
+    void approvedPlanKeepsCompleteSnapshotWhenCatalogRowsMutateAfterPlanning() throws Exception {
+        Dataset dataset = dataset();
+        Algorithm algorithm = algorithm();
+        when(resourceQueryService.findDatasetAuthoritative(1L)).thenReturn(dataset);
+        when(resourceQueryService.findAlgorithmAuthoritative(2L)).thenReturn(algorithm);
+
+        TaskExecutionPlan plan = commandService.plan(task(35L, "pending", null));
+        dataset.setFilePath("/uploads/datasets/replaced.zip");
+        algorithm.setDefaultConfig("{\"batch_size\":16}");
+        algorithm.setImplementationPath("vab://pre-defense/replaced");
+
+        assertEquals("dataset://cifar10", plan.dataset().getPath());
+        assertEquals(128, objectMapper.readTree(plan.algorithm().getConfigJson())
+                .path("batch_size").asInt());
+        assertEquals("vab://pre-defense/ldd", plan.algorithm().getPath());
+        assertEquals(128, objectMapper.readTree(plan.finalParameters().toString())
+                .path("batch_size").asInt());
+    }
+
+    @Test
+    void startBuildsRequestOnlyFromOneAuthoritativePlan() throws Exception {
+        PreDefenseTask pending = task(32L, "pending", null);
+        when(taskAccessGuard.requireOwned(32L)).thenReturn(pending);
+        when(taskMapper.selectByIdForUpdate(32L)).thenReturn(pending);
+        when(taskMapper.claimForExecution(eq(32L), any(), eq(1), any(), any())).thenReturn(1);
+
+        commandService.start(32L);
+
+        ArgumentCaptor<DefenseTaskRequest> captor = ArgumentCaptor.forClass(DefenseTaskRequest.class);
+        verify(dispatchCoordinator).dispatchAfterCommit(captor.capture());
+        assertEquals("dataset://cifar10", captor.getValue().getDataset().getPath());
+        assertEquals("vab://pre-defense/ldd", captor.getValue().getAlgorithm().getPath());
+        assertEquals(11, objectMapper.readTree(captor.getValue().getCustomParams()).path("seed").asInt());
+        verify(resourceQueryService, times(1)).findDatasetAuthoritative(1L);
+        verify(resourceQueryService, times(1)).findAlgorithmAuthoritative(2L);
+        verify(resourceQueryService, never()).findDataset(any());
+        verify(resourceQueryService, never()).findAlgorithm(any());
     }
 
     @Test
