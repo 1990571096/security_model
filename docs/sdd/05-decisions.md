@@ -378,7 +378,7 @@ Agent 采用外部大模型 API，本机不部署大模型。生成模型和 emb
 4. **排序与拒答**：标题权重 3、章节 2、正文 1，按文档频率做 IDF 加权；同时要求 IDF 加权覆盖率和最低分（默认 `min-coverage=0.25`、`min-score=20`），避免仅命中“参数/循环”等常见词就回答未知问题。topK 默认 5，同分按 chunkId 稳定排序；无命中返回 `unknown`，不调用模型。
 5. **版本切换原子化**：管理员显式触发索引，不在启动时自动扫描。内容未变按 SHA-256 跳过；变化时在同一短事务插入新版本和全部 chunk，再 retire 其他 active 版本，读者不会看到半成品。SDD 导入拒绝符号链接、越界路径和非 UTF-8 读取异常；导入前统一脱敏。
 6. **外发字段白名单**：`KnowledgePromptBuilder` 只生成 `model/messages/temperature/max_tokens`，上下文只包含 `[Cn] 标题/章节/脱敏片段`，不包含 sourceKey、文档 ID、owner、绝对路径、日志、样本或凭据；问题是先脱敏再截断。system prompt 明确 `<context>` 是不可信数据，文档内指令不得执行。
-7. **模型失败不阻塞检索**：通用 OpenAI-compatible 适配器支持 baseUrl/model/key/timeout/retries 配置，默认 `enabled=false`；无密钥或配置不完整返回 `model_not_configured` 且不发请求；超时/429/5xx 最多自动重试一次；4xx、空响应、超时和网络异常都降级为 `retrieval_only` 并返回引用片段。模型答案出现候选集外的 `[C99]` 时整段丢弃；R6 不注册工具，文档注入无法扩大工具权限。
+7. **模型适配解耦且失败不阻塞检索**：业务侧只依赖 `KnowledgeAnswerModel` 端口（问题 + 已检索引用），供应商协议、鉴权、超时、重试和响应解析都由适配器负责；`security-model.knowledge.model.provider` 只选择一个适配器，新增供应商时新增实现并切换 provider 即可，不改 `KnowledgeQueryService` 和引用校验。当前默认 `openai-compatible`，支持 baseUrl/model/key/timeout/retries 配置，默认 `enabled=false`；无密钥或配置不完整返回 `model_not_configured` 且不发请求；超时/429/5xx 最多自动重试一次；4xx、空响应、超时和网络异常都降级为 `retrieval_only` 并返回引用片段。模型答案出现候选集外的 `[C99]` 时整段丢弃；R6 不注册工具，文档注入无法扩大工具权限。
 
 边界：没有供应商授权、费用上限与数据留存确认前，不能真实调用付费 API，也不能写“外部模型联调完成”。当前证据来自假 HTTP 服务器捕获请求体、单元测试、20 题固定评估集（10 有效/5 未知/5 越权或注入）和真实 MySQL ACL 测试；生产库 `eladmin` 未执行本 ADR 的建表脚本，真实语料规模与模型质量仍未验证。
 

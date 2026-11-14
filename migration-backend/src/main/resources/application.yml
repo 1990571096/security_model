@@ -66,6 +66,8 @@ security-model:
     min-coverage: ${SECURITY_MODEL_KNOWLEDGE_MIN_COVERAGE:0.25}
     min-score: ${SECURITY_MODEL_KNOWLEDGE_MIN_SCORE:20}
     model:
+      # Only one provider adapter is active; new providers are selected here, not in services.
+      provider: ${SECURITY_MODEL_KNOWLEDGE_MODEL_PROVIDER:openai-compatible}
       enabled: ${SECURITY_MODEL_KNOWLEDGE_MODEL_ENABLED:false}
       base-url: ${SECURITY_MODEL_KNOWLEDGE_MODEL_BASE_URL:}
       name: ${SECURITY_MODEL_KNOWLEDGE_MODEL_NAME:}

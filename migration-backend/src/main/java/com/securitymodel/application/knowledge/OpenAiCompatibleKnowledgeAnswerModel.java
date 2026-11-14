@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
@@ -22,6 +23,8 @@ import java.util.List;
  * provider/budget/data-retention approval remains a human decision.
  */
 @Component
+@ConditionalOnProperty(prefix = "security-model.knowledge.model", name = "provider",
+        havingValue = "openai-compatible", matchIfMissing = true)
 public class OpenAiCompatibleKnowledgeAnswerModel implements KnowledgeAnswerModel {
 
     private static final Logger log = LoggerFactory.getLogger(OpenAiCompatibleKnowledgeAnswerModel.class);

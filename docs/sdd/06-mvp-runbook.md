@@ -169,7 +169,7 @@ SOURCE sql/security_model_knowledge.sql;
 
 - 索引不随启动自动执行。管理员先调用 `POST /api/knowledge/reindex` 导入 `docs/sdd`，再调用 `POST /api/knowledge/algorithms/reindex` 导入启用算法；用户只能调用 `POST /api/knowledge/tasks/{taskId}/index` 索引自己的任务报告摘要。
 - 配置前缀为 `security-model.knowledge.*`：`sdd-root`、`max-chunk-chars=800`、`candidate-limit=5000`、`top-k=5`、`min-coverage=0.25`、`min-score=20`。
-- 外部模型默认 `security-model.knowledge.model.enabled=false`；只有同时配置 `base-url`、`name`、`api-key` 才可能调用，且仍受超时、一次重试和引用校验约束。没有供应商/费用/数据留存授权时保持关闭，页面显示 `retrieval_only` 或 `model_not_configured`，不得写成联调完成。
+- 外部模型默认 `security-model.knowledge.model.enabled=false`；`security-model.knowledge.model.provider` 选择一个适配器（默认 `openai-compatible`），新增供应商时只增加实现并切换 provider，不改查询业务。只有同时配置 `base-url`、`name`、`api-key` 才可能调用，且仍受超时、一次重试和引用校验约束。没有供应商/费用/数据留存授权时保持关闭，页面显示 `retrieval_only` 或 `model_not_configured`，不得写成联调完成。
 - 验收查询 `POST /api/knowledge/query` 的 `status` 为 `answered`/`retrieval_only`/`unknown`；`citations` 必须带 sourceKey、version、章节和行号。`GET /api/knowledge/status` 只返回 active 文档数。
 
 ### 备份与回滚

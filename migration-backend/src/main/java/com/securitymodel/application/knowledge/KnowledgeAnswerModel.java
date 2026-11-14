@@ -2,7 +2,15 @@ package com.securitymodel.application.knowledge;
 
 import java.util.List;
 
-/** External answer generation is optional; retrieval must work with no model configured. */
+/**
+ * Provider-neutral answer generation port. The application only knows question + retrieved
+ * citations; each adapter owns its own protocol, auth, retry and response parsing. Retrieval
+ * must keep working when no adapter can answer.
+ *
+ * <p>To add a provider, implement this interface and activate it with
+ * {@code security-model.knowledge.model.provider}; do not change
+ * {@link KnowledgeQueryService} or citation handling.</p>
+ */
 public interface KnowledgeAnswerModel {
 
     ModelResult answer(String question, List<KnowledgeCitation> citations);

@@ -256,10 +256,10 @@ Vue 2 工程继续作为业务回归和回滚基线，不参与迁移版主流�
 | 分块与切词 | Markdown 保留标题/章节/1-based 行号；中文 Han 连续串展开单字+二元组，英文/数字按词，停用疑问词 | `MarkdownKnowledgeChunker`、`KnowledgeTokenizer` |
 | 排序与拒答 | 标题 3/章节 2/正文 1，IDF 加权；`min-coverage=0.25`、`min-score=20`、topK=5；无命中返回 `unknown`，不调用模型 | `KnowledgeRanker`、`KnowledgeRetrievalService` |
 | 引用回答 | `POST /api/knowledge/query` 返回 `status/answer/citations/modelStatus/modelMessage`；引用含 sourceKey/version/section/chunk/line/snippet/visibility；模型答案出现候选集外引用时整段丢弃并回退 | `KnowledgeQueryService`、`KnowledgePromptBuilder` |
-| 外部模型 | 通用 OpenAI-compatible 适配器，默认 `enabled=false`；无 key 返回 `model_not_configured`；超时/429/5xx 最多重试 1 次；4xx/超时/空响应降级为 `retrieval_only`；请求体白名单不含 sourceKey/文档 ID/owner/路径/日志/样本/凭据 | `OpenAiCompatibleKnowledgeAnswerModel` |
+| 外部模型 | 业务仅依赖 `KnowledgeAnswerModel` 端口；`provider` 选择一个适配器（默认 `openai-compatible`），新增供应商只增加实现并切换配置。默认 `enabled=false`；无 key 返回 `model_not_configured`；超时/429/5xx 最多重试 1 次；4xx/超时/空响应降级为 `retrieval_only`；请求体白名单不含 sourceKey/文档 ID/owner/路径/日志/样本/凭据 | `KnowledgeAnswerModel`、`OpenAiCompatibleKnowledgeAnswerModel` |
 | API | `GET /api/knowledge/status`、`POST /api/knowledge/reindex`、`POST /api/knowledge/algorithms/reindex`、`POST /api/knowledge/tasks/{taskId}/index`（owner）、`DELETE /api/knowledge/documents/{documentId}`（管理员） | `KnowledgeController` |
 | 前端 | 新增知识检索页、路由与菜单；展示回答/检索模式/未知、引用卡片、模型状态；管理员索引入口对 403 给出明确提示，不伪造成功 | `KnowledgeView.vue`、`src/api/knowledge.js`、`router/index.js`、`App.vue` |
-| 验证（本机） | `mvn verify -Pmysql-it`（`REDIS_IT=true`）→ **174 项单元测试，0 失败/0 跳过；45 项 MySQL IT + 1 项真实 Redis IT 全绿**；Python 11/11；前端 `npm run build` 通过（element chunk 947.11 kB 警告仍在）；未跑真实 LDD | `tmp/r6-final-verify2.log`、`tmp/r6-python-tests.log`、`tmp/r6-frontend.log` |
+| 验证（本机） | `mvn verify -Pmysql-it`（`REDIS_IT=true`）→ **174 项单元测试，0 失败/0 跳过；45 项 MySQL IT + 1 项真实 Redis IT 全绿**；Python 11/11；前端 `npm run build` 通过（element chunk 947.11 kB 警告仍在）；未跑真实 LDD | `tmp/r6-final-verify3.log`、`tmp/r6-python-tests.log`、`tmp/r6-frontend.log` |
 | 未做/阻塞 | 外部模型供应商、费用上限、数据留存未获人类授权，不能真实外发；生产库 `eladmin` 未建表；真实语料规模、模型质量与 20 题之外的失败样例未评估 | 20 §9 |
 
 ## 6. 待完成与优化建议
