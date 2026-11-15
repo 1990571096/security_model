@@ -254,7 +254,7 @@ Vue 2 工程继续作为业务回归和回滚基线，不参与迁移版主流�
 | ACL | 共享文档所有稳定认证用户可读；私有报告仅 `owner_user_id`；管理员跨用户读默认关闭，需显式开启 | `KnowledgeDocumentMapper.findSearchableForUser`、`KnowledgeRetrievalService` |
 | 导入与版本 | 管理员显式触发；SDD 直接 `.md` 文件拒绝符号链接/越界，UTF-8 去 BOM 后先脱敏再 SHA-256；内容未变跳过；变化时同一事务写新版本+全部 chunk 再 retire 旧 active 版本 | `KnowledgeIndexService`、`KnowledgeDocumentWriter` |
 | 分块与切词 | Markdown 保留标题/章节/1-based 行号；中文 Han 连续串展开单字+二元组，英文/数字按词，停用疑问词 | `MarkdownKnowledgeChunker`、`KnowledgeTokenizer` |
-| 排序与拒答 | 标题 3/章节 2/正文 1，IDF 加权；`min-coverage=0.25`、`min-score=20`、topK=5；无命中返回 `unknown`，不调用模型 | `KnowledgeRanker`、`KnowledgeRetrievalService` |
+| 排序与拒答 | 标题 3/章节 2/正文 1，IDF 加权；`min-coverage=0.30`、`min-score=20`、topK=5；无命中返回 `unknown`，不调用模型 | `KnowledgeRanker`、`KnowledgeRetrievalService` |
 | 引用回答 | `POST /api/knowledge/query` 返回 `status/answer/citations/modelStatus/modelMessage`；引用含 sourceKey/version/section/chunk/line/snippet/visibility；模型答案出现候选集外引用时整段丢弃并回退 | `KnowledgeQueryService`、`KnowledgePromptBuilder` |
 | 外部模型 | 业务仅依赖 `KnowledgeAnswerModel` 端口；`provider` 选择一个适配器（默认 `openai-compatible`），新增供应商只增加实现并切换配置。默认 `enabled=false`；无 key 返回 `model_not_configured`；超时/429/5xx 最多重试 1 次；4xx/超时/空响应降级为 `retrieval_only`；请求体白名单不含 sourceKey/文档 ID/owner/路径/日志/样本/凭据 | `KnowledgeAnswerModel`、`OpenAiCompatibleKnowledgeAnswerModel` |
 | API | `GET /api/knowledge/status`、`POST /api/knowledge/reindex`、`POST /api/knowledge/algorithms/reindex`、`POST /api/knowledge/tasks/{taskId}/index`（owner）、`DELETE /api/knowledge/documents/{documentId}`（管理员） | `KnowledgeController` |

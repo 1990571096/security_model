@@ -21,7 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class KnowledgeEvaluationTest {
 
     private static final int TOP_K = 5;
-    private static final double MIN_COVERAGE = 0.25;
+    private static final double MIN_COVERAGE = 0.30;
     private static final double MIN_SCORE = 20;
 
     @Test

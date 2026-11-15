@@ -35,7 +35,7 @@ public class KnowledgeRetrievalService {
             CurrentUserService currentUserService,
             @Value("${security-model.knowledge.candidate-limit:5000}") int candidateLimit,
             @Value("${security-model.knowledge.top-k:5}") int topK,
-            @Value("${security-model.knowledge.min-coverage:0.25}") double minCoverage,
+            @Value("${security-model.knowledge.min-coverage:0.30}") double minCoverage,
             @Value("${security-model.knowledge.min-score:20}") double minScore,
             @Value("${security-model.ownership.admin-cross-user-read:false}") boolean adminCrossUserRead) {
         this(documentMapper, currentUserService, null, candidateLimit, topK, minCoverage,
@@ -49,7 +49,7 @@ public class KnowledgeRetrievalService {
             KnowledgeVectorStore vectorStore,
             @Value("${security-model.knowledge.candidate-limit:5000}") int candidateLimit,
             @Value("${security-model.knowledge.top-k:5}") int topK,
-            @Value("${security-model.knowledge.min-coverage:0.25}") double minCoverage,
+            @Value("${security-model.knowledge.min-coverage:0.30}") double minCoverage,
             @Value("${security-model.knowledge.min-score:20}") double minScore,
             @Value("${security-model.ownership.admin-cross-user-read:false}") boolean adminCrossUserRead) {
         this.documentMapper = documentMapper;

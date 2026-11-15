@@ -377,6 +377,13 @@ class R3ProductionExecutorChainIT {
         }
         long pid = objectMapper.readTree(Files.readString(record)).path("pid").asLong(-1);
         if (pid > 0) {
+            long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(20);
+            while (System.nanoTime() < deadline) {
+                if (!ProcessHandle.of(pid).map(ProcessHandle::isAlive).orElse(false)) {
+                    return;
+                }
+                Thread.sleep(100);
+            }
             assertFalse(ProcessHandle.of(pid).map(ProcessHandle::isAlive).orElse(false),
                     "the real Python child must be gone before the lease can be released");
         }

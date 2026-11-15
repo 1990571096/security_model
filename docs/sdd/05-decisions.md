@@ -375,7 +375,7 @@ Agent 采用外部大模型 API，本机不部署大模型。生成模型和 emb
 1. **不新增向量库**：继续使用 MySQL 作为唯一事实库。`sys_knowledge_document` 保存 `source_key/source_type/version/content_hash/visibility/owner_user_id/status`，`sys_knowledge_chunk` 保存 `section_path/content/start_line/end_line`；唯一键为 `(source_key, version)` 与 `(document_id, chunk_index)`。检索 SQL 只连接 `status='active'` 的文档，旧版本保留作审计但不可召回。
 2. **ACL 先于排序**：共享文档对所有已认证稳定用户可读；私有文档仅 `owner_user_id` 可读；管理员跨用户读必须显式打开 `security-model.ownership.admin-cross-user-read`。排序器只接收 SQL 已过滤的候选，不取全库再由前端过滤。
 3. **确定性中文切词**：`KnowledgeTokenizer` 使用 NFKC、小写、Han 连续串展开单字与二元组，英文/数字按词并做复数去尾；不引入外部分词器，保证同样的语料在每台机器得到同样的评估结果。停用词只去掉疑问/助词，技术词不删。
-4. **排序与拒答**：标题权重 3、章节 2、正文 1，按文档频率做 IDF 加权；同时要求 IDF 加权覆盖率和最低分（默认 `min-coverage=0.25`、`min-score=20`），避免仅命中“参数/循环”等常见词就回答未知问题。topK 默认 5，同分按 chunkId 稳定排序；无命中返回 `unknown`，不调用模型。
+4. **排序与拒答**：标题权重 3、章节 2、正文 1，按文档频率做 IDF 加权；同时要求 IDF 加权覆盖率和最低分（默认 `min-coverage=0.30`、`min-score=20`），避免仅命中“参数/循环”等常见词就回答未知问题。topK 默认 5，同分按 chunkId 稳定排序；无命中返回 `unknown`，不调用模型。
 5. **版本切换原子化**：管理员显式触发索引，不在启动时自动扫描。内容未变按 SHA-256 跳过；变化时在同一短事务插入新版本和全部 chunk，再 retire 其他 active 版本，读者不会看到半成品。SDD 导入拒绝符号链接、越界路径和非 UTF-8 读取异常；导入前统一脱敏。
 6. **外发字段白名单**：`KnowledgePromptBuilder` 只生成 `model/messages/temperature/max_tokens`，上下文只包含 `[Cn] 标题/章节/脱敏片段`，不包含 sourceKey、文档 ID、owner、绝对路径、日志、样本或凭据；问题是先脱敏再截断。system prompt 明确 `<context>` 是不可信数据，文档内指令不得执行。
 7. **模型适配解耦且失败不阻塞检索**：业务侧只依赖 `KnowledgeAnswerModel` 端口（问题 + 已检索引用），供应商协议、鉴权、超时、重试和响应解析都由适配器负责；`security-model.knowledge.model.provider` 只选择一个适配器，新增供应商时新增实现并切换 provider 即可，不改 `KnowledgeQueryService` 和引用校验。当前默认 `openai-compatible`，支持 baseUrl/model/key/timeout/retries 配置，默认 `enabled=false`；无密钥或配置不完整返回 `model_not_configured` 且不发请求；超时/429/5xx 最多自动重试一次；4xx、空响应、超时和网络异常都降级为 `retrieval_only` 并返回引用片段。模型答案出现候选集外的 `[C99]` 时整段丢弃；R6 不注册工具，文档注入无法扩大工具权限。
@@ -495,6 +495,7 @@ Agent 采用外部大模型 API，本机不部署大模型。生成模型和 emb
 4. **生产执行器最小真实链路**：新增 `R3ProductionExecutorChainIT`，使用完整 `@SpringBootTest`、真实 `@Async("taskAsync")` 代理、真实 `PythonLddTaskExecutor`、真实事务/Mapper/租约/协调器/意图与幂等表；仅 `ResourceQueryService` 用 `@MockBean`，Python 使用短协议桩，不运行 LDD、不占 GPU、不改实验配置。覆盖正常完成、取消、超时、非法结果四类终态，断言任务状态、意图状态、Python 子进程退出和租约释放一致。
 5. **真实崩溃窗口证据**：新增 `R3ProductionCrashChildMain` 测试子 JVM，使用真实 MyBatis 任务/意图/租约、真实 `PythonLddTaskExecutor`、真实 `TaskDispatchCoordinator` 和进程登记；测试子类在 `markSubmitted` 写 `crash-ready-920` 后阻塞。父测试在子 JVM 接受执行并启动 Python 后 `destroyForcibly` 终止子 JVM，再启动 `R3RecoveryChildMain`；恢复识别 `submitting`，杀孤儿 Python、释放租约、任务 failed、意图 abandoned，`executions.log` 只有 1 行，证明不重复执行且未确认退出前不重新分配槽位。该子 JVM 的执行器是测试专用异步包装，不是 Spring `@Async` 代理；不能把崩溃用例写成“完整 Spring 容器恢复”。
 6. **文档统一**：`20` §6.7 保留原构造状态证据，另列真实派发崩溃证据；§10 第 12/13 条改为已补事实，未做列表移除“真实 Python 子进程重放”和“退役向量清理失败持久化补偿”。`09` 更新计数与最新证据，`05/06/07/17/20` 与 README/运行手册统一为 232 单测 + 96 IT。
+7. **R6 拒答阈值同步收紧到 0.30**：ADR-025 新增文档进入评估语料后，文档频率与 IDF 改变，一条未知题的 IDF 加权覆盖率由阈值下方升到 `0.25044`，恰好越过旧的 `0.25`。将 `min-coverage` 默认值同步为 `0.30`（`application.yml`、`KnowledgeRetrievalService`、两份评估测试、`05/06/09` 文档一致），固定评估仍为可答 10/10、未知 0 命中；这是精度保护阈值，不是为单题写特例。
 
 **证据**
 - P1：`KnowledgeSanitizerTest` 9/9、`AssistantOutboundPrivacyTest` 1/1，`tmp/round3-p1.log`；新增 `redactsSingleCharNumericHiddenAndSpacedDirectories`，两轮最终 body 均不含 `/z`、`/123`、`/.git`、`/custom dir`。
