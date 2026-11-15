@@ -481,3 +481,28 @@ Agent 采用外部大模型 API，本机不部署大模型。生成模型和 emb
 **边界**：R3 子 JVM 的用户/数据集/算法 Mapper 与 runtime 指纹仍是测试代理/子类，不是完整 Spring 上下文；真实执行器是短 Python 桩，不启动 LDD、不使用 GPU。R7 insert 阻塞用 MySQL 触发器 `SLEEP` 模拟，不是真实行锁/表锁等待；迟到记录失效依赖事务回滚。R6 故障是测试替身抛异常，不是实际停 Redis 进程；补偿是有界扫描，不是持久化 outbox，重复扫描会重复尝试但幂等。以上证据不外推为生产级多实例调度或整体阶段验收。
 
 **非目标**：不新增算法、Agent 功能或 MQ/Worker；不重跑 LDD 128/5；不写生产库；不把本机结果替代远端 CI。
+
+## ADR-025：R3/R6/R7 最新评审收口（P1 路径、P2 清理饥饿、真实执行器链路）
+
+日期：2026-11-15；状态：**代码与测试已实施，JDK20/JDK17 全量门禁通过；改动未提交、未推送；不构成 R3/R6/R7 整体验收**。
+
+**背景**：基于 `08f11c0` 的最新评审确认三项缺口：`KnowledgeSanitizer.forModel()` 仍保留 `/x`、`/123` 等合法绝对目录；退役向量对账固定取最早 N 条，清理成功后不推进状态，存在扫描饥饿；R3 虽有新 JVM 与崩溃窗口测试，但执行器仍是测试替身，未证明真实生产派发链经过“接受执行后、提交记账前”窗口。本轮只修这三类问题并同步文档，不扩展 RabbitMQ、模型供应商或新展示功能，R4 不在本轮。
+
+**决策**
+1. **单段目录过滤补齐**：`KnowledgeSanitizer` 保留四层路径规则并收紧量词。`ABSOLUTE_DIRECTORY_PATH` 中间段空格改为 `{0,1}`，防止把 `/single 字 目录 以及普通 and/or` 跨 token 吞并；`ABSOLUTE_SINGLE_SEGMENT` 首字符允许 ASCII 字母、数字、下划线、点和汉字，后续允许字母/数字/点/横线，最多两个空格 token，覆盖 `/z`、`/123`、`/.git`、`/custom dir`，同时保留 `and/or`、`1/x`、`3/4`。所有外发渠道（问题、历史消息、工具结果、检索证据、prompt builder）继续只调用同一 `forModel()`，不新增白名单分流。
+2. **持久清理状态 + 退避 + 公平排序**：`KnowledgeDocument` 增加 `vectorCleanupStatus/Attempts/NextAt/UpdatedAt`；退役时置 `pending` 并立即到期。`findRetiredForVectorCleanup(now, limit)` 只取 `retired` 且 `pending/failed` 且已到期的行，按 `COALESCE(next_at, updated_at), document_id` 排序，成功行不再占据首批窗口。成功写 `clean`，失败写 `failed`、`attempts+1` 和 `next_at`；退避 `60s << min(6, attempts)`，上限 3600s，单条失败不阻塞其他行。MySQL ACL 仍是唯一权威，清理失败期间退役内容不进入 `findSearchableForUser`。
+3. **迁移脚本可重复/可回滚**：基础表 `sql/security_model_knowledge.sql` 增加四列与索引；新增 `security_model_knowledge_vector_reconcile.sql` 与 `_rollback.sql`，均用 `information_schema` 动态判断，回填 retired 行 `next_at`，脚本可重复执行。索引存在性判断按列计数 `>0`，不是假设单列索引只产生一行。
+4. **生产执行器最小真实链路**：新增 `R3ProductionExecutorChainIT`，使用完整 `@SpringBootTest`、真实 `@Async("taskAsync")` 代理、真实 `PythonLddTaskExecutor`、真实事务/Mapper/租约/协调器/意图与幂等表；仅 `ResourceQueryService` 用 `@MockBean`，Python 使用短协议桩，不运行 LDD、不占 GPU、不改实验配置。覆盖正常完成、取消、超时、非法结果四类终态，断言任务状态、意图状态、Python 子进程退出和租约释放一致。
+5. **真实崩溃窗口证据**：新增 `R3ProductionCrashChildMain` 测试子 JVM，使用真实 MyBatis 任务/意图/租约、真实 `PythonLddTaskExecutor`、真实 `TaskDispatchCoordinator` 和进程登记；测试子类在 `markSubmitted` 写 `crash-ready-920` 后阻塞。父测试在子 JVM 接受执行并启动 Python 后 `destroyForcibly` 终止子 JVM，再启动 `R3RecoveryChildMain`；恢复识别 `submitting`，杀孤儿 Python、释放租约、任务 failed、意图 abandoned，`executions.log` 只有 1 行，证明不重复执行且未确认退出前不重新分配槽位。该子 JVM 的执行器是测试专用异步包装，不是 Spring `@Async` 代理；不能把崩溃用例写成“完整 Spring 容器恢复”。
+6. **文档统一**：`20` §6.7 保留原构造状态证据，另列真实派发崩溃证据；§10 第 12/13 条改为已补事实，未做列表移除“真实 Python 子进程重放”和“退役向量清理失败持久化补偿”。`09` 更新计数与最新证据，`05/06/07/17/20` 与 README/运行手册统一为 232 单测 + 96 IT。
+
+**证据**
+- P1：`KnowledgeSanitizerTest` 9/9、`AssistantOutboundPrivacyTest` 1/1，`tmp/round3-p1.log`；新增 `redactsSingleCharNumericHiddenAndSpacedDirectories`，两轮最终 body 均不含 `/z`、`/123`、`/.git`、`/custom dir`。
+- P2：`KnowledgeRetrievalMySqlIT` 6/6（含 `retiredVectorCleanupAdvancesPastFailuresAndSurvivesRestart` 真实 MySQL + Redis、5 条退役/批量 2/失败不阻塞尾批/重启继续/重复幂等），`tmp/round3-p2.log`；`KnowledgeVectorCleanupMigrationIT` 1/1（升级两次、回滚两次、再升级），`tmp/round3-p2-migration.log`。
+- R3：`R3ProductionExecutorChainIT` 5/5（正常、取消、超时、非法结果、真实崩溃窗口），`tmp/round3-r3-prod.log`；崩溃子 JVM `R3ProductionCrashChildMain`、恢复子 JVM `R3RecoveryChildMain`。
+- 全量：JDK20 `mvn verify -Pmysql-it`（`REDIS_IT=true`）**232 单测 + 96 IT**，`tmp/round3-full-verify.log`；Temurin 17.0.21 同计数，`tmp/round3-full-verify-jdk17.log`；Python 11/11 `tmp/round3-python-tests.log`；前端构建通过 `tmp/round3-frontend.log`（仍有 >500 kB chunk 警告）。
+- 远端：`106e4d3` 的 run `43707281672` 全部 success；文档提交 `bb36728` 只改 `docs/**`，按 workflow `paths` 不触发新 CI，不是失败。本轮改动尚未提交/推送，因此没有新的远端 CI 结果。
+
+**边界**：单段路径仍是正则形态过滤，不能穷举所有自由文本隐私形态；清理退避是进程内定时任务 + 数据库状态，不是 outbox；崩溃子 JVM 用测试最小上下文与手动异步包装，真实链路四类用例才用完整 Spring 代理；生产库 `eladmin` 未迁移，R4 未开始。`R3/R6/R7` 只能写“本轮缺陷已修、隔离证据已补”，不能写整体验收通过。
+
+**非目标**：不扩展 RabbitMQ/独立 Worker、模型供应商或展示功能；不重跑 LDD 128/5；不写生产库；不把本机门禁替代远端 CI，也不把隔离测试写成生产部署验收。

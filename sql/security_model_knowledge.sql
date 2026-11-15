@@ -15,10 +15,16 @@ CREATE TABLE IF NOT EXISTS `sys_knowledge_document` (
   `status` VARCHAR(16) NOT NULL,
   `created_at` DATETIME(3) NOT NULL,
   `updated_at` DATETIME(3) NOT NULL,
+  `vector_cleanup_status` VARCHAR(16) NOT NULL DEFAULT 'pending',
+  `vector_cleanup_attempts` INT NOT NULL DEFAULT 0,
+  `vector_cleanup_next_at` DATETIME(3) NULL,
+  `vector_cleanup_updated_at` DATETIME(3) NULL,
   PRIMARY KEY (`document_id`),
   UNIQUE KEY `uk_knowledge_document_source_version` (`source_key`, `version`),
   KEY `idx_knowledge_document_active` (`source_key`, `status`),
-  KEY `idx_knowledge_document_acl` (`visibility`, `owner_user_id`, `status`)
+  KEY `idx_knowledge_document_acl` (`visibility`, `owner_user_id`, `status`),
+  KEY `idx_knowledge_document_vector_cleanup`
+      (`status`, `vector_cleanup_status`, `vector_cleanup_next_at`, `document_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS `sys_knowledge_chunk` (

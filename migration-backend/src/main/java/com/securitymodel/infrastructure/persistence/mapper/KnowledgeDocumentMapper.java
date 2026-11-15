@@ -27,14 +27,43 @@ public interface KnowledgeDocumentMapper extends BaseMapper<KnowledgeDocument> {
     @Select("""
             SELECT * FROM sys_knowledge_document
             WHERE status = 'retired'
-            ORDER BY updated_at ASC
+              AND vector_cleanup_status IN ('pending', 'failed')
+              AND (vector_cleanup_next_at IS NULL OR vector_cleanup_next_at <= #{now})
+            ORDER BY COALESCE(vector_cleanup_next_at, updated_at) ASC, document_id ASC
             LIMIT #{limit}
             """)
-    List<KnowledgeDocument> findRetired(@Param("limit") int limit);
+    List<KnowledgeDocument> findRetiredForVectorCleanup(@Param("now") LocalDateTime now,
+                                                        @Param("limit") int limit);
 
     @Update("""
             UPDATE sys_knowledge_document
-            SET status = 'retired', updated_at = #{now}
+            SET vector_cleanup_status = 'clean',
+                vector_cleanup_next_at = NULL,
+                vector_cleanup_updated_at = #{now}
+            WHERE document_id = #{documentId} AND status = 'retired'
+            """)
+    int markVectorCleanupClean(@Param("documentId") Long documentId,
+                               @Param("now") LocalDateTime now);
+
+    @Update("""
+            UPDATE sys_knowledge_document
+            SET vector_cleanup_status = 'failed',
+                vector_cleanup_attempts = vector_cleanup_attempts + 1,
+                vector_cleanup_next_at = #{nextAt},
+                vector_cleanup_updated_at = #{now}
+            WHERE document_id = #{documentId} AND status = 'retired'
+            """)
+    int markVectorCleanupFailed(@Param("documentId") Long documentId,
+                                @Param("now") LocalDateTime now,
+                                @Param("nextAt") LocalDateTime nextAt);
+
+    @Update("""
+            UPDATE sys_knowledge_document
+            SET status = 'retired', updated_at = #{now},
+                vector_cleanup_status = 'pending',
+                vector_cleanup_attempts = 0,
+                vector_cleanup_next_at = #{now},
+                vector_cleanup_updated_at = #{now}
             WHERE source_key = #{sourceKey} AND status = 'active'
               AND document_id <> #{keepDocumentId}
             """)
@@ -44,7 +73,11 @@ public interface KnowledgeDocumentMapper extends BaseMapper<KnowledgeDocument> {
 
     @Update("""
             UPDATE sys_knowledge_document
-            SET status = 'retired', updated_at = #{now}
+            SET status = 'retired', updated_at = #{now},
+                vector_cleanup_status = 'pending',
+                vector_cleanup_attempts = 0,
+                vector_cleanup_next_at = #{now},
+                vector_cleanup_updated_at = #{now}
             WHERE document_id = #{documentId} AND status = 'active'
             """)
     int retireById(@Param("documentId") Long documentId, @Param("now") LocalDateTime now);

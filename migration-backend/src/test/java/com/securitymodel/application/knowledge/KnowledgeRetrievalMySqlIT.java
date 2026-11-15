@@ -27,7 +27,10 @@ import org.junit.jupiter.api.Assumptions;
 import java.sql.DriverManager;
 import java.sql.Statement;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -87,10 +90,16 @@ class KnowledgeRetrievalMySqlIT {
                   status VARCHAR(16) NOT NULL,
                   created_at DATETIME(3) NOT NULL,
                   updated_at DATETIME(3) NOT NULL,
+                  vector_cleanup_status VARCHAR(16) NOT NULL DEFAULT 'pending',
+                  vector_cleanup_attempts INT NOT NULL DEFAULT 0,
+                  vector_cleanup_next_at DATETIME(3) NULL,
+                  vector_cleanup_updated_at DATETIME(3) NULL,
                   PRIMARY KEY (document_id),
                   UNIQUE KEY uk_knowledge_document_source_version (source_key, version),
                   KEY idx_knowledge_document_active (source_key, status),
-                  KEY idx_knowledge_document_acl (visibility, owner_user_id, status)
+                  KEY idx_knowledge_document_acl (visibility, owner_user_id, status),
+                  KEY idx_knowledge_document_vector_cleanup
+                      (status, vector_cleanup_status, vector_cleanup_next_at, document_id)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
                 """);
         jdbc.execute("""
@@ -224,6 +233,75 @@ class KnowledgeRetrievalMySqlIT {
         }
     }
 
+    @Test
+    void retiredVectorCleanupAdvancesPastFailuresAndSurvivesRestart() throws Exception {
+        Assumptions.assumeTrue("true".equals(System.getenv("REDIS_IT")),
+                "real Redis is required for retirement compensation");
+        LettuceConnectionFactory factory = new LettuceConnectionFactory("127.0.0.1", 6379);
+        factory.afterPropertiesSet();
+        StringRedisTemplate template = new StringRedisTemplate(factory);
+        template.afterPropertiesSet();
+        String key = "security-model:it:vectors:" + UUID.randomUUID();
+        try {
+            KnowledgeVectorStore realStore = new KnowledgeVectorStore(
+                    template, chunkMapper, new LocalEmbeddingModel(true), true, key, 40);
+            List<Long> ids = new ArrayList<>();
+            for (int i = 0; i < 5; i++) {
+                Long id = insertRetiredDocument("task_report:starvation-" + i, "退役饥饿测试-" + i);
+                insertChunk(id, 0, "退役饥饿测试-" + i);
+                assertEquals(1, realStore.indexDocument(id, "private", 1L));
+                ids.add(id);
+            }
+
+            FlakyVectorStore flaky = new FlakyVectorStore(
+                    realStore, template, chunkMapper, key);
+            flaky.failDocumentIds.add(ids.get(0));
+            KnowledgeIndexService index = new KnowledgeIndexService(
+                    documentMapper, writer, null, null, null, "unused", 800, flaky);
+
+            // The first page fails one document; it must not block the other document in
+            // the page, and the failed row must leave the next scan window.
+            assertEquals(1, index.reconcileRetiredVectors(2));
+            assertEquals("failed", cleanupStatus(ids.get(0)));
+            assertEquals("clean", cleanupStatus(ids.get(1)));
+            assertEquals(2, index.reconcileRetiredVectors(2));
+            assertEquals("clean", cleanupStatus(ids.get(2)));
+            assertEquals("clean", cleanupStatus(ids.get(3)));
+            assertEquals(1, index.reconcileRetiredVectors(2));
+            assertEquals("clean", cleanupStatus(ids.get(4)));
+            assertEquals(0, index.reconcileRetiredVectors(2));
+
+            // A fresh service instance reads the persisted retry time; no in-memory
+            // cursor is required to reach the failed record after a restart.
+            jdbc.update("UPDATE sys_knowledge_document SET vector_cleanup_next_at = "
+                    + "DATE_SUB(NOW(3), INTERVAL 1 SECOND) WHERE document_id = ?", ids.get(0));
+            KnowledgeIndexService afterRestart = new KnowledgeIndexService(
+                    documentMapper, writer, null, null, null, "unused", 800, flaky);
+            assertEquals(1, afterRestart.reconcileRetiredVectors(2));
+            assertEquals("clean", cleanupStatus(ids.get(0)));
+            assertTrue(realStore.search("退役饥饿测试-0", 5, 1L, false).hits().stream()
+                    .noneMatch(hit -> hit.chunkId() == chunkIdOf(ids.get(0))));
+        } finally {
+            template.delete(key);
+            factory.destroy();
+        }
+    }
+
+    private String cleanupStatus(Long documentId) {
+        return jdbc.queryForObject(
+                "SELECT vector_cleanup_status FROM sys_knowledge_document WHERE document_id = ?",
+                String.class, documentId);
+    }
+
+    private Long insertRetiredDocument(String sourceKey, String title) {
+        Long id = insertDocument(sourceKey, 1, "private", 1L, title);
+        jdbc.update("UPDATE sys_knowledge_document SET status = 'retired', "
+                + "vector_cleanup_status = 'pending', vector_cleanup_attempts = 0, "
+                + "vector_cleanup_next_at = NOW(3), vector_cleanup_updated_at = NOW(3) "
+                + "WHERE document_id = ?", id);
+        return id;
+    }
+
     private long chunkIdOf(Long documentId) {
         return jdbc.queryForObject(
                 "SELECT chunk_id FROM sys_knowledge_chunk WHERE document_id = ? ORDER BY chunk_id LIMIT 1",
@@ -301,6 +379,7 @@ class KnowledgeRetrievalMySqlIT {
 
     private static class FlakyVectorStore extends KnowledgeVectorStore {
         private final KnowledgeVectorStore delegate;
+        private final Set<Long> failDocumentIds = new HashSet<>();
         private volatile boolean failNextRemove;
 
         FlakyVectorStore(KnowledgeVectorStore delegate, StringRedisTemplate redis,
@@ -324,6 +403,9 @@ class KnowledgeRetrievalMySqlIT {
             if (failNextRemove) {
                 failNextRemove = false;
                 throw new IllegalStateException("simulated-redis-outage");
+            }
+            if (failDocumentIds.remove(documentId)) {
+                throw new IllegalStateException("simulated-document-outage");
             }
             return delegate.removeDocument(documentId);
         }

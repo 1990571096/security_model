@@ -27,13 +27,15 @@ public final class KnowledgeSanitizer {
     // Directory-looking paths may have no extension and may contain spaces. Require at
     // least two segments so a lone "/" or ordinary slash prose is not swallowed.
     private static final Pattern ABSOLUTE_DIRECTORY_PATH =
-            Pattern.compile("(?<![\\p{L}\\p{N}:/])/(?:[A-Za-z_\\p{IsHan}][\\p{L}\\p{N}._-]*"
-                    + "(?:\\s+[\\p{L}\\p{N}._-]+)*/)+(?:[\\p{L}\\p{N}._-]+"
+            Pattern.compile("(?<![\\p{L}\\p{N}:/])/(?:[A-Za-z0-9_.\\p{IsHan}][\\p{L}\\p{N}._-]*"
+                    + "(?:\\s+[\\p{L}\\p{N}._-]+){0,1}/)+(?:[\\p{L}\\p{N}._-]+"
                     + "(?:\\s+[\\p{L}\\p{N}._-]+){0,1})?");
-    // A single-segment absolute directory such as /secrets or /数据目录. This intentionally
-    // over-redacts in free text; callers must not rely on an extension or an allow-list.
+    // A single-segment absolute directory such as /x, /123, /.git, /secrets or
+    // /custom dir. Requiring a boundary after the token keeps ordinary prose such as
+    // and/or and 1/x intact; the lookbehind excludes URL and path continuations.
     private static final Pattern ABSOLUTE_SINGLE_SEGMENT =
-            Pattern.compile("(?<![\\p{L}\\p{N}:/])/[A-Za-z_\\p{IsHan}][\\p{L}\\p{N}_-]{1,}"
+            Pattern.compile("(?<![\\p{L}\\p{N}:/])/[A-Za-z0-9_.\\p{IsHan}]"
+                    + "[\\p{L}\\p{N}_.-]*(?:\\s+[\\p{L}\\p{N}_.-]+){0,2}"
                     + "(?=$|\\s|[，。；、）)\"'`])");
     // Any remaining absolute multi-segment path, including /api/... and single-segment
     // files such as /secret.txt. There is no route-prefix exemption in free text.

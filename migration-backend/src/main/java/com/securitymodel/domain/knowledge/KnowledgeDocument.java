@@ -16,6 +16,9 @@ public class KnowledgeDocument {
     public static final String STATUS_RETIRED = "retired";
     public static final String VISIBILITY_SHARED = "shared";
     public static final String VISIBILITY_PRIVATE = "private";
+    public static final String VECTOR_CLEANUP_PENDING = "pending";
+    public static final String VECTOR_CLEANUP_CLEAN = "clean";
+    public static final String VECTOR_CLEANUP_FAILED = "failed";
 
     public static final String SOURCE_SDD = "sdd";
     public static final String SOURCE_ALGORITHM = "algorithm";
@@ -33,4 +36,8 @@ public class KnowledgeDocument {
     private String status;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
+    private String vectorCleanupStatus;
+    private Integer vectorCleanupAttempts;
+    private LocalDateTime vectorCleanupNextAt;
+    private LocalDateTime vectorCleanupUpdatedAt;
 }

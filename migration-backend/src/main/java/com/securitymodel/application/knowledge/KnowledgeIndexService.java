@@ -195,38 +195,58 @@ public class KnowledgeIndexService {
         if (documentId == null) {
             return false;
         }
-        boolean retired = writer.retire(documentId, LocalDateTime.now());
+        LocalDateTime now = LocalDateTime.now();
+        boolean retired = writer.retire(documentId, now);
         if (retired) {
             // MySQL is the source of truth; the vector cleanup is best effort. A stale
             // vector can only occupy a candidate slot and is still filtered by the SQL
             // ACL query, never used as proof that the document is active.
-            removeVectorsQuietly(documentId);
+            if (removeVectorsQuietly(documentId) && documentMapper != null) {
+                documentMapper.markVectorCleanupClean(documentId, now);
+            }
         }
         return retired;
     }
 
     /**
-     * Bounded reconciliation for a failed Redis cleanup after retirement. MySQL remains the
-     * authority: every candidate is already retired, so a repeated VREM is harmless.
+     * Bounded reconciliation for a failed Redis cleanup after retirement. The cleanup
+     * state is persisted, so a permanent failure moves out of the first-page window
+     * instead of starving later retired documents. MySQL remains the authority: every
+     * candidate is already retired, so a repeated VREM is harmless.
      */
     public synchronized int reconcileRetiredVectors(int limit) {
         if (vectorStore == null || !vectorStore.enabled()) {
             return 0;
         }
         int bounded = Math.max(1, Math.min(200, limit));
-        List<KnowledgeDocument> retired = documentMapper.findRetired(bounded);
+        LocalDateTime now = LocalDateTime.now();
+        List<KnowledgeDocument> retired = documentMapper.findRetiredForVectorCleanup(now, bounded);
         int cleaned = 0;
         for (KnowledgeDocument document : retired) {
             try {
                 if (vectorStore.removeDocument(document.getDocumentId())) {
+                    documentMapper.markVectorCleanupClean(document.getDocumentId(), now);
                     cleaned++;
+                } else {
+                    markVectorCleanupFailed(document, now);
                 }
             } catch (RuntimeException exception) {
+                markVectorCleanupFailed(document, now);
                 log.warn("退役知识向量对账失败: documentId={}, reason={}",
                         document.getDocumentId(), exception.getClass().getSimpleName());
             }
         }
         return cleaned;
+    }
+
+    private void markVectorCleanupFailed(KnowledgeDocument document, LocalDateTime now) {
+        int attempts = document.getVectorCleanupAttempts() == null
+                ? 0 : Math.max(0, document.getVectorCleanupAttempts());
+        long delaySeconds = 60L << Math.min(6, attempts);
+        LocalDateTime nextAt = now.plusSeconds(Math.min(3600, delaySeconds));
+        documentMapper.markVectorCleanupFailed(document.getDocumentId(), now, nextAt);
+        log.warn("退役知识向量对账延后: documentId={}, attempts={}, nextAt={}",
+                document.getDocumentId(), attempts + 1, nextAt);
     }
 
     private UpsertResult upsert(String sourceType, String sourceKey, String title,

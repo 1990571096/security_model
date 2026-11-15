@@ -21,6 +21,7 @@ SOURCE sql/security_model_execution_snapshot.sql;
 SOURCE sql/security_model_task_run_context.sql;
 SOURCE sql/security_model_clean_subset_export.sql;
 SOURCE sql/security_model_knowledge.sql;
+SOURCE sql/security_model_knowledge_vector_reconcile.sql;
 SOURCE sql/security_model_assistant.sql;
 ```
 
@@ -32,6 +33,7 @@ SOURCE sql/security_model_execution_snapshot.sql;
 SOURCE sql/security_model_task_run_context.sql;
 SOURCE sql/security_model_clean_subset_export.sql;
 SOURCE sql/security_model_knowledge.sql;
+SOURCE sql/security_model_knowledge_vector_reconcile.sql;
 SOURCE sql/security_model_assistant.sql;
 ```
 
@@ -145,10 +147,11 @@ SOURCE sql/security_model_gpu_lease_block.sql;
 SOURCE sql/security_model_task_dispatch.sql;
 SOURCE sql/security_model_request_idempotency.sql;
 SOURCE sql/security_model_knowledge.sql;
+SOURCE sql/security_model_knowledge_vector_reconcile.sql;
 SOURCE sql/security_model_assistant.sql;
 ```
 
-所有脚本均使用 `CREATE TABLE IF NOT EXISTS`，可重复执行；回滚脚本只删除本阶段新增表，不删除业务任务。R3 两张表没有外键到任务表，回滚不会级联删除任务。
+所有脚本均使用 `CREATE TABLE IF NOT EXISTS`，可重复执行；回滚脚本只删除本阶段新增表，不删除业务任务。R3 两张表没有外键到任务表，回滚不会级联删除任务。知识库退役向量清理的增量脚本 `security_model_knowledge_vector_reconcile.sql` 也必须执行，否则 `vector_cleanup_status` 等列缺失，退役对账会失败；回滚先执行 `sql/security_model_knowledge_vector_reconcile_rollback.sql`，要求停止调度且无活跃任务，脚本只删除索引和四个清理列，不删业务行。
 
 ### 启动与停止
 
@@ -204,11 +207,40 @@ mvn -B -f migration-backend/pom.xml test -Pmysql-it `
 
 业务库迁移必须单独记录：本演练只证明脚本在空 schema 可重复执行；生产 `eladmin` 的备份、执行窗口、执行人、逐表行数核对和回滚仍需要单独授权，不能把本节写成“生产库已迁移”。
 
+### 2026-11-15 P1/P2/R3 收口验证
+
+不启动真实 LDD、不占 GPU、不改生产库；以下命令在仓库根执行，密码只放当前进程环境。
+
+```powershell
+$env:MYSQL_IT_PASSWORD = '123456'
+$env:REDIS_IT = 'true'
+
+# P1 外发路径：单字符/数字/隐藏/空格目录 + 两轮最终 body
+mvn -B -f migration-backend/pom.xml test -Pmysql-it `
+  "-Dtest=KnowledgeSanitizerTest,AssistantOutboundPrivacyTest"
+
+# P2 退役向量：真实 MySQL + Redis 的跨批/失败不阻塞/重启/幂等
+mvn -B -f migration-backend/pom.xml verify -Pmysql-it `
+  "-Dtest=KnowledgeRetrievalMySqlIT"
+
+# P2 迁移：升级两次、回滚两次、再升级
+mvn -B -f migration-backend/pom.xml verify -Pmysql-it `
+  "-Dtest=KnowledgeVectorCleanupMigrationIT"
+
+# R3 真实执行器：完整 Spring 异步代理 + 真实 PythonLddTaskExecutor + 短协议桩
+mvn -B -f migration-backend/pom.xml verify -Pmysql-it `
+  "-Dtest=R3ProductionExecutorChainIT"
+```
+
+实际结果（2026-11-15 本机）：P1 10 项通过（`tmp/round3-p1.log`）；P2 `KnowledgeRetrievalMySqlIT` 6/6（`tmp/round3-p2.log`）；迁移 1/1（`tmp/round3-p2-migration.log`）；R3 `R3ProductionExecutorChainIT` 5/5（`tmp/round3-r3-prod.log`）。全量门禁 JDK20 与 Temurin 17.0.21 均为 **232 单测 + 96 IT**（`tmp/round3-full-verify.log`、`tmp/round3-full-verify-jdk17.log`），Python 11/11（`tmp/round3-python-tests.log`），前端构建通过（`tmp/round3-frontend.log`，仍有 >500 kB chunk 警告）。
+
+边界：R3 的 Python 是短协议桩，不运行 LDD、不占 GPU；崩溃窗口测试的 `R3ProductionCrashChildMain` 是测试最小上下文 + 手动异步包装，不是完整 Spring 容器。以上只证明隔离环境链路，不是生产库迁移或生产部署验收。
+
 ### CI 与 Java 17 证据
 
-- 本机 JDK 20 与 Temurin JDK 17.0.21 均已跑 `mvn verify -Pmysql-it`，计数为 **231 单测 + 89 IT**；JDK17 日志 `tmp/round2-full-verify-jdk17.log`，JDK20 日志 `tmp/round2-full-verify-final.log`。这只证明本机 Java 17 运行，不等于 Ubuntu CI/生产部署已验证。
+- 本机 JDK 20 与 Temurin JDK 17.0.21 均已跑 `mvn verify -Pmysql-it`，最新计数为 **232 单测 + 96 IT**；JDK17 日志 `tmp/round3-full-verify-jdk17.log`，JDK20 日志 `tmp/round3-full-verify.log`。这只证明本机 Java 17 运行，不等于 Ubuntu CI/生产部署已验证。
 - 远端 `Migration Quality` 对 `930c934` 曾失败（run `43686578054`）：`python` 与 `frontend` 成功，`backend` 在单测阶段因 `AttemptProcessRegistryTest`/`PythonProcessWaiterTest` 硬编码 Windows `cmd`、`ping -n`，以及 `PythonProcessWaiter` 销毁进程后未等待退出而失败；已改为按 OS 选择 `sh -c 'sleep 20'`/`sh -c 'exit 0'` 或 `cmd /c exit 0`/`ping -n 20`，并在 `destroyProcessTree` 后 `waitFor(2s)`。
-- 跨平台修复推送后，提交 `106e4d3` 的 run `43707281672` 已全部 success（backend/frontend/python）；本机定向日志 `tmp/round2-cross-platform.log`。远端 CI 通过仍不等于生产部署验收。
+- 跨平台修复推送后，提交 `106e4d3` 的 run `43707281672` 已全部 success（backend/frontend/python）；本机定向日志 `tmp/round2-cross-platform.log`。文档提交 `bb36728` 只改 `docs/**`，按 workflow `paths` 不触发新 CI。**本轮 P1/P2/R3 改动尚未提交/推送，因此没有最新提交的远端 CI 结果**；不得把 `106e4d3` 的 run 当作本轮代码结果。远端 CI 通过仍不等于生产部署验收。
 
 ### 备份与回滚
 
@@ -218,6 +250,14 @@ mvn -B -f migration-backend/pom.xml test -Pmysql-it `
 # 在 cmd 中执行，避免 PowerShell 对 --result-file 表达式的重定向歧义
 cmd /c "mysqldump --single-transaction --routines --triggers -h 127.0.0.1 -P 3306 -u root -p eladmin --result-file=D:\db-backup\eladmin-before-r5.sql"
 ```
+
+知识库退役向量清理列的回退（仅在已停止调度、无活跃任务时执行；先备份）：
+
+```sql
+SOURCE sql/security_model_knowledge_vector_reconcile_rollback.sql;
+```
+
+该脚本可重复执行，只删除 `idx_knowledge_document_vector_cleanup` 与 `vector_cleanup_*` 四列，不删除 `sys_knowledge_document` 业务行；重新升级再次执行 `security_model_knowledge_vector_reconcile.sql`。生产库执行前仍需单独授权。
 
 回滚顺序：停止应用 → 确认无写入 → 按需执行 `security_model_assistant_rollback.sql`、`security_model_knowledge_rollback.sql`、`security_model_request_idempotency_rollback.sql`、`security_model_task_dispatch_rollback.sql`、`security_model_gpu_lease_block_rollback.sql`、`security_model_gpu_lease_rollback.sql`。回滚不会删除任务表；生产回滚前必须再次核对备份与业务影响。
 

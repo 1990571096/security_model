@@ -1,6 +1,6 @@
 # Executor Contract
 
-Updated: 2026-11-13 (R0 fact calibration; supersedes the 2026-10-26 text where they conflict).
+Updated: 2026-11-15 (R3 production-chain closure evidence; contract text unchanged; supersedes the 2026-11-13 date).
 
 This document is the frozen contract for the migration backend (`migration-backend`) and the
 Python adapter (`algorithm-runtime/vab/algorithm_entry.py`). Every rule below is verified
@@ -333,8 +333,37 @@ lock at `VAB_ROOT/.security-model-vab.lock` remains as a second line of defence:
   `SECURITY_MODEL_VAB_LOCK_STALE_SECONDS` (default 21600). On POSIX, a dead holder's pid may
   have been reused by an unrelated process, which also stays conservative (busy).
 
-The platform quota does not model the GPU. A database-backed single-slot lease is proposed in
-`18-multiuser-ownership-and-resources.md` §5 and is **not implemented**.
+The platform quota does not model the GPU. The database-backed single-slot lease is
+**implemented** in `sys_gpu_lease` (ADR-014) and is exercised by `GpuLeaseMySqlIT`,
+`R3ProductionExecutorChainIT` and the crash/recovery child JVMs; the quota snapshot must not
+be read as a GPU budget.
+
+## Verification evidence (2026-11-15, R3 production-chain closure)
+
+The frozen contract above is unchanged by the 2026-11-15 P1/P2/R3 closure. New evidence:
+
+- `R3ProductionExecutorChainIT` (5/5) uses the full `@SpringBootTest` context, the real
+  `@Async("taskAsync")` proxy, the real `PythonLddTaskExecutor`, real transactions, real
+  `PreDefenseTaskMapper`, real GPU lease and real dispatch coordinator. Only
+  `ResourceQueryService` is a `@MockBean`; Python is a short protocol stub, so no LDD run,
+  no GPU allocation and no experiment-config change occur.
+- Cases: normal completion (success, progress 100, intent submitted, lease released, child
+  exited), cancel (canceled, intent submitted/abandoned, child exited, lease released),
+  timeout (failed `TASK_TIMEOUT`, child exited, lease released), invalid result (failed
+  `RESULT_PROTOCOL_ERROR`, no success row, child exited, lease released).
+- `R3ProductionCrashChildMain` is a test-only child JVM with real MyBatis task/intent/lease,
+  real `PythonLddTaskExecutor`, real `TaskDispatchCoordinator` and real process registration;
+  a test subclass blocks after writing `crash-ready-920` in `markSubmitted`. The parent test
+  kills the child JVM after the real Python stub starts, then `R3RecoveryChildMain` recognizes
+  `submitting`, kills the orphan, releases the lease, marks the task failed and the intent
+  abandoned. `executions.log` contains exactly one line. This child JVM is a minimal test
+  context plus a manual async wrapper, **not** the full Spring `@Async` proxy.
+- Full gate: JDK20 and Temurin 17.0.21 each `232` unit tests + `96` MySQL/Redis integration
+  tests, BUILD SUCCESS (`tmp/round3-full-verify.log`, `tmp/round3-full-verify-jdk17.log`).
+  Python 11/11, frontend build passes. No LDD 128/5 rerun, no production `eladmin` migration.
+- Boundary: a short protocol stub proves the Java dispatch/process/lease/recovery chain, not
+  real algorithm or GPU production execution. `KILL_FAILED` and multi-instance network
+  partitions remain uncovered.
 
 ## Extension Rule
 

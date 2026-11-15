@@ -33,7 +33,7 @@
 | Redis | `ResourceCatalogCache`、ADR-010 | 资源目录缓存已落地，不是分布式锁或任务状态存储 |
 | 知识检索 R6 | `KnowledgeIndexService`、`KnowledgeRetrievalMySqlIT`、`KnowledgeVectorStoreRedisIT`、`KnowledgeController` | 离线检索、ACL、引用、DeepSeek 回答适配器与 Redis 8 向量 ACL 混合检索已落地；本地 256 维哈希 embedding 只做词法候选重排，不是神经语义召回；向量只合并进词法候选池，业务 `retire()` 成功后清理向量，失败由 `KnowledgeVectorReconcileJob` 有界对账；生产库未建表 |
 | 受控助手 R7 | `AssistantChatService`、`AssistantConfirmationService`、`AssistantSessionService`、`AssistantModelEvidence` | 工具白名单、预览确认、配额、审计、有界并发、单用户并发槽、结构化参数证据与资源指纹确认已落地；DeepSeek 适配器本机可启用，`toolExecutor` 用 `DelegatingSecurityContextExecutorService` 传播登录身份，工具剩余预算传 `execute(arguments, timeoutMillis)`；最终外发体由真实 ChatService + 适配器 + 假 HTTP 验证；R3-02/03/04 已用独立 JVM + 真实 MySQL 租约 + 短 Python 桩验证恢复/竞争/隔离；仍缺完整 Spring 上下文与生产建表 |
-| 质量门禁 | `.github/workflows/migration-quality.yml` | 配置有 Maven/MySQL/Redis/Vite；进程守卫测试已改为 Windows/Linux 双实现，远端 Actions 结果仍需实际查询 |
+| 质量门禁 | `.github/workflows/migration-quality.yml` | 配置有 Maven/MySQL/Redis/Vite；进程守卫测试已改为 Windows/Linux 双实现。远端 `930c934` 的 run `43686578054` 因 Windows-only `cmd`/`ping -n` 与销毁后未等待退出失败，跨平台修复后 `106e4d3` 的 run `43707281672` backend/frontend/python 全部 success；文档提交 `bb36728` 只改 `docs/**`，按 workflow `paths` 不触发新 CI，不是失败 |
 
 所有文件名相对于仓库根 `F:\Study\postgraduate\毕业论文\security_model`。开始每轮前执行 `git status --short`，阅读相关 SDD 与源码，保留其他人已有修改；与表格事实不一致时，先提交事实差异供复核，不得沿用过期结论。
 
@@ -156,7 +156,7 @@ mvn -B -f migration-backend/pom.xml verify -Pmysql-it
 
 Redis 保持 MySQL 回源；新增缓存必须提供 key/TTL/失效/穿透/击穿/故障降级及测试。先量化热点和查询开销，优先统计/配置目录，不能把任务状态放在 Redis 当唯一真相。提供本地 Compose 或等价启动手册（MySQL、Redis，R4 后才加 RabbitMQ），配置通过环境变量传入，绝不提交真实密码。CI 增加相应集成测试并记录远端结果。
 
-> R5 状态（2026-11-13）：**代码已实施，自动化与本机验证部分完成，待外审**。已落地 `TaskRuntimeMetrics`（任务/槽位/执行池/恢复/耗时）、请求与任务日志 MDC、Redis 代际防旧值回填与 hit/miss/degraded 计数、管理员 `/api/observability/summary`、Actuator 最小暴露（health 匿名，metrics/info 仅管理员），统计页和运行监控页改为真实数据，不再展示硬编码 ASR/CPU/节点数字。真实 Redis 并发回填测试已通过，真实 Security 链 IT 覆盖 health 匿名 200、metrics 匿名 401、普通用户 summary 403、管理员 summary 200；边界：生产库未建表；Redis 宕机、长时 MySQL 观测、CI 远端结果尚未执行。
+> R5 状态（2026-11-13）：**代码已实施，自动化与本机验证部分完成，待外审**。已落地 `TaskRuntimeMetrics`（任务/槽位/执行池/恢复/耗时）、请求与任务日志 MDC、Redis 代际防旧值回填与 hit/miss/degraded 计数、管理员 `/api/observability/summary`、Actuator 最小暴露（health 匿名，metrics/info 仅管理员），统计页和运行监控页改为真实数据，不再展示硬编码 ASR/CPU/节点数字。真实 Redis 并发回填测试已通过，真实 Security 链 IT 覆盖 health 匿名 200、metrics 匿名 401、普通用户 summary 403、管理员 summary 200；边界：生产库未建表；Redis 宕机与长时 MySQL 观测仍未执行。CI 结果以远端 Actions 为准：`106e4d3` 的 run `43707281672` 已全部 success，但本轮未重新推送，不能把旧 run 当作最新提交结果。
 
 ## 9. R6：RAG 知识检索
 

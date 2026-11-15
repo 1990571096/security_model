@@ -97,6 +97,24 @@ class KnowledgeSanitizerTest {
     }
 
     @Test
+    void redactsSingleCharNumericHiddenAndSpacedDirectories() {
+        String raw = "目录 /z、/123、/.git、/.config/cache、/custom dir、/single 字 目录 "
+                + "以及普通 and/or 文本和 1/x、3/4";
+        String sanitized = KnowledgeSanitizer.forModel(raw, 500);
+
+        assertFalse(sanitized.contains("/z"), sanitized);
+        assertFalse(sanitized.contains("/123"), sanitized);
+        assertFalse(sanitized.contains("/.git"), sanitized);
+        assertFalse(sanitized.contains("/.config"), sanitized);
+        assertFalse(sanitized.contains("/custom dir"), sanitized);
+        assertFalse(sanitized.contains("/single"), sanitized);
+        assertTrue(sanitized.contains("[已过滤路径]"), sanitized);
+        assertTrue(sanitized.contains("and/or"), "ordinary slash prose must survive");
+        assertTrue(sanitized.contains("1/x") && sanitized.contains("3/4"),
+                "fractions must survive");
+    }
+
+    @Test
     void capsOutboundText() {
         String value = KnowledgeSanitizer.forModel("x".repeat(1000), 120);
         assertTrue(value.length() <= 120);
