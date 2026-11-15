@@ -67,6 +67,7 @@
           <div v-else class="knowledge-answer">{{ result.answer }}</div>
           <p v-if="result" class="table-caption knowledge-model-line">
             模型状态：{{ result.modelStatus || 'unknown' }} · 引用 {{ result.citations?.length || 0 }} 条
+            · {{ result.retrievalMode === 'hybrid' ? `混合检索（${result.vectorHits || 0} 条向量）` : '关键词检索' }}
           </p>
         </template>
       </el-card>
@@ -129,7 +130,7 @@
         <div class="definition-list knowledge-boundaries">
           <div><span>知识来源</span><p>SDD 文档、启用算法元数据、当前账号自己的任务报告摘要。</p></div>
           <div><span>不外发</span><p>本机路径、凭据、原始样本、日志、其他用户私有报告不会进入模型请求。</p></div>
-          <div><span>外部模型</span><p>默认关闭；未配置供应商与密钥时保持 retrieval_only，不伪造模型结论。</p></div>
+          <div><span>外部模型</span><p>默认关闭；设置 provider 并激活演示 profile 后才调用外部模型。未配置时保持 retrieval_only，不伪造模型结论。</p></div>
           <div><span>引用校验</span><p>模型回答出现候选集之外的 [C99] 时整段丢弃并回退为检索片段。</p></div>
         </div>
       </el-card>

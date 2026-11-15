@@ -2,8 +2,10 @@ package com.securitymodel.application.knowledge;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.securitymodel.infrastructure.config.LocalApiKeyResolver;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
@@ -48,11 +50,26 @@ public class OpenAiCompatibleKnowledgeAnswerModel implements KnowledgeAnswerMode
             @Value("${security-model.knowledge.model.timeout-seconds:30}") long timeoutSeconds,
             @Value("${security-model.knowledge.model.max-retries:1}") int maxRetries,
             @Value("${security-model.knowledge.model.max-citation-chars:600}") int maxCitationChars) {
+        this(objectMapper, enabled, baseUrl, model, apiKey, "", timeoutSeconds, maxRetries,
+                maxCitationChars);
+    }
+
+    @Autowired
+    public OpenAiCompatibleKnowledgeAnswerModel(
+            ObjectMapper objectMapper,
+            @Value("${security-model.knowledge.model.enabled:false}") boolean enabled,
+            @Value("${security-model.knowledge.model.base-url:}") String baseUrl,
+            @Value("${security-model.knowledge.model.name:}") String model,
+            @Value("${security-model.knowledge.model.api-key:}") String apiKey,
+            @Value("${security-model.knowledge.model.api-key-file:}") String apiKeyFile,
+            @Value("${security-model.knowledge.model.timeout-seconds:30}") long timeoutSeconds,
+            @Value("${security-model.knowledge.model.max-retries:1}") int maxRetries,
+            @Value("${security-model.knowledge.model.max-citation-chars:600}") int maxCitationChars) {
         this.objectMapper = objectMapper;
         this.enabled = enabled;
         this.baseUrl = baseUrl == null ? "" : baseUrl.trim();
         this.model = model == null ? "" : model.trim();
-        this.apiKey = apiKey == null ? "" : apiKey.trim();
+        this.apiKey = LocalApiKeyResolver.resolve(apiKey, apiKeyFile);
         this.timeout = Duration.ofSeconds(Math.max(1, timeoutSeconds));
         this.maxRetries = Math.max(0, Math.min(1, maxRetries));
         this.maxCitationChars = Math.max(120, maxCitationChars);

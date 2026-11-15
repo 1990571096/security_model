@@ -8,8 +8,16 @@ public record KnowledgeQueryResponse(
         String answer,
         List<CitationView> citations,
         String modelStatus,
-        String modelMessage
+        String modelMessage,
+        String retrievalMode,
+        int vectorHits
 ) {
+
+    public KnowledgeQueryResponse(String status, String answer, List<CitationView> citations,
+                                   String modelStatus, String modelMessage) {
+        this(status, answer, citations, modelStatus, modelMessage, "lexical", 0);
+    }
+
     public record CitationView(
             String citationId,
             String sourceType,

@@ -75,6 +75,9 @@ RabbitMQ/Kafka 尚未接入，任务仍由事务提交后的有界 JVM 线程池
 - JWT 密钥必须通过 `SECURITY_MODEL_JWT_SECRET` 提供，至少 32 字节；未设置或长度不足时
   后端会拒绝启动。生产环境应使用安全的外部密钥管理设施。
 
+DeepSeek Agent + 本地向量 RAG 的演示启动、演示顺序和事实边界见
+[`docs/agent-rag-demo.md`](docs/agent-rag-demo.md)。
+
 首次初始化数据库：
 
 ```sql

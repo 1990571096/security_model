@@ -1,0 +1,22 @@
+security-model:
+  knowledge:
+    model:
+      provider: openai-compatible
+      enabled: true
+      # DeepSeek exposes an OpenAI-compatible chat endpoint at this full path.
+      base-url: https://api.deepseek.com/chat/completions
+      name: deepseek-chat
+      api-key-file: ${DEEPSEEK_API_KEY_FILE:../secrets/deepseek.key.txt}
+      timeout-seconds: 30
+      max-retries: 0
+      max-citation-chars: 600
+  assistant:
+    model:
+      provider: deepseek
+      enabled: true
+      base-url: https://api.deepseek.com/chat/completions
+      name: deepseek-chat
+      api-key-file: ${DEEPSEEK_API_KEY_FILE:../secrets/deepseek.key.txt}
+      timeout-seconds: 60
+      max-output-tokens: 1024
+      max-retries: 0

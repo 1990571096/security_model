@@ -47,6 +47,7 @@ public class KnowledgeIndexService {
     private final AlgorithmMapper algorithmMapper;
     private final ResourceQueryService resourceQueryService;
     private final TaskAccessGuard taskAccessGuard;
+    private final KnowledgeVectorStore vectorStore;
     private final String sddRoot;
     private final int maxChunkChars;
 
@@ -58,11 +59,26 @@ public class KnowledgeIndexService {
             TaskAccessGuard taskAccessGuard,
             @Value("${security-model.knowledge.sdd-root:../docs/sdd}") String sddRoot,
             @Value("${security-model.knowledge.max-chunk-chars:800}") int maxChunkChars) {
+        this(documentMapper, writer, algorithmMapper, resourceQueryService, taskAccessGuard,
+                sddRoot, maxChunkChars, null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public KnowledgeIndexService(
+            KnowledgeDocumentMapper documentMapper,
+            KnowledgeDocumentWriter writer,
+            AlgorithmMapper algorithmMapper,
+            ResourceQueryService resourceQueryService,
+            TaskAccessGuard taskAccessGuard,
+            @Value("${security-model.knowledge.sdd-root:../docs/sdd}") String sddRoot,
+            @Value("${security-model.knowledge.max-chunk-chars:800}") int maxChunkChars,
+            KnowledgeVectorStore vectorStore) {
         this.documentMapper = documentMapper;
         this.writer = writer;
         this.algorithmMapper = algorithmMapper;
         this.resourceQueryService = resourceQueryService;
         this.taskAccessGuard = taskAccessGuard;
+        this.vectorStore = vectorStore;
         this.sddRoot = sddRoot;
         this.maxChunkChars = maxChunkChars;
     }
@@ -193,6 +209,7 @@ public class KnowledgeIndexService {
         String hash = sha256(content);
         KnowledgeDocument active = documentMapper.findActiveBySourceKey(sourceKey);
         if (active != null && hash.equals(active.getContentHash())) {
+            indexVectorsQuietly(active.getDocumentId());
             return new IndexResult(false, 0, active);
         }
         String safeTitle = safe(KnowledgeSanitizer.sanitize(title), 255);
@@ -203,7 +220,36 @@ public class KnowledgeIndexService {
         }
         KnowledgeDocument saved = writer.saveVersion(sourceType, sourceKey, safeTitle, visibility,
                 ownerUserId, hash, drafts, LocalDateTime.now());
+        if (active != null) {
+            removeVectorsQuietly(active.getDocumentId());
+        }
+        indexVectorsQuietly(saved.getDocumentId());
         return new IndexResult(true, drafts.size(), saved);
+    }
+
+    private void removeVectorsQuietly(Long documentId) {
+        if (vectorStore == null || !vectorStore.enabled()) {
+            return;
+        }
+        try {
+            vectorStore.removeDocument(documentId);
+        } catch (RuntimeException exception) {
+            log.warn("旧知识向量清理失败: documentId={}, reason={}", documentId,
+                    exception.getClass().getSimpleName());
+        }
+    }
+
+    private void indexVectorsQuietly(Long documentId) {
+        if (vectorStore == null || !vectorStore.enabled()) {
+            return;
+        }
+        try {
+            vectorStore.indexDocument(documentId);
+        } catch (RuntimeException exception) {
+            // Vector indexing is an enhancement; lexical retrieval remains the fallback.
+            log.warn("知识向量索引失败，保留关键词检索: documentId={}, reason={}",
+                    documentId, exception.getClass().getSimpleName());
+        }
     }
 
     private String algorithmMarkdown(Algorithm algorithm) {

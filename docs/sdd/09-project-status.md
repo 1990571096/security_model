@@ -282,6 +282,21 @@ Vue 2 工程继续作为业务回归和回滚基线，不参与迁移版主流�
 | 验证（本机） | 2026-11-14 任务可靠性收口后 `mvn verify -Pmysql-it`（`REDIS_IT=true`）→ **211 项单元测试 + 75 项 MySQL/Redis 集成测试全绿**；助手 HTTP+MySQL 确认/会话链路 17 项（create/start/retry/cancel/export 五类写工具首次、重复、并发同凭据、预览后资源变化 409、跨用户拒绝、导出跨用户下载 403）；真实命令服务链路 6 项（双启动、删除—启动、编辑—启动、取消先于完成、完成先于取消、瞬时成功与取消）；独立 JVM 崩溃窗口 2 项（pending 重放一次、submitting 收敛隔离）；前端 `npm run build` 本轮重跑通过；未跑真实 LDD；提交 `cb8c441` 已推送 | `tmp/r10-full-verify2.log`、`tmp/r9-frontend-build.log`、`tmp/r10-cancel-pipeline3.log`、`tmp/r10-crash-it2.log` |
 | 未做/阻塞 | 未接真实外部模型与假 HTTP 最终请求体捕获；未做真实 LDD；生产库 `eladmin` 未执行助手建表；确认流不是组织级双人审批；N4 已补独立 JVM 的 pending 重放与 submitting 收敛两个窗口，仍缺“执行器已接受、提交状态回写前退出”的真实进程证据；N5 的 start/retry/cancel/export 并发已补，但“篡改 token”未单列；N6 的 Ubuntu Java 17 CI 未实际运行（workflow 已配置，本机 Windows/Java 20 证据不能替代远端）；RabbitMQ 与独立 Worker 未实现 | ADR-021、20 §10 |
 
+## 5.11 DeepSeek Agent 与本地向量 RAG 演示（2026-11-15，本机联调，不是验收）
+
+| 项 | 事实 | 证据 |
+| --- | --- | --- |
+| DeepSeek 适配器 | 新增 `DeepSeekAssistantModel`，实现 `AssistantModel`；`provider=deepseek` 时启用，工具 schema 转为 OpenAI `tools`，解析 `tool_calls`，普通回答解析 `choices[0].message.content`；401/超时/5xx 映射为稳定状态；Key 只进入 `Authorization` 头 | `DeepSeekAssistantModel`、`application-deepseek.yml` |
+| 本地密钥 | `LocalApiKeyResolver` 支持 `api-key` 内联或 `api-key-file`；只读常规文件、上限 4096 bytes，失败返回空字符串，不打印内容；仓库 `.gitignore` 忽略 `secrets/` | `LocalApiKeyResolver`、`.gitignore` |
+| DeepSeek 真实外发 | 本机 `POST https://api.deepseek.com/chat/completions` 最小调用返回 `OK`（12 tokens/约 671 ms）；function calling 请求返回 `get_task_status`，参数 `{"task_id":42}`（336 tokens/约 974 ms）；实际响应模型名为 `deepseek-flash` | 本机 PowerShell 冒烟，未写入仓库 |
+| 应用内 Agent 链路 | 2026-11-15 启动 `deepseek` profile：`/api/assistant/chat` 调用 `get_parameter_guide` 返回 5 个算法/4 个数据集；创建预览返回 `pendingConfirmations`；确认后创建 `Agent演示任务`（`pending`、`owner_user_id=1`），未自动启动；按任务 ID 查询只返回本人任务 | 本机运行日志 `tmp/r11-app-vector5.log`、演示库 `security_model_demo` |
+| 本地 embedding | `LocalEmbeddingModel` 将英文词和中文单字/二元/三元字符 n-gram 哈希到 256 维并 L2 归一化；完全离线、无新增依赖；是演示实现，不是 BGE 神经 embedding | `LocalEmbeddingModel`、`LocalEmbeddingModelTest` |
+| Redis 向量库 | 使用 Redis 8 `vectorset` 的 `VADD`/`VSIM`，key `security_model:knowledge:vectors:v1`，元素 `c:<chunkId>`；`change=0` 时 reindex 也会回填向量；旧版本向量按旧 document 删除；ACL 与 `status='active'` 仍由 MySQL/Java 过滤 | `KnowledgeVectorStore`、`KnowledgeIndexService` |
+| 混合检索 | 关键词 `KnowledgeRanker` 与向量余弦合并，`retrievalMode=hybrid`、`vectorHits` 暴露检索通道；Redis 不可用/无向量时退回纯关键词；`VSIM` 返回需 `NestedMultiOutput` 解析 | `KnowledgeRetrievalService`、`KnowledgeQueryResponse` |
+| 应用内 RAG | `POST /api/knowledge/reindex` 写入 408 个 chunk 向量（`VCARD=408`）；`/api/knowledge/query` 真实返回 `retrievalMode=hybrid`、`vectorHits=40`，并调用 DeepSeek 生成带 `[C1]` 引用回答 | 本机验证，日志 `tmp/r11-app-vector5.log` |
+| 验证 | 全量 `mvn verify -Pmysql-it`（`MYSQL_IT_PASSWORD`、`REDIS_IT=true`）→ **222 项单元测试 + 75 项 MySQL/Redis 集成测试全部通过，BUILD SUCCESS**；前端 `npm run build` 通过 | `tmp/r11-final-verify.log`、`tmp/r11-frontend-build2.log` |
+| 未做/边界 | 仅演示库 `security_model_demo` 验证，生产库 `eladmin` 未迁移；本地 embedding 是可替换的哈希实现，未接 BGE/ONNX；DeepSeek 每日预算/token 上限未形成生产配置；未跑真实 LDD；Agent 工具内部超时、完整生产 `@Async` 接受/拒绝/取消 IT、Ubuntu Java 17 CI 仍未完成 | 20 §9/§10、ADR-021 |
+
 ## 6. 待完成与优化建议
 
 ### P0：正式实验闭环
@@ -295,8 +310,8 @@ Vue 2 工程继续作为业务回归和回滚基线，不参与迁移版主流�
 1. **R1（已实施，评审“有条件通过”；生产迁移未执行）**：稳定用户 ID 归属、任务/报告/日志/产物/导出授权、共享资源写权限收敛、历史数据迁移。验收见 17 号指导书 R1。
 2. **R2（可靠性修复完成，待复审）**：GPU 单槽租约、进程记录/整树回收、隔离槽位与探测、启动就绪门、导出失败收敛、产物清单/保留期均已有实现与本机证据；2026-11-14 已修复评审 P1-1~P1-4。剩余真实 LDD/6GB 实测、生产库建表/迁移和日志运行期限额。
 3. **R3（可靠性收尾中，不得整体标记验收完成）**：持久调度意图、条件抢占、启动恢复、有界 pending 扫描、请求幂等、旧/新 run 与取消/瞬时完成条件更新已有实现；`TaskCommandServicePipelineIT` 6 项覆盖双启动、删除—启动、编辑—启动、取消先于完成、完成先于取消、瞬时成功与取消；`AfterCommitTaskDispatcher` 恢复提交后同步执行，训练唯一异步边界回到 `PythonLddTaskExecutor.@Async`，取消信号走独立 `cancelAsync` 通道。已补两个独立 JVM 窗口（pending 重放一次、submitting 收敛隔离），仍缺“执行器已接受、记账前退出”窗口与事务异常无残留的服务层证据。详见 §5.7 与 20 §6.5/§6.6。
-3. **R6（离线检索与适配器完成，外部模型联调阻塞）**：MySQL 文档/版本/chunk、ACL 前置检索、确定性中文切词与 IDF 排序、引用 API、知识页和通用模型适配器已落地；缺供应商/预算/数据留存授权，未真实外发，生产库未建表。详见 §5.9 与 ADR-020。
-4. **R7（受控工具与确认契约收尾中，未整体验收）**：4 个只读工具 + 5 个预览写工具、一次性确认、资源/参数指纹、R3 幂等、日配额、单用户并发槽、会话/审计和助手页已落地；N1 改为 MySQL 权威读 + 计划资源副本，执行请求只由计划构造；N5 将助手 HTTP + MySQL 确认矩阵扩到 17 项。外部模型默认关闭且无假 HTTP 最终请求体捕获，未做真实 LDD，生产库未建表。详见 §5.10 与 ADR-021。
+3. **R6（离线检索与适配器完成；本机已接 DeepSeek 与本地向量，生产验收未完成）**：MySQL 文档/版本/chunk、ACL 前置检索、确定性中文切词与 IDF 排序、引用 API、知识页、通用模型适配器和 Redis 8 向量混合检索已落地；2026-11-15 本机 `deepseek` profile 已真实外发并返回引用回答，`vectorHits=40`；本地 embedding 是 256 维哈希实现，不是 BGE；生产库未建表。详见 §5.9、§5.11 与 ADR-020。
+4. **R7（受控工具与确认契约收尾中，未整体验收）**：4 个只读工具 + 5 个预览写工具、一次性确认、资源/参数指纹、R3 幂等、日配额、单用户并发槽、会话/审计和助手页已落地；N1 改为 MySQL 权威读 + 计划资源副本，执行请求只由计划构造；N5 将助手 HTTP + MySQL 确认矩阵扩到 17 项。本机 `deepseek` profile 已跑通真实工具调用、创建预览、确认落库与本人任务查询；生产库未建表、未做真实 LDD。详见 §5.10、§5.11 与 ADR-021。
 5. 持续补迁移版领域服务和 API 集成测试；现有 MySQL 集成测试仅覆盖任务原子领取、状态竞争和恢复扫描，不代表完整端到端覆盖。
 6. 补充 Python 依赖锁定、部署复现和应用重启演练。
 7. 继续补充 Redis 缓存命中率、失效和不可用降级的观测指标。

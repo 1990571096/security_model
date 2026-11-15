@@ -20,10 +20,12 @@ public class KnowledgeQueryService {
     public KnowledgeQueryResponse query(String rawQuestion) {
         String question = normalizeQuestion(rawQuestion);
         List<KnowledgeHit> hits = retrievalService.search(question);
+        String mode = retrievalService.retrievalMode();
+        int vectorHits = retrievalService.vectorHitCount();
         if (hits.isEmpty()) {
             return new KnowledgeQueryResponse("unknown",
                     "知识库中没有足够依据回答该问题。",
-                    List.of(), "not_called", "未检索到可引用片段");
+                    List.of(), "not_called", "未检索到可引用片段", mode, vectorHits);
         }
         List<KnowledgeCitation> citations = retrievalService.citations(hits);
         KnowledgeAnswerModel.ModelResult modelResult;
@@ -37,13 +39,13 @@ public class KnowledgeQueryService {
             String answer = KnowledgePromptBuilder.sanitizeAnswer(modelResult.answer(), citations);
             if (answer != null) {
                 return new KnowledgeQueryResponse("answered", answer, views(citations),
-                        modelResult.status(), "答案由外部模型基于检索片段生成");
+                        modelResult.status(), "答案由外部模型基于检索片段生成", mode, vectorHits);
             }
             return new KnowledgeQueryResponse("retrieval_only", null, views(citations),
-                    "model_invalid_citation", "模型引用校验失败，已降级为检索片段");
+                    "model_invalid_citation", "模型引用校验失败，已降级为检索片段", mode, vectorHits);
         }
         return new KnowledgeQueryResponse("retrieval_only", null, views(citations),
-                modelResult.status(), modelResult.answer());
+                modelResult.status(), modelResult.answer(), mode, vectorHits);
     }
 
     private String normalizeQuestion(String raw) {
