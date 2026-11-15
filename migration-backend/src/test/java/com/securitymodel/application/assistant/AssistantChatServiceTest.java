@@ -6,6 +6,9 @@ import com.securitymodel.application.audit.AuthenticatedUser;
 import com.securitymodel.application.audit.CurrentUserService;
 import com.securitymodel.domain.assistant.AssistantSession;
 import org.junit.jupiter.api.Test;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.context.SecurityContext;
+import org.springframework.security.core.context.SecurityContextHolder;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -68,6 +71,51 @@ class AssistantChatServiceTest {
     }
 
     @Test
+    void toolThreadReceivesAuthenticatedIdentity() {
+        AtomicReference<Long> seenUser = new AtomicReference<>();
+        AssistantTool identityTool = new AssistantTool() {
+            @Override
+            public AssistantToolDescriptor descriptor() {
+                return new AssistantToolDescriptor("get_my_task_summary", "identity probe",
+                        false, AssistantSchemas.object());
+            }
+
+            @Override
+            public AssistantToolResult execute(com.fasterxml.jackson.databind.JsonNode arguments) {
+                seenUser.set(new CurrentUserService().requireStableIdentity().userId());
+                return new AssistantToolResult("ok", objectMapper.createObjectNode(),
+                        null, null, 1L, null, null);
+            }
+        };
+        AssistantModel model = sequence(
+                AssistantModel.ModelReply.toolCall("get_my_task_summary",
+                        objectMapper.createObjectNode(), "fake"),
+                AssistantModel.ModelReply.answer("ok", "fake"));
+        CurrentUserService realUser = new CurrentUserService();
+        AssistantQuotaService quota = mock(AssistantQuotaService.class);
+        when(quota.remaining()).thenReturn(50);
+        AssistantSessionService sessions = mock(AssistantSessionService.class);
+        AssistantSession session = new AssistantSession();
+        session.setSessionId(7L);
+        when(sessions.getOrCreate(any(), anyLong(), any())).thenReturn(session);
+        AssistantChatService service = new AssistantChatService(model,
+                new AssistantToolRegistry(List.of(identityTool)), mock(AssistantPreviewService.class),
+                mock(AssistantAuditService.class), quota, sessions, realUser, objectMapper, 6, 5,
+                60, 1);
+
+        SecurityContext context = SecurityContextHolder.createEmptyContext();
+        context.setAuthentication(new UsernamePasswordAuthenticationToken(
+                new AuthenticatedUser(2L, "alice", false), null, List.of()));
+        SecurityContextHolder.setContext(context);
+        try {
+            assertEquals("answered", service.chat(null, "查看任务").status());
+        } finally {
+            SecurityContextHolder.clearContext();
+        }
+        assertEquals(2L, seenUser.get());
+    }
+
+    @Test
     void writeToolOnlyReturnsPendingConfirmation() {
         StubTool write = new StubTool("preview_start_task", true,
                 new AssistantToolResult("preview", objectMapper.createObjectNode(), "start",
@@ -79,7 +127,7 @@ class AssistantChatServiceTest {
                 AssistantModel.ModelReply.answer("请确认后执行。", "fake"));
 
         AssistantPreviewService previewService = mock(AssistantPreviewService.class);
-        when(previewService.preview(any(), any(), anyLong())).thenReturn(
+        when(previewService.preview(any(), any(), anyLong(), anyLong())).thenReturn(
                 new AssistantPreviewResponse(9L, "raw-token", LocalDateTime.now().plusMinutes(5),
                         "start", objectMapper.createObjectNode().put("operation", "start")));
         AssistantChatService service = service(registry, model, previewService);

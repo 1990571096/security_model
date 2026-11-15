@@ -19,11 +19,15 @@ public final class KnowledgeSanitizer {
             Pattern.compile("(?i)(?<![\\p{L}\\p{N}])/(?:home|users|tmp|var|opt|root|etc|usr|mnt|media|private|"
                     + "proc|sys|workspace|workspaces|data|app|srv|build|project|projects)"
                     + "(?:/" + PATH_TOKEN + "|\\s+" + PATH_TOKEN + ")+");
-    // Any absolute multi-segment path is redacted, not only paths whose first segment is
-    // on a fixed allow-list. API routes remain readable so error messages stay useful.
+    // A file-looking absolute path can contain spaces and may live under an API-looking
+    // prefix. Detect it before the route-shaped pattern and redact it conservatively.
+    private static final Pattern ABSOLUTE_FILE_PATH =
+            Pattern.compile("(?<![\\p{L}\\p{N}:/])/(?:[^\\r\\n/]*/)*[^\\r\\n/]*"
+                    + "\\.[A-Za-z0-9]{1,8}(?=\\s|$|[，。；、）)\"'`])");
+    // Any remaining absolute multi-segment path, including /api/... and single-segment
+    // files such as /secret.txt. There is no route-prefix exemption in free text.
     private static final Pattern GENERIC_UNIX_PATH =
-            Pattern.compile("(?<![\\p{L}\\p{N}:/])/(?!(?:api|auth|actuator|swagger-ui|v3|error)(?:/|\\b))"
-                    + "(?:[^\\s/]+/)+[^\\s/]+");
+            Pattern.compile("(?<![\\p{L}\\p{N}:/])/(?:[^\\s/]+/)+[^\\s/]+");
     private static final Pattern BEARER =
             Pattern.compile("(?i)bearer\\s+[A-Za-z0-9._~+/-]+=*");
     private static final Pattern SECRET_ASSIGNMENT =
@@ -60,6 +64,7 @@ public final class KnowledgeSanitizer {
         value = API_KEY.matcher(value).replaceAll("[已过滤]");
         value = WINDOWS_PATH.matcher(value).replaceAll("[已过滤路径]");
         value = UNC_PATH.matcher(value).replaceAll("[已过滤路径]");
+        value = ABSOLUTE_FILE_PATH.matcher(value).replaceAll("[已过滤路径]");
         value = UNIX_PATH.matcher(value).replaceAll("[已过滤路径]");
         value = GENERIC_UNIX_PATH.matcher(value).replaceAll("[已过滤路径]");
         value = EMAIL.matcher(value).replaceAll("[已过滤]");

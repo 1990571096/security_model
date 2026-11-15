@@ -76,13 +76,14 @@ public class KnowledgeRetrievalService {
         if (candidates == null || candidates.isEmpty()) {
             return List.of();
         }
-        List<KnowledgeHit> lexical = KnowledgeRanker.rank(question, candidates, topK,
+        List<KnowledgeHit> lexicalPool = KnowledgeRanker.rank(question, candidates, candidateLimit,
                 minCoverage, minScore);
-        if (lexical.isEmpty()) {
+        if (lexicalPool.isEmpty()) {
             // The hash-vector channel is a reranker, not a license to answer an unknown
             // question. Keeping the lexical refusal anchor preserves the 20-question set.
             return List.of();
         }
+        List<KnowledgeHit> lexical = limit(lexicalPool, topK);
         if (vectorStore == null || !vectorStore.enabled()) {
             return lexical;
         }
@@ -93,18 +94,18 @@ public class KnowledgeRetrievalService {
         }
         retrievalMode.set("hybrid");
         List<KnowledgeVectorStore.VectorHit> vectorHits = vectorResult.hits();
-        vectorHitCount.set(vectorHits.size());
         if (vectorHits.isEmpty()) {
             return lexical;
         }
         Map<Long, KnowledgeSearchRow> allowed = new HashMap<>();
-        for (KnowledgeSearchRow row : candidates) {
-            allowed.put(row.getChunkId(), row);
+        for (KnowledgeHit hit : lexicalPool) {
+            allowed.put(hit.row().getChunkId(), hit.row());
         }
         Map<Long, KnowledgeHit> merged = new LinkedHashMap<>();
         for (KnowledgeHit hit : lexical) {
             merged.put(hit.row().getChunkId(), hit);
         }
+        int readableVectorHits = 0;
         for (KnowledgeVectorStore.VectorHit vectorHit : vectorHits) {
             KnowledgeSearchRow row = allowed.get(vectorHit.chunkId());
             double score = vectorHit.score();
@@ -113,6 +114,7 @@ public class KnowledgeRetrievalService {
             if (row == null || score < 0.28) {
                 continue;
             }
+            readableVectorHits++;
             KnowledgeHit existing = merged.get(vectorHit.chunkId());
             double fusedScore = Math.max(score * 100.0, existing == null ? 0 : existing.score());
             double fusedCoverage = Math.max(score,
@@ -121,6 +123,7 @@ public class KnowledgeRetrievalService {
             merged.put(vectorHit.chunkId(),
                     new KnowledgeHit(row, fusedScore, matchedTerms, fusedCoverage));
         }
+        vectorHitCount.set(readableVectorHits);
         List<KnowledgeHit> result = new ArrayList<>(merged.values());
         result.sort(java.util.Comparator.comparingDouble(KnowledgeHit::score).reversed()
                 .thenComparing(hit -> hit.row().getChunkId()));
@@ -161,5 +164,12 @@ public class KnowledgeRetrievalService {
 
     public int vectorHitCount() {
         return vectorHitCount.get();
+    }
+
+    private List<KnowledgeHit> limit(List<KnowledgeHit> hits, int count) {
+        if (hits.size() <= count) {
+            return hits;
+        }
+        return new ArrayList<>(hits.subList(0, count));
     }
 }

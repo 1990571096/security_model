@@ -100,11 +100,11 @@ mvn -f migration-backend/pom.xml spring-boot:run -Dspring-boot.run.profiles=deep
 ## 4. 验证
 
 - `mvn -B -f migration-backend/pom.xml -Pmysql-it verify`（`MYSQL_IT_PASSWORD`、
-  `REDIS_IT=true`）→ 227 项单元测试 + 78 项 MySQL/Redis 集成测试全部通过。
-- 最终外发请求体已由真实 ChatService + DeepSeek 适配器 + 本地假 HTTP 捕获，断言绝对路径、API Key 与 `Authorization` 不在 body 中。
-- 前端 `npm run build` 已通过（含监控页 `runningTaskCount` 改动），日志 `tmp/review-fix-frontend-build.log`。
-- 本机日志：`tmp/review-fix-full-verify5.log`、`tmp/review-fix-p1.log`、
-  `tmp/review-fix-vector-it3.log`、`tmp/r11-app-vector5.log`。
+  `REDIS_IT=true`）→ 230 项单元测试 + 81 项 MySQL/Redis 集成测试全部通过。
+- 最终外发请求体已由真实 ChatService + DeepSeek 适配器 + 本地假 HTTP 连续两次请求捕获，覆盖工具执行后的最终回答，断言绝对路径（含 `/api/private`、`/custom dir`）、API Key 与 `Authorization` 不在 body 中。
+- 本轮前端未改，但已重跑 `npm run build` 并通过（element chunk 947.92 kB 警告仍在），日志 `tmp/review-current-frontend-build.log`。
+- 本机日志：`tmp/review-current-full-verify.log`、`tmp/review-current-assistant-it.log`、
+  `tmp/review-current-vector.log`、`tmp/r11-app-vector5.log`。
 
 ## 5. 事实边界
 

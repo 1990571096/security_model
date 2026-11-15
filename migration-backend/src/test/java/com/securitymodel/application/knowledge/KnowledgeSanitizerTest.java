@@ -62,19 +62,24 @@ class KnowledgeSanitizerTest {
     }
 
     @Test
-    void redactsUnknownAbsolutePathsAndChinesePaths() {
-        String raw = "样本 /datasets/private/sample.png 以及 /训练数据/样本.png";
+    void redactsUnknownAbsolutePathsAndSingleFilePaths() {
+        String raw = "样本 /datasets/private/sample.png /secret.txt "
+                + "以及 /训练数据/样本.png /api/private/samples.png /custom dir/private sample.png";
         String sanitized = KnowledgeSanitizer.sanitize(raw);
 
         assertFalse(sanitized.contains("/datasets"));
+        assertFalse(sanitized.contains("/secret.txt"));
         assertFalse(sanitized.contains("/训练数据"));
+        assertFalse(sanitized.contains("/api/private"));
+        assertFalse(sanitized.contains("/custom dir"));
         assertTrue(sanitized.contains("[已过滤路径]"));
     }
 
     @Test
-    void preservesApiPathsThatAreNotFilesystemPaths() {
+    void redactsApiRoutesInFreeText() {
         String sanitized = KnowledgeSanitizer.sanitize("POST /api/knowledge/query 返回引用");
-        assertTrue(sanitized.contains("/api/knowledge/query"));
+        assertFalse(sanitized.contains("/api/knowledge/query"));
+        assertTrue(sanitized.contains("[已过滤路径]"));
     }
 
     @Test

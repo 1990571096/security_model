@@ -11,7 +11,6 @@ import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
-import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -34,21 +33,44 @@ class AssistantOutboundPrivacyTest {
         try (FakeServer server = new FakeServer()) {
             DeepSeekAssistantModel model = new DeepSeekAssistantModel(objectMapper, true,
                     server.url(), "deepseek-chat", "sk-live-secret", 5, 128, 0);
+            AssistantTool pathEcho = new AssistantTool() {
+                @Override
+                public AssistantToolDescriptor descriptor() {
+                    return new AssistantToolDescriptor("get_my_task_summary",
+                            "path echo", false, AssistantSchemas.object());
+                }
+
+                @Override
+                public AssistantToolResult execute(com.fasterxml.jackson.databind.JsonNode arguments) {
+                    com.fasterxml.jackson.databind.node.ObjectNode data = objectMapper.createObjectNode();
+                    data.put("taskId", 1);
+                    data.put("taskName", "报告 /secret.txt 和 /custom dir/private sample.png");
+                    return new AssistantToolResult(
+                            "读取 /api/private/samples.png 和 /训练数据/样本.png", data,
+                            null, null, 1L, null, null);
+                }
+            };
             AssistantChatService service = new AssistantChatService(model,
-                    new AssistantToolRegistry(List.of()), mock(AssistantPreviewService.class),
+                    new AssistantToolRegistry(List.of(pathEcho)), mock(AssistantPreviewService.class),
                     mock(AssistantAuditService.class), quota(), sessions(), user(), objectMapper,
                     6, 5, 60, 1);
 
             AssistantChatResponse response = service.chat(null,
-                    "分析 /datasets/private/sample.png 和 /训练数据/样本.png 的样本");
+                    "分析 /datasets/private/sample.png、/secret.txt、/api/private/samples.png "
+                            + "和 /custom dir/private sample.png 的样本");
 
             assertEquals("answered", response.status());
-            String body = server.body();
-            assertFalse(body.contains("/datasets/private"), body);
-            assertFalse(body.contains("/训练数据"), body);
-            assertTrue(body.contains("[已过滤路径]"), body);
-            assertFalse(body.contains("sk-live-secret"), "API key must stay out of the body");
-            assertFalse(body.contains("Authorization"), "header name must not leak into body");
+            assertEquals(2, server.bodies().size(), "tool evidence must reach a second model request");
+            for (String body : server.bodies()) {
+                assertFalse(body.contains("/datasets/private"), body);
+                assertFalse(body.contains("/训练数据"), body);
+                assertFalse(body.contains("/secret.txt"), body);
+                assertFalse(body.contains("/api/private"), body);
+                assertFalse(body.contains("/custom dir"), body);
+                assertTrue(body.contains("[已过滤路径]"), body);
+                assertFalse(body.contains("sk-live-secret"), "API key must stay out of the body");
+                assertFalse(body.contains("Authorization"), "header name must not leak into body");
+            }
         }
     }
 
@@ -74,15 +96,27 @@ class AssistantOutboundPrivacyTest {
 
     private static final class FakeServer implements AutoCloseable {
         private final HttpServer server;
-        private final AtomicReference<String> body = new AtomicReference<>("");
+        private final java.util.List<String> bodies = new java.util.ArrayList<>();
+        private final java.util.concurrent.atomic.AtomicInteger requests =
+                new java.util.concurrent.atomic.AtomicInteger();
 
         FakeServer() throws IOException {
             server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
             server.createContext("/chat/completions", exchange -> {
-                body.set(new String(exchange.getRequestBody().readAllBytes(),
-                        StandardCharsets.UTF_8));
-                byte[] bytes = ("{\"model\":\"deepseek-flash\",\"choices\":[{\"message\":"
-                        + "{\"content\":\"已处理\"}}]}").getBytes(StandardCharsets.UTF_8);
+                String body = new String(exchange.getRequestBody().readAllBytes(),
+                        StandardCharsets.UTF_8);
+                synchronized (bodies) {
+                    bodies.add(body);
+                }
+                int request = requests.getAndIncrement();
+                String response = request == 0
+                        ? "{\"model\":\"deepseek-flash\",\"choices\":[{\"message\":"
+                        + "{\"content\":null,\"tool_calls\":[{\"id\":\"call_1\",\"type\":\"function\","
+                        + "\"function\":{\"name\":\"get_my_task_summary\","
+                        + "\"arguments\":\"{\\\"taskId\\\":1}\"}}]}}]}"
+                        : "{\"model\":\"deepseek-flash\",\"choices\":[{\"message\":"
+                        + "{\"content\":\"已处理\"}}]}";
+                byte[] bytes = response.getBytes(StandardCharsets.UTF_8);
                 exchange.getResponseHeaders().add("Content-Type", "application/json");
                 exchange.sendResponseHeaders(200, bytes.length);
                 exchange.getResponseBody().write(bytes);
@@ -95,8 +129,10 @@ class AssistantOutboundPrivacyTest {
             return "http://127.0.0.1:" + server.getAddress().getPort() + "/chat/completions";
         }
 
-        String body() {
-            return body.get();
+        java.util.List<String> bodies() {
+            synchronized (bodies) {
+                return List.copyOf(bodies);
+            }
         }
 
         @Override

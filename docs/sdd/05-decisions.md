@@ -408,14 +408,14 @@ Agent 采用外部大模型 API，本机不部署大模型。生成模型和 emb
 
 ## ADR-022：R6/R7 审查整改——哈希向量只做词法重排、向量 ACL 前置与工具预算
 
-日期：2026-11-15；状态：**代码与本机定向/全量测试已实施，生产验收未完成**。
+日期：2026-11-15；状态：**代码与本机定向/全量测试已实施；部分口径由 ADR-023 补充，生产验收未完成**。
 
 **背景**：独立审查确认 222 单测 + 75 IT 全绿，但发现外部模型请求仍可能带绝对路径、向量先全局排名后过滤 ACL、混合检索未复跑原 20 题、Agent 工具未接收总预算、R3“重放一次”只有 Mock 证据。R6/R7 需要在不引入 RabbitMQ 的前提下先关闭这些链路问题。
 
 **决策**
-1. **哈希向量不是语义召回**：`LocalEmbeddingModel` 是本地 256 维字符/词 n-gram 哈希 + L2 归一化，不能介绍为 BGE/神经 embedding。`KnowledgeRetrievalService` 先做 ACL-first 词法候选；词法候选为空时直接返回空（拒答锚），向量只用于对词法候选重排，不允许向量单独回答未知问题。20 题评估按真实服务路径运行，可答 top5 10/10、5 个未知全部拒绝。
-2. **ACL 在向量候选阶段生效**：`VADD` 用 `SETATTR` 写 visibility/owner/documentId；`VSIM` 追加 `FILTER (.visibility == "shared" or .owner == <userId>)`，普通用户只在自己的候选窗口内排名，管理员跨用户读不加过滤。`removeDocument` 删除退役版本向量。Redis 8 不可用或命令失败时本轮 `retrievalMode=lexical`，不按配置虚报 `hybrid`。VADD/VREM 的整数回复使用 `executeIntegerCommand`，只忽略 Spring `ByteArrayOutput` 的已知解码限制；写入真假由 `VCARD/VSIM` 验证。
-3. **外发路径统一脱敏**：`KnowledgeSanitizer` 除 API 路由前缀外，任意绝对多段路径（含中文）替换为 `[已过滤路径]`；最终请求体由真实 `AssistantChatService` + 真实 DeepSeek 适配器 + 本地假 HTTP 捕获验证，不能只测脱敏函数。
+1. **哈希向量不是语义召回**：`LocalEmbeddingModel` 是本地 256 维字符/词 n-gram 哈希 + L2 归一化，不能介绍为 BGE/神经 embedding。`KnowledgeRetrievalService` 先做 ACL-first 词法候选；词法候选为空时直接返回空（拒答锚），向量只用于对词法候选重排，不允许向量单独回答未知问题。20 题评估按真实服务路径运行，可答 top5 10/10、5 个未知全部拒绝；ADR-023 起补齐另 5 个越权/注入题，并限定向量只能合并进词法候选池。
+2. **ACL 在向量候选阶段生效**：`VADD` 用 `SETATTR` 写 visibility/owner/documentId；`VSIM` 追加 `FILTER (.visibility == "shared" or .owner == <userId>)`，普通用户只在自己的候选窗口内排名，管理员跨用户读不加过滤。`removeDocument` 删除退役版本向量；ADR-023 起业务 `retire()` 成功后也 best-effort 清理向量。Redis 8 不可用或命令失败时本轮 `retrievalMode=lexical`，不按配置虚报 `hybrid`。VADD/VREM 的整数回复使用 `executeIntegerCommand`，只忽略 Spring `ByteArrayOutput` 的已知解码限制；写入真假由 `VCARD/VSIM` 验证。
+3. **外发路径统一脱敏**：`KnowledgeSanitizer` 除 API 路由前缀外，任意绝对多段路径（含中文）替换为 `[已过滤路径]`；ADR-023 起取消 `/api` 等自由文本前缀豁免，并覆盖含空格路径。最终请求体由真实 `AssistantChatService` + 真实 DeepSeek 适配器 + 本地假 HTTP 捕获验证，不能只测脱敏函数；ADR-023 的测试覆盖工具执行后的第二次模型请求。
 4. **工具预算传播但保留边界**：`AssistantTool` 增加带 `timeoutMillis` 的默认方法；读工具在独立有界执行器中按剩余预算执行，超时取消并终止后续工具/模型调用；MyBatis 语句超时 5s。Future 取消不保证底层 JDBC/Redis 已物理停止，写预览事务取消后的提交仍需故障注入验证。
 5. **R3 证据分层**：测试使用真实 `TaskDispatchCoordinator`、真实 MySQL 意图、真实本地接受登记和真实状态写入，执行器仍用测试替身；证明“真实重放分支派发一次、第二次恢复不重跑”，不证明真实 Python 子进程接收或真实 GPU 租约表领取。`CrashWindowChildMain` 必须写真实 request JSON/hash，禁止再用 `{}` 冒充可重放快照。
 6. **监控口径**：`runningTaskCount` 取 MySQL `status=running` 统计；线程池 `activeCount` 只表示活动线程，二者不能混用。
@@ -424,9 +424,34 @@ Agent 采用外部大模型 API，本机不部署大模型。生成模型和 emb
 **证据**
 - `KnowledgeSanitizerTest`（未知 Unix/中文路径）、`AssistantOutboundPrivacyTest`（最终 HTTP body）。
 - `KnowledgeVectorStoreRedisIT`（真实 Redis 8：shared/owner 过滤、50 条他人私有片段不挤占、admin 跨用户、删除清理）。
-- `KnowledgeHybridEvaluationTest`（原 20 题混合路径 + Redis 失败降级）。
+- `KnowledgeHybridEvaluationTest`（20 题混合路径 + Redis 失败降级；ADR-023 补齐越权/注入 5 题）。
 - `AssistantChatServiceTest`（工具预算传播、慢工具超时、后续模型不调用）。
 - `MySqlTaskPersistenceIT.independentJvmPendingIntentRunsRealReplayCoordinatorOnce`（真实协调器一次派发/二次恢复不重跑；修复 DTO Jackson 构造器）。
-- 全量验证日志 `tmp/review-fix-full-verify5.log`；本 ADR 不代表生产库迁移、真实 Python 重放、Ubuntu CI 或整体 R3/R7 验收完成。
+- 全量验证日志 `tmp/review-fix-full-verify5.log`；本 ADR 不代表生产库迁移、真实 Python 重放、Ubuntu CI 或整体 R3/R7 验收完成。ADR-023 的后续证据见 `tmp/review-current-full-verify.log`。
 
 **非目标**：不引入 RabbitMQ/Worker；不接 BGE/ONNX；不重跑 LDD；不把哈希向量或假 HTTP 测试写成生产外发验收。
+
+## ADR-023：`cde3173` 独立审查五项边界修复
+
+日期：2026-11-15；状态：**代码、定向测试与全量回归已实施；R3/R6/R7 整体验收仍未完成**。
+
+**背景**：审查基于 `cde3173` 复跑，现有 227 单元 + 78 IT 全绿，但真实链路仍暴露五个缺口：聊天工具线程丢失 Spring Security 身份、自由文本绝对路径仍进入最终模型请求体、`mybatis.configuration` 对 MyBatis-Plus 不生效且写预览超时承诺过强、业务退役入口未清理 Redis 向量、混合检索从全部 SQL 候选合并向量且 20 题评估缺 5 个越权/注入题。本轮只关闭边界缺陷，不扩大功能，不实现 RabbitMQ/Worker。
+
+**决策**
+1. **工具线程传播身份**：`AssistantChatService.toolExecutor` 用 `DelegatingSecurityContextExecutorService` 包装，保持 4 线程 + 16 队列和 `@PreDestroy` 关闭；工具线程调用真实 `CurrentUserService.requireStableIdentity()` 必须得到请求用户。HTTP 测试用 alice 任务 700、bob 任务 300 连续交替两次，验证线程复用后不串号。
+2. **最终外发体保守脱敏**：`KnowledgeSanitizer` 新增可含空格的 `ABSOLUTE_FILE_PATH`，并在 `UNIX_PATH` 之前替换；`GENERIC_UNIX_PATH` 不再豁免 `/api` 等前缀，自由文本中的所有绝对多段路径统一替换为 `[已过滤路径]`。不能按前缀直接豁免任意文本；可信接口字段与自由文本分开处理，无法安全判定的路径保守过滤。测试必须覆盖工具执行后的第二次模型请求，不能只测脱敏函数。
+3. **有效 SQL 配置与预览 deadline**：有效配置键为 `mybatis-plus.configuration.default-statement-timeout`，默认 5 秒；`SqlSessionFactory` 读到的有效超时必须有测试断言。`AssistantPreviewService.preview(toolName, arguments, sessionId, timeoutMillis)` 先计算 deadline，工具返回后、插入确认记录前再次检查；超时抛 `ASSISTANT_TOOL_TIMEOUT`，不保存确认记录。用户文案只承诺“后续工具与模型调用不会继续；底层操作可能仍在收尾”，不承诺 JDBC/Redis 已物理终止。
+4. **业务退役清理向量**：`KnowledgeIndexService.retire()` 在 `writer.retire` 成功后调用 `removeVectorsQuietly`；MySQL 仍是事实源，向量清理 best effort，失败只记日志。测试必须走真实 `KnowledgeIndexService.retire()` + 真实 Redis，而不是直接调用 `removeDocument()`。当前没有持久化补偿任务；残留向量可能占候选窗口，但 MySQL ACL 仍阻止退役内容被引用。
+5. **混合候选限定与完整 20 题**：`KnowledgeRetrievalService` 先以 `candidateLimit` 生成 `lexicalPool`；词法池为空直接返回空；向量只允许合并进 `lexicalPool`，不从全部 SQL 可见候选合并；`vectorHitCount` 只统计 `row != null && score >= 0.28` 的可读命中。`KnowledgeHybridEvaluationTest` 覆盖可答 10 + 未知 5 + 越权/注入 5 共 20 题，并构造共享 corpus + 私有 `task_report:99` 向量，验证向量通道不能注入他人的私有候选。
+
+**证据**
+- `AssistantChatServiceTest.toolThreadReceivesAuthenticatedIdentity`、`AssistantConfirmationEndToEndIT.chatToolsKeepCallerIdentityAcrossPoolThreadReuse`。
+- `KnowledgeSanitizerTest`、`AssistantOutboundPrivacyTest`（两次真实模型请求的最终 body）。
+- `AssistantPreviewServiceTest`、`AssistantConfirmationEndToEndIT.myBatisPlusStatementTimeoutIsApplied`。
+- `KnowledgeVectorStoreRedisIT.retireBusinessEntryCleansItsVectors`。
+- `KnowledgeHybridEvaluationTest`（20 题完整范围 + 私有候选注入防护）。
+- 全量 `mvn -B -f migration-backend/pom.xml verify -Pmysql-it`（`MYSQL_IT_PASSWORD`、`REDIS_IT=true`）→ 230 单元 + 81 IT，BUILD SUCCESS，日志 `tmp/review-current-full-verify.log`。
+
+**边界**：写预览 `insert` 自身在 deadline 后完成是否仍落库、退役向量清理失败的持久化补偿、底层 JDBC/Redis 物理终止、真实 Python 子进程/GPU 租约跨 JVM 竞争均未证明；本 ADR 不代表生产库迁移、Ubuntu Java 17 CI 或 R3/R6/R7 整体验收完成。
+
+**非目标**：不扩展新功能；不实现 RabbitMQ/Worker；不重跑 LDD；不把本机测试写成生产验收。

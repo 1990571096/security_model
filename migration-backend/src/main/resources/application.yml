@@ -21,7 +21,7 @@ spring:
       password: ${REDIS_PASSWORD:}
       connect-timeout: ${REDIS_CONNECT_TIMEOUT:300ms}
       timeout: ${REDIS_COMMAND_TIMEOUT:500ms}
-mybatis:
+mybatis-plus:
   configuration:
     # Keep one slow query from holding an assistant request slot indefinitely.
     default-statement-timeout: ${DB_STATEMENT_TIMEOUT_SECONDS:5}

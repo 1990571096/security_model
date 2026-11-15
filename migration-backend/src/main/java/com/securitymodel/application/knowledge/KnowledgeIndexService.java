@@ -195,7 +195,14 @@ public class KnowledgeIndexService {
         if (documentId == null) {
             return false;
         }
-        return writer.retire(documentId, LocalDateTime.now());
+        boolean retired = writer.retire(documentId, LocalDateTime.now());
+        if (retired) {
+            // MySQL is the source of truth; the vector cleanup is best effort. A stale
+            // vector can only occupy a candidate slot and is still filtered by the SQL
+            // ACL query, never used as proof that the document is active.
+            removeVectorsQuietly(documentId);
+        }
+        return retired;
     }
 
     private UpsertResult upsert(String sourceType, String sourceKey, String title,

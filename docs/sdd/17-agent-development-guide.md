@@ -31,8 +31,8 @@
 | 导出 | `CleanSubsetExportService`、`CleanSubsetExportExecutor`、`ExportRecoveryRunner` | 已有去重、重启失败收敛与超时逻辑；进程树和文件边界继续回归 |
 | 安全 | `TaskAccessGuard`、`JwtAuthenticationFilter`、`OwnershipEndToEndIT` | 已有 owner 授权、账号状态回查和隔离库 HTTP 测试；业务库迁移与测试证据独立记录 |
 | Redis | `ResourceCatalogCache`、ADR-010 | 资源目录缓存已落地，不是分布式锁或任务状态存储 |
-| 知识检索 R6 | `KnowledgeIndexService`、`KnowledgeRetrievalMySqlIT`、`KnowledgeVectorStoreRedisIT`、`KnowledgeController` | 离线检索、ACL、引用、DeepSeek 回答适配器与 Redis 8 向量 ACL 混合检索已落地；本地 256 维哈希 embedding 只做词法候选重排，不是神经语义召回；生产库未建表 |
-| 受控助手 R7 | `AssistantChatService`、`AssistantConfirmationService`、`AssistantSessionService`、`AssistantModelEvidence` | 工具白名单、预览确认、配额、审计、有界并发、单用户并发槽、结构化参数证据与资源指纹确认已落地；DeepSeek 适配器本机可启用，工具剩余预算已传入 `execute(arguments, timeoutMillis)`；真实 JVM 重放已用真实 `TaskDispatchCoordinator` 验证一次派发/二次恢复不重跑；仍缺真实 Python 子进程接收与生产建表 |
+| 知识检索 R6 | `KnowledgeIndexService`、`KnowledgeRetrievalMySqlIT`、`KnowledgeVectorStoreRedisIT`、`KnowledgeController` | 离线检索、ACL、引用、DeepSeek 回答适配器与 Redis 8 向量 ACL 混合检索已落地；本地 256 维哈希 embedding 只做词法候选重排，不是神经语义召回；向量只合并进词法候选池，业务 `retire()` 成功后 best-effort 清理向量；生产库未建表 |
+| 受控助手 R7 | `AssistantChatService`、`AssistantConfirmationService`、`AssistantSessionService`、`AssistantModelEvidence` | 工具白名单、预览确认、配额、审计、有界并发、单用户并发槽、结构化参数证据与资源指纹确认已落地；DeepSeek 适配器本机可启用，`toolExecutor` 用 `DelegatingSecurityContextExecutorService` 传播登录身份，工具剩余预算传 `execute(arguments, timeoutMillis)`；最终外发体由真实 ChatService + 适配器 + 假 HTTP 验证；真实 JVM 重放已用真实 `TaskDispatchCoordinator` 验证一次派发/二次恢复不重跑；仍缺真实 Python 子进程接收与生产建表 |
 | 质量门禁 | `.github/workflows/migration-quality.yml` | 配置有 Maven/MySQL/Redis/Vite；进程守卫测试已改为 Windows/Linux 双实现，远端 Actions 结果仍需实际查询 |
 
 所有文件名相对于仓库根 `F:\Study\postgraduate\毕业论文\security_model`。开始每轮前执行 `git status --short`，阅读相关 SDD 与源码，保留其他人已有修改；与表格事实不一致时，先提交事实差异供复核，不得沿用过期结论。
@@ -164,7 +164,7 @@ Redis 保持 MySQL 回源；新增缓存必须提供 key/TTL/失效/穿透/击�
 
 **验收**：问题回答附文档名、版本、章节和可定位引用；无命中文档时明确未知；更新/删除文档后旧片段不再召回；用户只能检索有权文档。用固定问答集评估召回和引用正确性，提示注入文本只能作为资料，不能改变系统命令。
 
-**当前实现落点（2026-11-14，外部模型联调阻塞）**：MySQL 文档/版本/chunk 表 + ACL SQL 前置过滤；Markdown 保章节与行号分块；确定性中文单字/二元组、IDF 加权与覆盖率/最低分拒答；`/api/knowledge/query` 返回引用；通用 OpenAI-compatible 适配器默认关闭，假 HTTP 捕获请求体验证白名单；模型引用越界丢弃回退；知识页展示回答/检索/未知与引用卡片。未获供应商/预算/数据留存授权前不得真实外发，生产库未建表，不写 R6 验收通过。ADR 见 `05` ADR-020。
+**当前实现落点（2026-11-15，本机验证；生产验收未完成）**：MySQL 文档/版本/chunk 表 + ACL SQL 前置过滤；Markdown 保章节与行号分块；确定性中文单字/二元组、IDF 加权与覆盖率/最低分拒答；`/api/knowledge/query` 返回引用；通用 OpenAI-compatible 适配器默认关闭，本机 `deepseek` profile 可启用；知识页展示回答/检索/未知与引用卡片。混合检索先形成词法候选池，向量只合并进词法池，词法为空直接拒答；业务 `retire()` 成功后 best-effort 删除向量。固定评估为可答 10 + 未知 5 + 越权/注入 5 共 20 题。生产库未建表，不写 R6 验收通过。ADR 见 `05` ADR-020/ADR-022/ADR-023。
 
 ## 10. R7：受控实验 Agent
 
@@ -179,9 +179,9 @@ Redis 保持 MySQL 回源；新增缓存必须提供 key/TTL/失效/穿透/击�
 - 端口：`AssistantModel` 默认 `provider=disabled`；新增供应商适配器只改 provider，不改 `AssistantChatService`。
 - allow-list：`AssistantToolRegistry` + `ParameterGuideTool`、`TaskSummaryTool`、`ReportSummaryTool`、`KnowledgeSearchTool`、`CreateTaskPreviewTool`、`StartTaskPreviewTool`、`CancelTaskPreviewTool`、`RetryTaskPreviewTool`、`ExportTaskPreviewTool`。
 - 写安全：`AssistantPreviewService` 只生成 token 哈希；`AssistantConfirmationService` 重校验 + 原子消费；create 比对 `expectedConfigFingerprint`，start/retry 比对当前 `plan(task).fingerprint()`；`AssistantWriteExecutor` 才调用原命令服务与 R3 幂等。
-- 外发边界：`KnowledgeSanitizer` 覆盖中文/空格/嵌套路径、凭据与联系方式；`AssistantModelEvidence` 按参数名投影 `type/default/min/max/options`，真实 LDD schema 不被 400 字截断。
-- 并发边界：模型线程池 4/16、全局请求槽 4、单用户并发槽默认 1（`max-concurrent-per-user`）；同步工具仍不可强制中断，剩余预算未传入 `executeTool`。
-- 证据：`AssistantChatServiceTest`、`AssistantConfirmationServiceTest`、`AssistantConfirmationEndToEndIT`（17 项）、`TaskCommandServicePipelineIT`（6 项）、`TaskCancellationDispatcherTest`（2 项）、`KnowledgeSanitizerTest`、`AssistantModelEvidenceTest`；细节见 `09` §5.10、`20` §10 与 §6.6。
+- 外发边界：`KnowledgeSanitizer` 对自由文本中的所有绝对多段路径（含 `/api/private`、含空格路径）统一替换为 `[已过滤路径]`，不按 `/api` 前缀豁免；最终 body 由真实 ChatService + 适配器 + 假 HTTP 两次请求验证。`AssistantModelEvidence` 按参数名投影 `type/default/min/max/options`，真实 LDD schema 不被 400 字截断。
+- 并发边界：模型线程池 4/16、全局请求槽 4、单用户并发槽默认 1（`max-concurrent-per-user`）；工具线程池用 `DelegatingSecurityContextExecutorService` 传播登录身份，剩余预算已传入 `execute(arguments, timeoutMillis)`，但同步工具仍不可保证底层 JDBC/Redis 物理中断。
+- 证据：`AssistantChatServiceTest`（12 项）、`AssistantPreviewServiceTest`、`AssistantConfirmationServiceTest`、`AssistantConfirmationEndToEndIT`（19 项）、`TaskCommandServicePipelineIT`（6 项）、`TaskCancellationDispatcherTest`（2 项）、`KnowledgeSanitizerTest`、`AssistantOutboundPrivacyTest`、`AssistantModelEvidenceTest`；细节见 `09` §5.13、`20` §10 与 §6.6。
 
 ## 11. R8：可选分布式验收
 

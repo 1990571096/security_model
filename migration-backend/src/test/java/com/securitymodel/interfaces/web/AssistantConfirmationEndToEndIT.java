@@ -2,6 +2,7 @@ package com.securitymodel.interfaces.web;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.securitymodel.SecurityModelApplication;
+import com.securitymodel.application.assistant.AssistantModel;
 import com.securitymodel.application.assistant.AssistantSessionService;
 import com.securitymodel.application.resource.ResourceQueryService;
 import com.securitymodel.application.task.GpuLeaseService;
@@ -17,6 +18,7 @@ import com.securitymodel.support.OwnershipE2ESupport;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.apache.ibatis.session.SqlSessionFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -84,6 +86,10 @@ class AssistantConfirmationEndToEndIT {
     private ObjectMapper objectMapper;
     @Autowired
     private JdbcTemplate jdbc;
+    @Autowired
+    private SqlSessionFactory sqlSessionFactory;
+    @MockBean
+    private AssistantModel assistantModel;
     @Autowired
     private AssistantSessionService sessionService;
     @MockBean
@@ -237,6 +243,8 @@ class AssistantConfirmationEndToEndIT {
 
     @Test
     void modelDisabledReturnsExplicitStatusAndCoreApiStillWorks() throws Exception {
+        when(assistantModel.respond(any()))
+                .thenReturn(AssistantModel.ModelReply.unavailable("model_disabled", "disabled"));
         String alice = login("alice");
         mockMvc.perform(post("/api/assistant/chat")
                         .header("Authorization", alice)
@@ -248,6 +256,45 @@ class AssistantConfirmationEndToEndIT {
                 .andExpect(jsonPath("$.modelCalls").value(1));
         mockMvc.perform(get("/api/pre-defense/100").header("Authorization", alice))
                 .andExpect(status().isOk());
+    }
+
+    @Test
+    void chatToolsKeepCallerIdentityAcrossPoolThreadReuse() throws Exception {
+        when(assistantModel.respond(any())).thenAnswer(invocation -> {
+            AssistantModel.ModelRequest request = invocation.getArgument(0);
+            boolean afterTool = request.messages().stream()
+                    .anyMatch(message -> "tool".equals(message.role()));
+            if (afterTool) {
+                return AssistantModel.ModelReply.answer("已完成", "fake");
+            }
+            long taskId = request.question().contains("300") ? 300L : ALICE_RUNNING_TASK;
+            return AssistantModel.ModelReply.toolCall("get_my_task_summary",
+                    objectMapper.createObjectNode().put("taskId", taskId), "fake");
+        });
+        String alice = login("alice");
+        String bob = login("bob");
+
+        for (int index = 0; index < 2; index++) {
+            mockMvc.perform(post("/api/assistant/chat")
+                            .header("Authorization", alice)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"question\":\"查看我的任务 700\"}"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.status").value("answered"))
+                    .andExpect(jsonPath("$.toolResults[0].data.taskId").value(700));
+            mockMvc.perform(post("/api/assistant/chat")
+                            .header("Authorization", bob)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"question\":\"查看我的任务 300\"}"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.status").value("answered"))
+                    .andExpect(jsonPath("$.toolResults[0].data.taskId").value(300));
+        }
+    }
+
+    @Test
+    void myBatisPlusStatementTimeoutIsApplied() {
+        assertEquals(5, sqlSessionFactory.getConfiguration().getDefaultStatementTimeout());
     }
 
     @Test

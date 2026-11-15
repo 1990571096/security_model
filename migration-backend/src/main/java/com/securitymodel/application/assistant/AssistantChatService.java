@@ -8,6 +8,7 @@ import com.securitymodel.domain.assistant.AssistantSession;
 import jakarta.annotation.PreDestroy;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
+import org.springframework.security.concurrent.DelegatingSecurityContextExecutorService;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -78,12 +79,13 @@ public class AssistantChatService {
                     thread.setDaemon(true);
                     return thread;
                 }, new ThreadPoolExecutor.AbortPolicy());
-        this.toolExecutor = new ThreadPoolExecutor(4, 4, 0, TimeUnit.MILLISECONDS,
-                new ArrayBlockingQueue<>(16), runnable -> {
-                    Thread thread = new Thread(runnable, "assistant-tool");
-                    thread.setDaemon(true);
-                    return thread;
-                }, new ThreadPoolExecutor.AbortPolicy());
+        this.toolExecutor = new DelegatingSecurityContextExecutorService(
+                new ThreadPoolExecutor(4, 4, 0, TimeUnit.MILLISECONDS,
+                        new ArrayBlockingQueue<>(16), runnable -> {
+                            Thread thread = new Thread(runnable, "assistant-tool");
+                            thread.setDaemon(true);
+                            return thread;
+                        }, new ThreadPoolExecutor.AbortPolicy()));
         this.maxModelCalls = Math.max(1, Math.min(12, maxModelCalls));
         this.maxToolCalls = Math.max(1, Math.min(10, maxToolCalls));
         this.timeoutMillis = TimeUnit.SECONDS.toMillis(Math.max(5, Math.min(180, timeoutSeconds)));
@@ -143,7 +145,7 @@ public class AssistantChatService {
         while (true) {
             if (System.nanoTime() > deadline) {
                 return finish(session, question, "timeout",
-                        "助手请求超时，未完成的工具调用不会写入业务数据。", traces, pending,
+                        "助手请求超时，后续工具与模型调用不会继续；底层操作可能仍在收尾。", traces, pending,
                         citations, "timeout", modelCalls, toolCalls);
             }
             if (modelCalls >= maxModelCalls) {
@@ -154,7 +156,7 @@ public class AssistantChatService {
             long remainingNanos = deadline - System.nanoTime();
             if (remainingNanos <= 0) {
                 return finish(session, question, "timeout",
-                        "助手请求超时，未完成的工具调用不会写入业务数据。", traces, pending,
+                        "助手请求超时，后续工具与模型调用不会继续；底层操作可能仍在收尾。", traces, pending,
                         citations, "timeout", modelCalls, toolCalls);
             }
             long remainingMillis = Math.max(1, TimeUnit.NANOSECONDS.toMillis(remainingNanos));
@@ -175,13 +177,13 @@ public class AssistantChatService {
             } catch (TimeoutException exception) {
                 future.cancel(true);
                 return finish(session, question, "timeout",
-                        "模型调用超过剩余时限，未完成的工具调用不会写入业务数据。", traces, pending,
+                        "模型调用超过剩余时限，后续工具与模型调用不会继续；底层操作可能仍在收尾。", traces, pending,
                         citations, "timeout", modelCalls, toolCalls);
             } catch (InterruptedException exception) {
                 future.cancel(true);
                 Thread.currentThread().interrupt();
                 return finish(session, question, "timeout",
-                        "助手请求被中断，未完成的工具调用不会写入业务数据。", traces, pending,
+                        "助手请求被中断，后续工具与模型调用不会继续；底层操作可能仍在收尾。", traces, pending,
                         citations, "timeout", modelCalls, toolCalls);
             } catch (ExecutionException exception) {
                 // Provider exceptions can contain request bodies, endpoints and credentials.
@@ -236,7 +238,7 @@ public class AssistantChatService {
                 } catch (AssistantException exception) {
                     if ("ASSISTANT_TOOL_TIMEOUT".equals(exception.getCode())) {
                         return finish(session, question, "timeout",
-                                "工具执行超过剩余时限，未完成的业务写入不会继续。", traces, pending,
+                                "工具执行超过剩余时限，后续工具与模型调用不会继续；底层操作可能仍在收尾。", traces, pending,
                                 citations, "tool_timeout", modelCalls, toolCalls);
                     }
                     return finish(session, question, "tool_error", exception.getMessage(), traces, pending,
@@ -268,7 +270,7 @@ public class AssistantChatService {
             if (tool.descriptor().write()) {
                 AssistantPreviewResponse preview = executeWithBudget(
                         () -> previewService.preview(
-                                call.toolName(), call.arguments(), session.getSessionId()),
+                                call.toolName(), call.arguments(), session.getSessionId(), timeoutMillis),
                         timeoutMillis);
                 AssistantChatResponse.AssistantToolTrace trace = new AssistantChatResponse.AssistantToolTrace(
                         call.toolName(), preview.preview().path("warning").asText(

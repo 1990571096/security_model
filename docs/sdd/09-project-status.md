@@ -1,6 +1,6 @@
 # 项目目标与阶段进度说明
 
-更新时间：2026-11-15（独立审查整改：外发路径、向量 ACL、混合检索、工具预算、R3 证据与监控；227 单测 + 78 IT）
+更新时间：2026-11-15（基于 cde3173 的独立审查整改：工具线程身份、最终外发体、SQL 超时、退役向量、混合候选与完整 20 题；230 单测 + 81 IT）
 
 2026-11-13 文档与实现迭代：R2 第四切片后实现 R3-A/R3-B 代码（持久调度意图、条件抢占、统一启动恢复、有界 pending 扫描、create/start/retry 请求幂等），并完成 R5 第一批（运行指标、日志关联、Redis 代际缓存、管理员观测接口、Actuator 最小暴露、真实统计页），本机实跑 127 项单测 + 41 项 MySQL IT + 1 项真实 Redis 缓存代际 IT；带意图的真实 JVM 重启、R3-04 崩溃演练、真实 Redis 宕机、生产库建表仍未完成，R3 仍待外部复审。文档中未执行的真实 LDD 与生产库迁移仍保持未验证状态。
 
@@ -279,7 +279,7 @@ Vue 2 工程继续作为业务回归和回滚基线，不参与迁移版主流�
 | 模型端口 | 业务只依赖 `AssistantModel`；默认 `provider=disabled`，明确返回 `model_disabled`；本机 `deepseek` profile 已接真实 DeepSeek 适配器，生产默认仍关闭；最终请求体隐私由真实 ChatService + 适配器 + 假 HTTP 测试覆盖 | `AssistantModel`、`DeepSeekAssistantModel`、`DisabledAssistantModel` |
 | 审计与会话 | 工具审计只存工具名/operator/target/resultCode/durationMs，不存 prompt、参数正文或凭据；会话只存问题、状态、工具名、确认 ID、引用 ID；用户可删除自己的会话 | `AssistantAuditService`、`AssistantSessionService`、`AssistantRetentionJob` |
 | API/前端 | `POST /api/assistant/chat`、确认、工具目录、预览、会话列表/详情/删除、审计、状态；新增 `/assistant` 页面，展示模型不可用、工具结果、引用和待确认操作 | `AssistantController`、`AssistantView.vue`、`src/api/assistant.js` |
-| 验证（本机） | 2026-11-14 基线为 211 单元 + 75 IT；2026-11-15 审查整改后全量 `mvn verify -Pmysql-it`（`REDIS_IT=true`）→ **227 项单元测试 + 78 项 MySQL/Redis 集成测试全绿**（见 §5.12）；助手 HTTP+MySQL 确认/会话链路 17 项、真实命令服务链路 6 项、独立 JVM 崩溃窗口 2 项 + 真实协调器重放 1 项；前端 `npm run build` 已通过（含监控页改动）；未跑真实 LDD；提交 `ca9b499` 未推送 | `tmp/review-fix-full-verify5.log`、`tmp/review-fix-frontend-build.log`、`tmp/r10-full-verify2.log` |
+| 验证（本机） | 2026-11-14 基线为 211 单元 + 75 IT；2026-11-15 基于 `cde3173` 的审查整改后全量 `mvn verify -Pmysql-it`（`REDIS_IT=true`）→ **230 项单元测试 + 81 项 MySQL/Redis 集成测试全绿**（见 §5.13）；助手 HTTP+MySQL 确认/会话链路 19 项、真实命令服务链路 6 项、独立 JVM 崩溃窗口 2 项 + 真实协调器重放 1 项；前端 `npm run build` 已通过；未跑真实 LDD | `tmp/review-current-full-verify.log`、`tmp/review-current-frontend-build.log`、`tmp/review-current-targeted2.log` |
 | 未做/阻塞 | 生产库 `eladmin` 未执行助手建表；确认流不是组织级双人审批；N4 已补真实协调器的一次派发/二次恢复不重跑，但真实 Python 子进程接收、真实 GPU 租约表领取和跨 JVM 竞争仍未证明；N5 篡改 token 未单列；N6 Ubuntu Java 17 远端 CI 未实际运行；RabbitMQ 与独立 Worker 未实现 | ADR-021、20 §10 |
 
 ## 5.11 DeepSeek Agent 与本地向量 RAG 演示（2026-11-15，本机联调，不是验收）
@@ -291,27 +291,37 @@ Vue 2 工程继续作为业务回归和回滚基线，不参与迁移版主流�
 | DeepSeek 真实外发 | 本机 `POST https://api.deepseek.com/chat/completions` 最小调用返回 `OK`（12 tokens/约 671 ms）；function calling 请求返回 `get_task_status`，参数 `{"task_id":42}`（336 tokens/约 974 ms）；实际响应模型名为 `deepseek-flash` | 本机 PowerShell 冒烟，未写入仓库 |
 | 应用内 Agent 链路 | 2026-11-15 启动 `deepseek` profile：`/api/assistant/chat` 调用 `get_parameter_guide` 返回 5 个算法/4 个数据集；创建预览返回 `pendingConfirmations`；确认后创建 `Agent演示任务`（`pending`、`owner_user_id=1`），未自动启动；按任务 ID 查询只返回本人任务 | 本机运行日志 `tmp/r11-app-vector5.log`、演示库 `security_model_demo` |
 | 本地 embedding | `LocalEmbeddingModel` 将英文词和中文单字/二元/三元字符 n-gram 哈希到 256 维并 L2 归一化；完全离线、无新增依赖；是演示实现，不是 BGE 神经 embedding | `LocalEmbeddingModel`、`LocalEmbeddingModelTest` |
-| Redis 向量库 | 使用 Redis 8 `vectorset` 的 `VADD`/`VSIM`，key `security_model:knowledge:vectors:v1`，元素 `c:<chunkId>`；`SETATTR` 写入 visibility/owner/documentId，`VSIM ... FILTER` 在候选阶段按 shared/owner 过滤，管理员跨用户读不加过滤；`change=0` 时 reindex 也会回填向量；旧版本向量按 document 删除 | `KnowledgeVectorStore`、`KnowledgeIndexService`、`KnowledgeVectorStoreRedisIT` |
-| 混合检索 | 关键词 `KnowledgeRanker` 与向量余弦合并，`retrievalMode=hybrid`、`vectorHits` 暴露检索通道；词法候选为空时直接拒答，向量只做候选重排，不是独立语义召回；Redis 命令失败/不支持时本轮返回 `lexical`，不再仅看配置 | `KnowledgeRetrievalService`、`KnowledgeQueryResponse`、`KnowledgeHybridEvaluationTest` |
+| Redis 向量库 | 使用 Redis 8 `vectorset` 的 `VADD`/`VSIM`，key `security_model:knowledge:vectors:v1`，元素 `c:<chunkId>`；`SETATTR` 写入 visibility/owner/documentId，`VSIM ... FILTER` 在候选阶段按 shared/owner 过滤，管理员跨用户读不加过滤；`change=0` 时 reindex 也会回填向量；旧版本向量按 document 删除；业务 `retire()` 成功后 best-effort 清理向量，失败只记日志、无持久化补偿 | `KnowledgeVectorStore`、`KnowledgeIndexService`、`KnowledgeVectorStoreRedisIT` |
+| 混合检索 | 关键词 `KnowledgeRanker` 先按 `candidateLimit` 形成词法候选池，向量只合并进该池；`retrievalMode=hybrid`、`vectorHits` 只统计可读有效命中；词法候选为空时直接拒答，不是独立语义召回；Redis 命令失败/不支持时本轮返回 `lexical`，不再仅看配置 | `KnowledgeRetrievalService`、`KnowledgeQueryResponse`、`KnowledgeHybridEvaluationTest` |
 | 应用内 RAG | `POST /api/knowledge/reindex` 写入 408 个 chunk 向量（`VCARD=408`）；`/api/knowledge/query` 真实返回 `retrievalMode=hybrid`、`vectorHits=40`，并调用 DeepSeek 生成带 `[C1]` 引用回答 | 本机验证，日志 `tmp/r11-app-vector5.log` |
-| 验证 | 全量 `mvn verify -Pmysql-it`（`MYSQL_IT_PASSWORD`、`REDIS_IT=true`）→ **227 项单元测试 + 78 项 MySQL/Redis 集成测试全部通过，BUILD SUCCESS**；前端 `npm run build` 已通过（含监控页 `runningTaskCount` 改动） | `tmp/review-fix-full-verify5.log`、`tmp/review-fix-frontend-build.log` |
+| 验证 | 全量 `mvn verify -Pmysql-it`（`MYSQL_IT_PASSWORD`、`REDIS_IT=true`）→ **230 项单元测试 + 81 项 MySQL/Redis 集成测试全部通过，BUILD SUCCESS**；前端 `npm run build` 通过（element chunk 947.92 kB 警告仍在） | `tmp/review-current-full-verify.log`、`tmp/review-current-frontend-build.log` |
 | 未做/边界 | 仅演示库 `security_model_demo` 验证，生产库 `eladmin` 未迁移；本地 embedding 是可替换的哈希实现，未接 BGE/ONNX；DeepSeek 每日预算/token 上限未形成生产配置；未跑真实 LDD；Agent 工具底层取消与写预览事务提交边界、真实 Python 子进程重放、Ubuntu Java 17 CI 仍未完成 | 20 §9/§10、ADR-021/ADR-022 |
 
 ## 5.12 独立审查整改（2026-11-15，本机证据，未整体验收）
 
 | 项 | 事实 | 证据 |
 | --- | --- | --- |
-| P1 外发路径 | `KnowledgeSanitizer` 新增 `GENERIC_UNIX_PATH`：除 `/api/`、`/auth/`、`/actuator/`、`/swagger-ui/`、`/v3/`、`/error` 等 API 路由前缀外，任意 `/a/b` 形式绝对路径替换为 `[已过滤路径]`；`/datasets/private/sample.png`、`/训练数据/样本.png` 已覆盖 | `KnowledgeSanitizerTest`、`AssistantOutboundPrivacyTest` |
-| P1 最终请求体 | 真实 `AssistantChatService` + 真实 `DeepSeekAssistantModel` + 本地假 `HttpServer` 捕获最终 HTTP body；断言两个测试路径、API Key、`Authorization` 均不在 body，出现 `[已过滤路径]` | `AssistantOutboundPrivacyTest`、`tmp/review-fix-p1.log` |
-| P2 向量 ACL | `VADD ... SETATTR` 写入 `{"visibility","owner","documentId"}`，`VSIM ... FILTER` 在候选阶段限定 shared/owner；新增 50 条 owner=8 高相似私有片段不挤占 user=7 的真实 Redis IT，admin 可跨用户读，`removeDocument` 后不再命中；断言 `indexDocument` 返回真实写入数（1/1/50） | `KnowledgeVectorStoreRedisIT`、`tmp/review-fix-vector-final4.log` |
-| P2 混合检索 | 原 20 题走真实 `KnowledgeRetrievalService` + 本地 embedding 候选：可答 top5 10/10，5 个未知全部拒绝；词法候选为空即拒答，向量只做候选重排；向量命令失败时 `retrievalMode=lexical` | `KnowledgeHybridEvaluationTest`、`tmp/review-fix-chat-final.log` |
-| P2 工具超时 | `AssistantTool.execute(arguments, timeoutMillis)` 接收剩余预算；读工具和写预览都由独立 `toolExecutor` Future 限时，超时 `cancel(true)` + `ASSISTANT_TOOL_TIMEOUT`，不再发起后续工具/模型；MyBatis 语句超时 5s；底层 JDBC/Redis 物理终止与写预览事务取消边界仍未证明 | `AssistantChatServiceTest`、`application.yml` |
+| P1 外发路径 | 本轮修正口径：`KnowledgeSanitizer` 不再豁免 `/api/` 等自由文本前缀，任意绝对多段路径（含含空格路径）替换为 `[已过滤路径]`；`/secret.txt`、`/api/private/samples.png`、`/custom dir/private sample.png` 均已覆盖。旧“API 路由前缀保留”的表述作废 | `KnowledgeSanitizerTest`、`AssistantOutboundPrivacyTest` |
+| P1 最终请求体 | 真实 `AssistantChatService` + 真实 `DeepSeekAssistantModel` + 本地假 `HttpServer` 连续两次请求：第一次返回工具调用，第二次返回最终回答；断言两次 body 都不含路径、API Key、`Authorization`，且出现 `[已过滤路径]` | `AssistantOutboundPrivacyTest`、`tmp/review-current-targeted2.log` |
+| P2 向量 ACL | `VADD ... SETATTR` 写入 `{"visibility","owner","documentId"}`，`VSIM ... FILTER` 在候选阶段限定 shared/owner；真实 Redis IT 覆盖 50 条 owner=8 高相似私有片段不挤占 user=7、admin 跨用户读、`removeDocument` 后不再命中 | `KnowledgeVectorStoreRedisIT`、`tmp/review-current-vector.log` |
+| P2 混合检索 | 本轮修正为：先按 `candidateLimit` 生成词法池，词法池为空直接拒答，向量只合并进词法池；20 题完整覆盖可答 10 + 未知 5 + 越权/注入 5，可答 top5 10/10，私有 `task_report:99` 向量不能注入共享结果 | `KnowledgeHybridEvaluationTest`、`tmp/review-current-targeted2.log` |
+| P2 工具超时 | 工具线程传播登录身份；`AssistantTool.execute(arguments, timeoutMillis)` 接收剩余预算；写预览在工具返回后、insert 前再次检查 deadline，超时不 insert；MyBatis-Plus 有效键与 5s 超时由 `SqlSessionFactory` 断言；底层 JDBC/Redis 物理终止与迟到 insert 仍未证明 | `AssistantChatServiceTest`、`AssistantPreviewServiceTest`、`AssistantConfirmationEndToEndIT`、`application.yml` |
 | P1 R3 证据 | `CrashWindowChildMain` 写入真实 `request_json`/SHA-256/runtime_hash；新增真实 `TaskDispatchCoordinator` 重放测试，执行器收到一次、意图 `submitted`、任务 `running`、第二次恢复不重跑；修复 `DefenseTaskRequest`/`DefenseResourceRef` 缺少 Jackson 构造器导致的 `DISPATCH_SNAPSHOT_INVALID` | `MySqlTaskPersistenceIT.independentJvmPendingIntentRunsRealReplayCoordinatorOnce` |
 | P2 监控口径 | `executorStatus.runningTaskCount` 改为 `taskProgressQueryService.statistics().runningCount`（MySQL `status=running`），线程池 `activeCount` 仍单独表示活动线程；运行监控页显示 `runningTaskCount` | `TaskProgressController`、`RuntimeMonitorView.vue` |
 | 边界 | executor 仍是测试替身，未证明真实 Python 子进程接收、真实 GPU 租约表领取和双恢复者跨 JVM 竞争；Redis `VADD` 的整数回复由 `executeIntegerCommand` 处理，只忽略 Spring `ByteArrayOutput` 的已知解码限制，真实写入仍由 `VCARD/VSIM` 验证；哈希 embedding 不是神经语义 | 20 §10、ADR-022 |
 
 
-### P0：正式实验闭环
+## 5.13 `cde3173` 后五项边界修复（2026-11-15，本机证据，未整体验收）
+
+| 项 | 事实 | 证据 |
+| --- | --- | --- |
+| P1 工具线程身份 | `AssistantChatService.toolExecutor` 改为 `DelegatingSecurityContextExecutorService` 包装的 4 线程 + 16 队列；工具线程调用真实 `CurrentUserService.requireStableIdentity()` 能读到请求用户；HTTP 测试 alice 任务 700、bob 任务 300 连续交替两次，工具结果 taskId 不串号 | `AssistantChatServiceTest.toolThreadReceivesAuthenticatedIdentity`、`AssistantConfirmationEndToEndIT.chatToolsKeepCallerIdentityAcrossPoolThreadReuse` |
+| P1 最终外发体 | 新增 `ABSOLUTE_FILE_PATH`（允许路径含空格）并在 `UNIX_PATH` 前执行；`GENERIC_UNIX_PATH` 取消 `/api` 等前缀豁免，自由文本中所有绝对多段路径统一替换为 `[已过滤路径]`；真实 ChatService + 真实适配器 + 假 HTTP 连续两次请求，断言工具执行后的最终回答 body 也不含 `/datasets/private`、`/训练数据`、`/secret.txt`、`/api/private`、`/custom dir` | `KnowledgeSanitizer.java`、`KnowledgeSanitizerTest`、`AssistantOutboundPrivacyTest` |
+| P2 SQL 超时与写预览 | `application.yml` 改为 MyBatis-Plus 有效键 `mybatis-plus.configuration.default-statement-timeout`；`AssistantConfirmationEndToEndIT` 从 `SqlSessionFactory` 读到的有效超时为 5；`AssistantPreviewService.preview(..., timeoutMillis)` 在工具返回后、`insert` 前再次检查 deadline，超时抛 `ASSISTANT_TOOL_TIMEOUT` 且不保存确认记录；用户可见文案改为“后续工具与模型调用不会继续；底层操作可能仍在收尾” | `application.yml`、`AssistantPreviewService.java`、`AssistantPreviewServiceTest`、`AssistantConfirmationEndToEndIT.myBatisPlusStatementTimeoutIsApplied` |
+| P2 业务退役清理向量 | `KnowledgeIndexService.retire()` 在 `writer.retire` 成功后调用 `removeVectorsQuietly`；MySQL 仍是事实源，向量清理 best effort，失败只记日志；真实 Redis IT mock writer 返回 true 后调用真实 `retire(2L)`，断言 Redis 搜索不再命中 chunk 2 | `KnowledgeIndexService.java`、`KnowledgeVectorStoreRedisIT.retireBusinessEntryCleansItsVectors` |
+| P2 候选范围与 20 题 | `KnowledgeRetrievalService` 先以 `candidateLimit` 生成 `lexicalPool`；词法池为空直接返回空；向量只允许合并进 `lexicalPool`，不从全部 SQL 可见候选合并；`vectorHitCount` 只统计 `row != null && score >= 0.28` 的可读命中；`KnowledgeHybridEvaluationTest` 补 5 个越权/注入题，形成可答 10 + 未知 5 + 越权/注入 5 = 20 题，并构造共享 corpus + 私有 `task_report:99` 向量，断言不会被注入 | `KnowledgeRetrievalService.java`、`KnowledgeHybridEvaluationTest` |
+| 边界 | 写预览超时仍只是“工具返回后、insert 前检查 deadline”，`insert` 自身在 deadline 后完成是否落库未用真实事务/故障注入证明；退役向量清理无持久化补偿任务，残留向量可能占候选窗口，但 MySQL ACL 仍阻止退役内容被引用；`Future.cancel(true)` 不保证底层 JDBC/Redis 物理终止；R3 真实协调器仍用替身 executor，真实 Python 子进程、真实 GPU 租约表领取和跨 JVM 竞争未证明；R3/R6/R7 不能整体判定完成 | 20 §9/§10、ADR-023 |
+
 
 1. 根据论文实验方案确定正式数据集、攻击设置、训练轮次和 LDD 参数。
 2. 固化实验配置和数据版本，执行正式实验并保存结果。
@@ -323,7 +333,7 @@ Vue 2 工程继续作为业务回归和回滚基线，不参与迁移版主流�
 2. **R2（可靠性修复完成，待复审）**：GPU 单槽租约、进程记录/整树回收、隔离槽位与探测、启动就绪门、导出失败收敛、产物清单/保留期均已有实现与本机证据；2026-11-14 已修复评审 P1-1~P1-4。剩余真实 LDD/6GB 实测、生产库建表/迁移和日志运行期限额。
 3. **R3（可靠性收尾中，不得整体标记验收完成）**：持久调度意图、条件抢占、启动恢复、有界 pending 扫描、请求幂等、旧/新 run 与取消/瞬时完成条件更新已有实现；`TaskCommandServicePipelineIT` 6 项覆盖双启动、删除—启动、编辑—启动、取消先于完成、完成先于取消、瞬时成功与取消；`AfterCommitTaskDispatcher` 恢复提交后同步执行，训练唯一异步边界回到 `PythonLddTaskExecutor.@Async`，取消信号走独立 `cancelAsync` 通道。已补两个独立 JVM 窗口（pending 重放一次、submitting 收敛隔离），仍缺“执行器已接受、记账前退出”窗口与事务异常无残留的服务层证据。详见 §5.7 与 20 §6.5/§6.6。
 3. **R6（离线检索与适配器完成；本机已接 DeepSeek 与本地向量，生产验收未完成）**：MySQL 文档/版本/chunk、ACL 前置检索、确定性中文切词与 IDF 排序、引用 API、知识页、通用模型适配器和 Redis 8 向量混合检索已落地；2026-11-15 本机 `deepseek` profile 已真实外发并返回引用回答，`vectorHits=40`；本地 embedding 是 256 维哈希实现，不是 BGE；生产库未建表。详见 §5.9、§5.11 与 ADR-020。
-4. **R7（受控工具与确认契约收尾中，未整体验收）**：4 个只读工具 + 5 个预览写工具、一次性确认、资源/参数指纹、R3 幂等、日配额、单用户并发槽、会话/审计和助手页已落地；N1 改为 MySQL 权威读 + 计划资源副本，执行请求只由计划构造；N5 将助手 HTTP + MySQL 确认矩阵扩到 17 项。本机 `deepseek` profile 已跑通真实工具调用、创建预览、确认落库与本人任务查询；生产库未建表、未做真实 LDD。详见 §5.10、§5.11 与 ADR-021。
+4. **R7（受控工具与确认契约收尾中，未整体验收）**：4 个只读工具 + 5 个预览写工具、一次性确认、资源/参数指纹、R3 幂等、日配额、单用户并发槽、会话/审计和助手页已落地；N1 改为 MySQL 权威读 + 计划资源副本，执行请求只由计划构造；N5 将助手 HTTP + MySQL 确认矩阵扩到 19 项（新增双用户线程复用身份与 MyBatis-Plus 有效超时）。本机 `deepseek` profile 已跑通真实工具调用、创建预览、确认落库与本人任务查询；生产库未建表、未做真实 LDD。详见 §5.10、§5.11/§5.13 与 ADR-021/ADR-023。
 5. 持续补迁移版领域服务和 API 集成测试；现有 MySQL 集成测试仅覆盖任务原子领取、状态竞争和恢复扫描，不代表完整端到端覆盖。
 6. 补充 Python 依赖锁定、部署复现和应用重启演练。
 7. 继续补充 Redis 缓存命中率、失效和不可用降级的观测指标。
@@ -367,10 +377,10 @@ Vue 2 工程继续作为业务回归和回滚基线，不参与迁移版主流�
 
 ## 9. 迁移版质量门禁现状
 
-- `migration-backend` 现有 **227 项单元测试**（2026-11-15 审查整改后实测，0 失败/0 跳过），以及 10 个 MySQL/Redis 集成测试类共 **78 项**场景：`MySqlTaskPersistenceIT` 19 项、`OwnershipMigrationScriptIT` 6 项、`OwnershipEndToEndIT` 10 项、`OwnershipEndToEndCrossReadIT` 4 项、`GpuLeaseMySqlIT` 9 项、`AssistantConfirmationEndToEndIT` 17 项、`KnowledgeRetrievalMySqlIT` 4 项、`KnowledgeVectorStoreRedisIT` 2 项、`ResourceCatalogCacheRedisIT` 1 项、`TaskCommandServicePipelineIT` 6 项（实际 10 个类、合计 78 项，均属 `mysql-it`/Redis 门禁）。适配器独立 Python 单元测试 11 项（`python -m unittest`，不计入 Maven 计数）。
+- `migration-backend` 现有 **230 项单元测试**（2026-11-15 基于 `cde3173` 审查整改后实测，0 失败/0 跳过），以及 10 个 MySQL/Redis 集成测试类共 **81 项**场景：`MySqlTaskPersistenceIT` 19 项、`OwnershipMigrationScriptIT` 6 项、`OwnershipEndToEndIT` 10 项、`OwnershipEndToEndCrossReadIT` 4 项、`GpuLeaseMySqlIT` 9 项、`AssistantConfirmationEndToEndIT` 19 项、`KnowledgeRetrievalMySqlIT` 4 项、`KnowledgeVectorStoreRedisIT` 3 项、`ResourceCatalogCacheRedisIT` 1 项、`TaskCommandServicePipelineIT` 6 项（实际 10 个类、合计 81 项，均属 `mysql-it`/Redis 门禁）。适配器独立 Python 单元测试 11 项（`python -m unittest`，不计入 Maven 计数）。
 - R1 新增覆盖：`TaskAccessGuardTest` 8 项（owner/管理员/无 owner/demo 读与**demo 写拒绝**/跨用户）、`TaskExecutionQuotaPolicyTest` 4 项（按 owner 计数、跨用户不互相占用、全局上限、线程池关闭）、`OwnershipHttpContractTest` 8 项（真实 Security 过滤器链 + 真实控制器，持久层为 mock）、资源命令新增管理员拒绝与数据集验证 4 项、进度查询越权与统计 scope 3 项、集成测试新增 owner 范围查询与 demo 排除 2 项。
 - 端到端 IT（`OwnershipEndToEndIT` / `OwnershipEndToEndCrossReadIT`）使用真实 `@SpringBootTest` 上下文、真实 Security 过滤器、真实服务、真实隔离库：`OwnershipE2ESupport` 每轮创建随机 schema 并种入 admin/alice/bob 三个账号与四条归属状态不同的任务，两个账号各自 `/auth/code`→`/auth/login` 登录后访问同一任务，覆盖 403、demo 隔离、登录后禁用立即失效、无 `userId` 旧 token、伪造 `adm`、管理员开关 false/true 两种结果。**本机已执行通过（10/10，含 R5 新增 Actuator 鉴权）**。
-- 集成测试执行情况（2026-11-15 审查整改后本机实测，`MYSQL_IT_PASSWORD` 由本机环境提供，`REDIS_IT=true`）：`mvn -B -f migration-backend/pom.xml verify -Pmysql-it` → **227 项单元测试（0 跳过）+ 78 项 MySQL/Redis 集成测试全部通过，BUILD SUCCESS**；适配器 `python -m unittest` 11 项为上一次记录，本轮未重跑。MySQL/Redis 分布：`MySqlTaskPersistenceIT` 19、`OwnershipMigrationScriptIT` 6、`OwnershipEndToEndIT` 10、`OwnershipEndToEndCrossReadIT` 4、`GpuLeaseMySqlIT` 9、`AssistantConfirmationEndToEndIT` 17、`KnowledgeRetrievalMySqlIT` 4、`KnowledgeVectorStoreRedisIT` 2、`TaskCommandServicePipelineIT` 6，另有 `ResourceCatalogCacheRedisIT` 1。每个 IT 都用随机 schema，结束后删除。
+- 集成测试执行情况（2026-11-15 基于 `cde3173` 审查整改后本机实测，`MYSQL_IT_PASSWORD` 由本机环境提供，`REDIS_IT=true`）：`mvn -B -f migration-backend/pom.xml verify -Pmysql-it` → **230 项单元测试（0 跳过）+ 81 项 MySQL/Redis 集成测试全部通过，BUILD SUCCESS**；适配器 `python -m unittest` 11 项为上一次记录，本轮未重跑。MySQL/Redis 分布：`MySqlTaskPersistenceIT` 19、`OwnershipMigrationScriptIT` 6、`OwnershipEndToEndIT` 10、`OwnershipEndToEndCrossReadIT` 4、`GpuLeaseMySqlIT` 9、`AssistantConfirmationEndToEndIT` 19、`KnowledgeRetrievalMySqlIT` 4、`KnowledgeVectorStoreRedisIT` 3、`TaskCommandServicePipelineIT` 6，另有 `ResourceCatalogCacheRedisIT` 1。每个 IT 都用随机 schema，结束后删除。
 - GPU 租约实测（`GpuLeaseMySqlIT` 9/9）：两个线程并发启动只有一个抢到槽位；租约过期后**先隔离为 `blocked`，不自动接管**，需 `GpuLeaseBlockedProbe` 确认旧进程树退出后才解除；隔离写入在调用方事务回滚后仍然保留；旧 token 续租返回 false、释放不会清掉新租约；按 `task+run` 释放只清匹配运行；释放后可再次获取且 fence 继续递增；事务回滚后无幽灵租约且 fence 未被消耗；隔离槽位在 TTL 过期后仍返回 `GPU_LEASE_BLOCKED`，重建服务实例后仍保持隔离。
 - 导出重启收敛：`ExportRecoveryRunner` 在 `ApplicationReadyEvent` 把 `pending` 置 `EXPORT_NOT_STARTED`、`running` 置 `EXPORT_INTERRUPTED`，不自动重派发；`ExportRecoveryRunnerTest` 2 项覆盖两类状态与“更新 0 行不审计”；`CleanSubsetExportExecutorTest` 用真实短 Python 写半成品 `.part` 后长睡，超时后断言 `markFailed`、无正式 ZIP、子进程已死、从未 `markSuccess`。
 - 迁移脚本实机执行（隔离库，`OwnershipMigrationScriptIT` 6/6）：①只读段加列加索引建决策表、不改业务行；②无决策时即使 `create_by` 命中真实账号也不认领；③1–4 标 `demo`、12 号 `assign user_id=1` 后为 `matched/legacy`；④`reject` 能撤回旧的自动匹配；⑤未知任务 ID 整批中止；⑥未知用户/非法决策值整批中止。旧版字符串开关的两处缺陷（开关被重置、`data_origin IS NULL` 使用户名匹配失效）随设计替换消失。
@@ -384,4 +394,4 @@ Vue 2 工程继续作为业务回归和回滚基线，不参与迁移版主流�
 - Redis 已进入迁移版依赖和运行配置，用于可重建资源目录；任务状态、报告和执行快照仍由 MySQL 保存。Redis 故障时缓存层降级回源 MySQL。
 - CI 工作流包含 MySQL 8.4 集成测试和前端生产构建；本次未查询 GitHub Actions 运行记录，不能据配置推断远端已通过。
 - 最近一次记录的本地普通 Maven 验证、MySQL profile 验证和前端生产构建结果见 `docs/sdd/16-engineering-improvement-roadmap.md`；R1 仅重跑普通 Maven 验证，前端未改动也未重跑构建。
-- 2026-11-15 审查整改后全量验证：`mvn -B -f migration-backend/pom.xml verify -Pmysql-it`（`MYSQL_IT_PASSWORD`、`REDIS_IT=true`）→ **227 项单元测试 + 78 项 MySQL/Redis 集成测试全部通过，BUILD SUCCESS**；新增/更新的关键项：`KnowledgeSanitizerTest` 8/8（通用 Unix/中文绝对路径）、`AssistantOutboundPrivacyTest` 1/1（真实 ChatService + 适配器 + 假 HTTP 最终 body）、`KnowledgeHybridEvaluationTest` 2/2（20 题混合路径 10/10、未知全拒、Redis 失败降级 `lexical`）、`AssistantChatServiceTest` 11/11（工具预算传播与超时）、`KnowledgeVectorStoreRedisIT` 2/2（真实 Redis 8 ACL 候选窗口、50 条他人私有片段不挤占、admin 跨用户、删除清理）、`MySqlTaskPersistenceIT` 19/19（真实 `TaskDispatchCoordinator` 重放一次、二次恢复不重跑；submitting 收敛隔离）、`AssistantConfirmationEndToEndIT` 17/17、`TaskCommandServicePipelineIT` 6/6。测试执行器仍为替身，没有启动真实 Python/LDD；R3/R7 仍不得整体验收；日志 `tmp/review-fix-full-verify5.log`，前端 `npm run build` 已通过（含监控页改动），日志 `tmp/review-fix-frontend-build.log`。
+- 2026-11-15 基于 `cde3173` 的审查整改后全量验证：`mvn -B -f migration-backend/pom.xml verify -Pmysql-it`（`MYSQL_IT_PASSWORD`、`REDIS_IT=true`）→ **230 项单元测试 + 81 项 MySQL/Redis 集成测试全部通过，BUILD SUCCESS**；新增/更新的关键项：`KnowledgeSanitizerTest` 7/7（`/secret.txt`、`/api/private/samples.png`、`/custom dir/private sample.png` 及 `/api` 路由自由文本均脱敏）、`AssistantOutboundPrivacyTest` 1/1（真实 ChatService + 适配器 + 假 HTTP 连续两次请求，最终回答 body 不含路径）、`AssistantPreviewServiceTest` 1/1（超预算 preview 不 insert 确认记录）、`AssistantChatServiceTest` 12/12（工具线程真实 `CurrentUserService` 身份、工具预算传播与超时）、`AssistantConfirmationEndToEndIT` 19/19（alice/bob 线程复用不串号、有效 MyBatis-Plus 语句超时=5、五类写工具确认矩阵）、`KnowledgeVectorStoreRedisIT` 3/3（真实 Redis 业务 `retire()` 清理向量、ACL 候选窗口、admin 跨用户、删除清理）、`KnowledgeHybridEvaluationTest` 3/3（可答 10、未知 5、越权/注入 5 共 20 题；向量只合并进词法候选池，私有候选不可注入）、`MySqlTaskPersistenceIT` 19/19。测试执行器仍为替身，没有启动真实 Python/LDD；R3/R6/R7 仍不得整体验收；日志 `tmp/review-current-full-verify.log`。

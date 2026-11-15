@@ -11,6 +11,7 @@ import org.springframework.stereotype.Service;
 import java.security.SecureRandom;
 import java.time.LocalDateTime;
 import java.util.Base64;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Converts a write-tool preview into a one-time token. The raw token is returned once and
@@ -43,10 +44,17 @@ public class AssistantPreviewService {
     }
 
     public AssistantPreviewResponse preview(String toolName, JsonNode arguments) {
-        return preview(toolName, arguments, null);
+        return preview(toolName, arguments, null, Long.MAX_VALUE);
     }
 
     public AssistantPreviewResponse preview(String toolName, JsonNode arguments, Long sessionId) {
+        return preview(toolName, arguments, sessionId, Long.MAX_VALUE);
+    }
+
+    public AssistantPreviewResponse preview(String toolName, JsonNode arguments, Long sessionId,
+                                            long timeoutMillis) {
+        long deadline = timeoutMillis == Long.MAX_VALUE
+                ? Long.MAX_VALUE : System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMillis);
         Long userId = currentUserService.requireStableIdentity().userId();
         AssistantTool tool = registry.find(toolName);
         if (!tool.descriptor().write()) {
@@ -61,11 +69,17 @@ public class AssistantPreviewService {
         long started = System.nanoTime();
         AssistantToolResult result;
         try {
-            result = tool.execute(arguments);
+            result = tool.execute(arguments, timeoutMillis);
         } catch (RuntimeException exception) {
             auditService.record(sessionId, toolName, null, null, null, "FAILED",
                     elapsedMs(started));
             throw exception;
+        }
+        if (deadline != Long.MAX_VALUE && System.nanoTime() > deadline) {
+            auditService.record(sessionId, toolName, null, null, null, "FAILED",
+                    elapsedMs(started));
+            throw new AssistantException("ASSISTANT_TOOL_TIMEOUT", HttpStatus.GATEWAY_TIMEOUT,
+                    "写预览已超过剩余时限，未保存确认记录");
         }
         if (result.operation() == null || result.request() == null || result.contextHash() == null) {
             throw new AssistantException("ASSISTANT_PREVIEW_INVALID", HttpStatus.BAD_REQUEST,

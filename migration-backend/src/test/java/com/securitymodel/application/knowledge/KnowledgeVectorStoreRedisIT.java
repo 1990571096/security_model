@@ -16,8 +16,11 @@ import java.util.UUID;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
@@ -81,6 +84,22 @@ class KnowledgeVectorStoreRedisIT {
     void removeDocumentRemovesItsVectors() {
         store.indexDocument(2L, "private", 7L);
         store.removeDocument(2L);
+
+        KnowledgeVectorStore.SearchResult result = store.search(
+                "受控助手如何防止越权访问其他用户的任务？", 5, 7L, false);
+        assertTrue(result.hits().stream().noneMatch(hit -> hit.chunkId() == 2L));
+    }
+
+    @Test
+    void retireBusinessEntryCleansItsVectors() {
+        store.indexDocument(2L, "private", 7L);
+        KnowledgeDocumentWriter writer = mock(KnowledgeDocumentWriter.class);
+        when(writer.retire(eq(2L), any())).thenReturn(true);
+        KnowledgeIndexService index = new KnowledgeIndexService(
+                null, writer, null, null, null, "unused", 800, store);
+
+        assertTrue(index.retire(2L));
+        verify(writer).retire(eq(2L), any());
 
         KnowledgeVectorStore.SearchResult result = store.search(
                 "受控助手如何防止越权访问其他用户的任务？", 5, 7L, false);
