@@ -452,13 +452,13 @@ Agent 采用外部大模型 API，本机不部署大模型。生成模型和 emb
 - `KnowledgeHybridEvaluationTest`（20 题完整范围 + 私有候选注入防护）。
 - 全量 `mvn -B -f migration-backend/pom.xml verify -Pmysql-it`（`MYSQL_IT_PASSWORD`、`REDIS_IT=true`）→ 当时 230 单元 + 81 IT，BUILD SUCCESS，日志 `tmp/review-current-full-verify.log`；ADR-024 收口后为 231 单元 + 89 IT。
 
-**边界**：ADR-023 本轮的写预览 insert 自身在 deadline 后完成是否仍落库、退役向量清理失败的持久化补偿、底层 JDBC/Redis 物理终止、真实 Python 子进程/GPU 租约跨 JVM 竞争均未证明；后续由 ADR-024 补齐服务层回滚、跨 JVM 恢复/竞争、insert 阻塞超时、退役对账和真实 body 回归。本 ADR 不代表生产库迁移、Ubuntu Java 17 CI 或 R3/R6/R7 整体验收完成。
+**边界**：ADR-023 本轮的写预览 insert 自身在 deadline 后完成是否仍落库、退役向量清理失败的持久化补偿、底层 JDBC/Redis 物理终止、真实 Python 子进程/GPU 租约跨 JVM 竞争均未证明；后续由 ADR-024 补齐服务层回滚、跨 JVM 恢复/竞争、insert 阻塞超时、退役对账和真实 body 回归。本 ADR 不代表生产库迁移、生产部署或 R3/R6/R7 整体验收完成；Ubuntu Java 17 CI 已由 ADR-024 的 run `43707281672` 验证。
 
 **非目标**：不扩展新功能；不实现 RabbitMQ/Worker；不重跑 LDD；不把本机测试写成生产验收。
 
 ## ADR-024：`930c934` 后五项收口证据
 
-日期：2026-11-15；状态：**代码、定向/全量本机证据已补；生产库迁移、远端 Java 17 CI 与 R4 仍未开始**。
+日期：2026-11-15；状态：**代码、定向/全量本机证据与远端 Java 17 CI 已通过；生产库迁移与 R4 仍未开始**。
 
 **背景**：`930c934` 已修复工具线程身份、最终外发体、SQL 超时、退役向量和混合候选，但仍留下五类可验证缺口：无扩展名单层/空格/中文绝对目录未覆盖，R3 恢复仍依赖替身/同 JVM 内存，R7 insert 阻塞超时与错误 token 未证明，R6 退役清理失败只有日志，文档仍把 `activeCount` 当任务数。本 ADR 只补证据与边界，不新增算法或 Agent 功能。
 
@@ -468,7 +468,7 @@ Agent 采用外部大模型 API，本机不部署大模型。生成模型和 emb
 3. **R3-02/03/04 新 JVM 闭环**：测试专用 `R3RecoveryChildMain` 用真实 MyBatis + `UnpooledDataSource` 构建 `PreDefenseTaskMapper`/`TaskDispatchIntentMapper`/`GpuLeaseMapper`，真实 `GpuLeaseService`、`TaskDispatchIntentService`、`TaskDispatchCoordinator`、`DispatchRecoveryCoordinator`、真实 MySQL 租约和短 Python 协议桩（`print('R3_STUB_OK')` + PID），证据写入 `sys_r3_execution_evidence`。R3-02 由父进程写旧租约、新 JVM 释放并重新 acquire 后重放 pending；R3-03 两个新 JVM 同时重放同一 pending，条件更新只有一个 `pending→submitting` 成功；R3-04 写入 `submitting` 意图和真实长睡眠 Python，但故意缺 `python-children.json`，新 JVM 启动扫描得到 `UNKNOWN` 后 `markBlocked + failAndAbandon`，不重放，槽位保持隔离且 Python 仍存活。
 4. **R7 确认边界**：`AssistantPreviewService` 三个 `preview` 重载加 `@Transactional(rollbackFor = Exception.class)`；insert 完成后再检查 deadline，若 insert 阻塞跨过 deadline，抛 `ASSISTANT_TOOL_TIMEOUT`（“写预览已超过剩余时限，确认记录未保存”）并回滚，迟到记录不能成为凭据。真实 MySQL `BEFORE INSERT` 触发器 `SLEEP(0.8)` 验证 100ms 预算下 0 行确认、1 条 FAILED 审计、任务仍 running；篡改 token 返回 403 `ASSISTANT_CONFIRMATION_INVALID` 并写 `TOKEN_MISMATCH` 审计；alice/bob 两线程并发 `/api/assistant/chat` 各自任务 700/300 不串号。五类写工具首次/重复/并发矩阵沿用既有 19 项，不再重复造用例。
 5. **R6 退役补偿**：`KnowledgeVectorStore.removeDocument` 改返回 boolean 并逐 VREM 汇总；`KnowledgeIndexService.reconcileRetiredVectors(limit)` 对 `findRetired` 有界扫描重新清理，单条失败继续；`KnowledgeVectorReconcileJob` 默认 300s 周期、60s 首批延迟、批量 50。真实 MySQL + 真实 Redis 8 测试用 `FlakyVectorStore` 首次抛 `simulated-redis-outage`，断言退役立即生效、Redis 残留、恢复后对账清掉、重复对账安全。
-6. **文档与门禁**：`09` 的“运行中任务”改为 MySQL `runningTaskCount`，`activeCount` 仅表示线程池活动线程；`20` 增补验收 ID 五列映射；运行手册记录隔离库演练命令与结果；Java 17 本机构建与远端 CI 分别记录，不把本机 Windows/JDK20 结果当 CI。
+6. **文档与门禁**：`09` 的“运行中任务”改为 MySQL `runningTaskCount`，`activeCount` 仅表示线程池活动线程；`20` 增补验收 ID 五列映射；运行手册记录隔离库演练命令与结果；Java 17 本机构建与远端 CI 分别记录，不把本机 Windows/JDK20 结果当 CI；推送后远端 run `43707281672` 已全绿。
 
 **证据**
 - P1：`KnowledgeSanitizerTest.redactsSingleAndSpacedDirectoriesWithoutExtensions`、`AssistantOutboundPrivacyTest.finalModelRequestBodyContainsNoFilesystemPathsOrKey`；`tmp/round2-p1-final.log`。
@@ -476,7 +476,7 @@ Agent 采用外部大模型 API，本机不部署大模型。生成模型和 emb
 - R7：`AssistantConfirmationEndToEndIT.confirmationInsertBlockedPastDeadlineLeavesNoUsableToken`、`tamperedTokenCannotConfirmAndIsAudited`、`concurrentAliceAndBobChatsKeepIdentityIsolated`；`tmp/round2-r7-a.log`、`tmp/round2-r7-b.log`。
 - R6：`KnowledgeRetrievalMySqlIT.retireSurvivesRedisFailureThenReconcilesResidualVectors`；`tmp/round2-r6.log`。
 - 全量：`tmp/round2-full-verify-final.log`（231 单测 + 89 IT）；前端构建日志 `tmp/round2-frontend.log`。
-- CI：远端 `930c934` 已触发 `Migration Quality`（run `43686578054`），python/frontend 成功，backend 因既有 Windows-only `cmd`/`ping -n` 测试与 `PythonProcessWaiter` 未等待销毁退出而失败；跨平台 helper 与等待已修复，本机 JDK20 `tmp/round2-cross-platform.log`、JDK17 全量 `tmp/round2-full-verify-jdk17.log`（Temurin 17.0.21，231 单测 + 89 IT）均通过，待下次推送复验远端 CI。Java 17 本机运行环境已补，仍不能用本机替代 Ubuntu CI。
+- CI：远端 `930c934` 的 `Migration Quality`（run `43686578054`）曾因既有 Windows-only `cmd`/`ping -n` 测试与 `PythonProcessWaiter` 未等待销毁退出而失败；跨平台 helper 与等待已修复。推送提交 `106e4d3` 后，run `43707281672` 的 backend/frontend/python **全部 success**，对应 tree `a294463`；本机 JDK20 `tmp/round2-cross-platform.log`、JDK17 全量 `tmp/round2-full-verify-jdk17.log`（Temurin 17.0.21，231 单测 + 89 IT）均已通过。远端 CI 通过仍不等于生产部署验收。
 
 **边界**：R3 子 JVM 的用户/数据集/算法 Mapper 与 runtime 指纹仍是测试代理/子类，不是完整 Spring 上下文；真实执行器是短 Python 桩，不启动 LDD、不使用 GPU。R7 insert 阻塞用 MySQL 触发器 `SLEEP` 模拟，不是真实行锁/表锁等待；迟到记录失效依赖事务回滚。R6 故障是测试替身抛异常，不是实际停 Redis 进程；补偿是有界扫描，不是持久化 outbox，重复扫描会重复尝试但幂等。以上证据不外推为生产级多实例调度或整体阶段验收。
 

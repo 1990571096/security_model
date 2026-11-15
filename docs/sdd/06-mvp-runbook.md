@@ -207,8 +207,8 @@ mvn -B -f migration-backend/pom.xml test -Pmysql-it `
 ### CI 与 Java 17 证据
 
 - 本机 JDK 20 与 Temurin JDK 17.0.21 均已跑 `mvn verify -Pmysql-it`，计数为 **231 单测 + 89 IT**；JDK17 日志 `tmp/round2-full-verify-jdk17.log`，JDK20 日志 `tmp/round2-full-verify-final.log`。这只证明本机 Java 17 运行，不等于 Ubuntu CI/生产部署已验证。
-- 远端 `Migration Quality` 已对 `930c934` 实际触发（run `43686578054`）：`python` 与 `frontend` 成功，`backend` 在单测阶段失败。失败原因是 `AttemptProcessRegistryTest`/`PythonProcessWaiterTest` 硬编码 Windows `cmd`、`ping -n`，以及 `PythonProcessWaiter` 销毁进程后未等待退出；已改为按 OS 选择 `sh -c 'sleep 20'`/`ping -n` 和 `sh -c 'exit 0'`/`cmd /c exit`，并在 `destroyProcessTree` 后 `waitFor(2s)`。
-- 该修复的本机定向日志为 `tmp/round2-cross-platform.log`；因为尚未推送，远端 CI 仍是失败的旧结果。下一次推送后必须重新查看 `https://github.com/1990571096/security_model/actions`，不能把本机 JDK20 结果写成“Java 17 CI 通过”。
+- 远端 `Migration Quality` 对 `930c934` 曾失败（run `43686578054`）：`python` 与 `frontend` 成功，`backend` 在单测阶段因 `AttemptProcessRegistryTest`/`PythonProcessWaiterTest` 硬编码 Windows `cmd`、`ping -n`，以及 `PythonProcessWaiter` 销毁进程后未等待退出而失败；已改为按 OS 选择 `sh -c 'sleep 20'`/`sh -c 'exit 0'` 或 `cmd /c exit 0`/`ping -n 20`，并在 `destroyProcessTree` 后 `waitFor(2s)`。
+- 跨平台修复推送后，提交 `106e4d3` 的 run `43707281672` 已全部 success（backend/frontend/python）；本机定向日志 `tmp/round2-cross-platform.log`。远端 CI 通过仍不等于生产部署验收。
 
 ### 备份与回滚
 
