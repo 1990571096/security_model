@@ -359,8 +359,13 @@ The frozen contract above is unchanged by the 2026-11-15 P1/P2/R3 closure. New e
   abandoned. `executions.log` contains exactly one line. This child JVM is a minimal test
   context plus a manual async wrapper, **not** the full Spring `@Async` proxy.
 - Full gate: JDK20 and Temurin 17.0.21 each `232` unit tests + `96` MySQL/Redis integration
-  tests, BUILD SUCCESS (`tmp/round3-full-verify.log`, `tmp/round3-full-verify-jdk17.log`).
-  Python 11/11, frontend build passes. No LDD 128/5 rerun, no production `eladmin` migration.
+  tests, BUILD SUCCESS (`tmp/round3-full-verify-final.log`, `tmp/round3-full-verify-jdk17-final.log`).
+  Python 11/11, frontend build passes. Remote Ubuntu + Temurin 17 CI on commit `bb4a79f`
+  (run `43726078023`) is green for backend/frontend/python. No LDD 128/5 rerun, no production
+  `eladmin` migration.
+- Cancel evidence waits up to 20 seconds for the recorded Python pid to disappear before
+  asserting lease/child consistency; this removes a test race without weakening the production
+  rule that a slot is only released after a confirmed child exit.
 - Boundary: a short protocol stub proves the Java dispatch/process/lease/recovery chain, not
   real algorithm or GPU production execution. `KILL_FAILED` and multi-instance network
   partitions remain uncovered.

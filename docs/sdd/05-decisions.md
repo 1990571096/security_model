@@ -484,7 +484,7 @@ Agent 采用外部大模型 API，本机不部署大模型。生成模型和 emb
 
 ## ADR-025：R3/R6/R7 最新评审收口（P1 路径、P2 清理饥饿、真实执行器链路）
 
-日期：2026-11-15；状态：**代码与测试已实施，JDK20/JDK17 全量门禁通过；改动未提交、未推送；不构成 R3/R6/R7 整体验收**。
+日期：2026-11-15；状态：**代码、测试、SQL 与文档已提交并推送；本机 JDK20/JDK17 全量门禁通过；远端提交 `bb4a79f` 的 run `43726078023` 全绿；不构成 R3/R6/R7 整体验收**。
 
 **背景**：基于 `08f11c0` 的最新评审确认三项缺口：`KnowledgeSanitizer.forModel()` 仍保留 `/x`、`/123` 等合法绝对目录；退役向量对账固定取最早 N 条，清理成功后不推进状态，存在扫描饥饿；R3 虽有新 JVM 与崩溃窗口测试，但执行器仍是测试替身，未证明真实生产派发链经过“接受执行后、提交记账前”窗口。本轮只修这三类问题并同步文档，不扩展 RabbitMQ、模型供应商或新展示功能，R4 不在本轮。
 
@@ -501,8 +501,8 @@ Agent 采用外部大模型 API，本机不部署大模型。生成模型和 emb
 - P1：`KnowledgeSanitizerTest` 9/9、`AssistantOutboundPrivacyTest` 1/1，`tmp/round3-p1.log`；新增 `redactsSingleCharNumericHiddenAndSpacedDirectories`，两轮最终 body 均不含 `/z`、`/123`、`/.git`、`/custom dir`。
 - P2：`KnowledgeRetrievalMySqlIT` 6/6（含 `retiredVectorCleanupAdvancesPastFailuresAndSurvivesRestart` 真实 MySQL + Redis、5 条退役/批量 2/失败不阻塞尾批/重启继续/重复幂等），`tmp/round3-p2.log`；`KnowledgeVectorCleanupMigrationIT` 1/1（升级两次、回滚两次、再升级），`tmp/round3-p2-migration.log`。
 - R3：`R3ProductionExecutorChainIT` 5/5（正常、取消、超时、非法结果、真实崩溃窗口），`tmp/round3-r3-prod.log`；崩溃子 JVM `R3ProductionCrashChildMain`、恢复子 JVM `R3RecoveryChildMain`。
-- 全量：JDK20 `mvn verify -Pmysql-it`（`REDIS_IT=true`）**232 单测 + 96 IT**，`tmp/round3-full-verify.log`；Temurin 17.0.21 同计数，`tmp/round3-full-verify-jdk17.log`；Python 11/11 `tmp/round3-python-tests.log`；前端构建通过 `tmp/round3-frontend.log`（仍有 >500 kB chunk 警告）。
-- 远端：`106e4d3` 的 run `43707281672` 全部 success；文档提交 `bb36728` 只改 `docs/**`，按 workflow `paths` 不触发新 CI，不是失败。本轮改动尚未提交/推送，因此没有新的远端 CI 结果。
+- 全量：JDK20 `mvn verify -Pmysql-it`（`REDIS_IT=true`）**232 单测 + 96 IT**，`tmp/round3-full-verify-final.log`；Temurin 17.0.21 同计数，`tmp/round3-full-verify-jdk17-final.log`；Python 11/11 `tmp/round3-python-tests-final.log`；前端构建通过 `tmp/round3-frontend-final.log`（仍有 >500 kB chunk 警告）。
+- 远端：`106e4d3` 的 run `43707281672` 全部 success；`5e4efd4` 的 run `43712479071` 暴露 2 项知识评估误命中（backend failure，frontend/python success），已由阈值 `0.30` 和测试竞态修复；收口提交 `bb4a79f` 的 run `43726078023` backend/frontend/python 全绿，`tmp/ci-bb4a79f-backend.log`。
 
 **边界**：单段路径仍是正则形态过滤，不能穷举所有自由文本隐私形态；清理退避是进程内定时任务 + 数据库状态，不是 outbox；崩溃子 JVM 用测试最小上下文与手动异步包装，真实链路四类用例才用完整 Spring 代理；生产库 `eladmin` 未迁移，R4 未开始。`R3/R6/R7` 只能写“本轮缺陷已修、隔离证据已补”，不能写整体验收通过。
 

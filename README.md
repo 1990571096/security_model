@@ -210,7 +210,7 @@ pwsh -File scripts\run-mysql-it.ps1
 
 R1 的验收证据分级、接口归属审计表与迁移执行记录模板见 `docs/sdd/18-multiuser-ownership-and-resources.md` §8–§10。
 
-当前最新门禁（2026-11-15，`08f11c0` 后 P1/P2/R3 收口；改动尚未提交/推送）：
+当前最新门禁（2026-11-15，`08f11c0` 后 P1/P2/R3 收口；代码/文档已推送，远端 `bb4a79f` 的 run `43726078023` 全绿）：
 
 ```powershell
 $env:MYSQL_IT_PASSWORD = '<本机 MySQL 密码>'
@@ -222,7 +222,7 @@ npm --prefix migration-frontend run build
 
 本机 JDK20 与 Temurin 17.0.21 均为 **232 项单元测试 + 96 项 MySQL/Redis 集成测试**全绿；Python 11/11；前端构建通过（仍有 >500 kB chunk 警告）。新增证据：P1 单字符/数字/隐藏/空格目录与两轮最终 body（`tmp/round3-p1.log`）；P2 退役向量跨批/失败不阻塞/重启/幂等（`tmp/round3-p2.log`）与迁移升级/回滚重复执行（`tmp/round3-p2-migration.log`）；R3 完整 Spring 异步执行器正常/取消/超时/非法结果 + 真实派发崩溃窗口 5/5（`tmp/round3-r3-prod.log`）。R3 的 Python 是短协议桩，不运行 LDD/GPU；生产库 `eladmin` 未迁移，R4 未开始。
 
-GitHub Actions 工作流配置了 MySQL 8.4 服务和该集成测试；远端运行结果需以 Actions 记录为准。`106e4d3` 的 run `43707281672` 已全部 success，文档提交 `bb36728` 按 `paths` 不触发新 CI；本轮改动未推送，不能把旧 run 当作最新结果。
+GitHub Actions 工作流配置了 MySQL 8.4 服务和该集成测试；远端运行结果需以 Actions 记录为准。历史 `106e4d3` 的 run `43707281672` 已全部 success；2026-11-15 收口提交 `bb4a79f` 的 run `43726078023` backend/frontend/python 全绿。此前 `5e4efd4` 的 run `43712479071` 曾因 R6 未知题误命中失败，修复记录见 `docs/sdd/09-project-status.md` §5.15.1。
 
 旧版 ELADMIN 后端的定向测试使用以下命令单独运行，不计入迁移版测试覆盖：
 

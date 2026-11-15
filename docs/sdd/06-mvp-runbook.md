@@ -232,15 +232,15 @@ mvn -B -f migration-backend/pom.xml verify -Pmysql-it `
   "-Dtest=R3ProductionExecutorChainIT"
 ```
 
-实际结果（2026-11-15 本机）：P1 10 项通过（`tmp/round3-p1.log`）；P2 `KnowledgeRetrievalMySqlIT` 6/6（`tmp/round3-p2.log`）；迁移 1/1（`tmp/round3-p2-migration.log`）；R3 `R3ProductionExecutorChainIT` 5/5（`tmp/round3-r3-prod.log`）。全量门禁 JDK20 与 Temurin 17.0.21 均为 **232 单测 + 96 IT**（`tmp/round3-full-verify.log`、`tmp/round3-full-verify-jdk17.log`），Python 11/11（`tmp/round3-python-tests.log`），前端构建通过（`tmp/round3-frontend.log`，仍有 >500 kB chunk 警告）。
+实际结果（2026-11-15 本机）：P1 10 项通过（`tmp/round3-p1.log`）；P2 `KnowledgeRetrievalMySqlIT` 6/6（`tmp/round3-p2.log`）；迁移 1/1（`tmp/round3-p2-migration.log`）；R3 `R3ProductionExecutorChainIT` 5/5（`tmp/round3-r3-prod.log`）。全量门禁 JDK20 与 Temurin 17.0.21 均为 **232 单测 + 96 IT**（`tmp/round3-full-verify-final.log`、`tmp/round3-full-verify-jdk17-final.log`），Python 11/11（`tmp/round3-python-tests-final.log`），前端构建通过（`tmp/round3-frontend-final.log`，仍有 >500 kB chunk 警告）。
 
 边界：R3 的 Python 是短协议桩，不运行 LDD、不占 GPU；崩溃窗口测试的 `R3ProductionCrashChildMain` 是测试最小上下文 + 手动异步包装，不是完整 Spring 容器。以上只证明隔离环境链路，不是生产库迁移或生产部署验收。
 
 ### CI 与 Java 17 证据
 
-- 本机 JDK 20 与 Temurin JDK 17.0.21 均已跑 `mvn verify -Pmysql-it`，最新计数为 **232 单测 + 96 IT**；JDK17 日志 `tmp/round3-full-verify-jdk17.log`，JDK20 日志 `tmp/round3-full-verify.log`。这只证明本机 Java 17 运行，不等于 Ubuntu CI/生产部署已验证。
+- 本机 JDK 20 与 Temurin JDK 17.0.21 均已跑 `mvn verify -Pmysql-it`，最新计数为 **232 单测 + 96 IT**；JDK17 日志 `tmp/round3-full-verify-jdk17-final.log`，JDK20 日志 `tmp/round3-full-verify-final.log`。这只证明本机 Java 17 运行，不等于 Ubuntu CI/生产部署已验证。
 - 远端 `Migration Quality` 对 `930c934` 曾失败（run `43686578054`）：`python` 与 `frontend` 成功，`backend` 在单测阶段因 `AttemptProcessRegistryTest`/`PythonProcessWaiterTest` 硬编码 Windows `cmd`、`ping -n`，以及 `PythonProcessWaiter` 销毁进程后未等待退出而失败；已改为按 OS 选择 `sh -c 'sleep 20'`/`sh -c 'exit 0'` 或 `cmd /c exit 0`/`ping -n 20`，并在 `destroyProcessTree` 后 `waitFor(2s)`。
-- 跨平台修复推送后，提交 `106e4d3` 的 run `43707281672` 已全部 success（backend/frontend/python）；本机定向日志 `tmp/round2-cross-platform.log`。文档提交 `bb36728` 只改 `docs/**`，按 workflow `paths` 不触发新 CI。**本轮 P1/P2/R3 改动尚未提交/推送，因此没有最新提交的远端 CI 结果**；不得把 `106e4d3` 的 run 当作本轮代码结果。远端 CI 通过仍不等于生产部署验收。
+- 跨平台修复推送后，提交 `106e4d3` 的 run `43707281672` 已全部 success（backend/frontend/python）；本机定向日志 `tmp/round2-cross-platform.log`。2026-11-15 收口提交 `bb4a79f` 的 run `43726078023` backend/frontend/python 全绿；此前 `5e4efd4` 的 run `43712479071` 曾因知识评估未知题误命中导致 backend failure，修复记录见 `05` ADR-025 与 `09` §5.15.1。远端 CI 通过仍不等于生产部署验收。
 
 ### 备份与回滚
 
