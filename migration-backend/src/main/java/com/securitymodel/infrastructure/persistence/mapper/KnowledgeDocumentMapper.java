@@ -24,6 +24,14 @@ public interface KnowledgeDocumentMapper extends BaseMapper<KnowledgeDocument> {
     @Select("SELECT COUNT(*) FROM sys_knowledge_document WHERE status = 'active'")
     long countActive();
 
+    @Select("""
+            SELECT * FROM sys_knowledge_document
+            WHERE status = 'retired'
+            ORDER BY updated_at ASC
+            LIMIT #{limit}
+            """)
+    List<KnowledgeDocument> findRetired(@Param("limit") int limit);
+
     @Update("""
             UPDATE sys_knowledge_document
             SET status = 'retired', updated_at = #{now}

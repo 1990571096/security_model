@@ -31,8 +31,8 @@
 | 导出 | `CleanSubsetExportService`、`CleanSubsetExportExecutor`、`ExportRecoveryRunner` | 已有去重、重启失败收敛与超时逻辑；进程树和文件边界继续回归 |
 | 安全 | `TaskAccessGuard`、`JwtAuthenticationFilter`、`OwnershipEndToEndIT` | 已有 owner 授权、账号状态回查和隔离库 HTTP 测试；业务库迁移与测试证据独立记录 |
 | Redis | `ResourceCatalogCache`、ADR-010 | 资源目录缓存已落地，不是分布式锁或任务状态存储 |
-| 知识检索 R6 | `KnowledgeIndexService`、`KnowledgeRetrievalMySqlIT`、`KnowledgeVectorStoreRedisIT`、`KnowledgeController` | 离线检索、ACL、引用、DeepSeek 回答适配器与 Redis 8 向量 ACL 混合检索已落地；本地 256 维哈希 embedding 只做词法候选重排，不是神经语义召回；向量只合并进词法候选池，业务 `retire()` 成功后 best-effort 清理向量；生产库未建表 |
-| 受控助手 R7 | `AssistantChatService`、`AssistantConfirmationService`、`AssistantSessionService`、`AssistantModelEvidence` | 工具白名单、预览确认、配额、审计、有界并发、单用户并发槽、结构化参数证据与资源指纹确认已落地；DeepSeek 适配器本机可启用，`toolExecutor` 用 `DelegatingSecurityContextExecutorService` 传播登录身份，工具剩余预算传 `execute(arguments, timeoutMillis)`；最终外发体由真实 ChatService + 适配器 + 假 HTTP 验证；真实 JVM 重放已用真实 `TaskDispatchCoordinator` 验证一次派发/二次恢复不重跑；仍缺真实 Python 子进程接收与生产建表 |
+| 知识检索 R6 | `KnowledgeIndexService`、`KnowledgeRetrievalMySqlIT`、`KnowledgeVectorStoreRedisIT`、`KnowledgeController` | 离线检索、ACL、引用、DeepSeek 回答适配器与 Redis 8 向量 ACL 混合检索已落地；本地 256 维哈希 embedding 只做词法候选重排，不是神经语义召回；向量只合并进词法候选池，业务 `retire()` 成功后清理向量，失败由 `KnowledgeVectorReconcileJob` 有界对账；生产库未建表 |
+| 受控助手 R7 | `AssistantChatService`、`AssistantConfirmationService`、`AssistantSessionService`、`AssistantModelEvidence` | 工具白名单、预览确认、配额、审计、有界并发、单用户并发槽、结构化参数证据与资源指纹确认已落地；DeepSeek 适配器本机可启用，`toolExecutor` 用 `DelegatingSecurityContextExecutorService` 传播登录身份，工具剩余预算传 `execute(arguments, timeoutMillis)`；最终外发体由真实 ChatService + 适配器 + 假 HTTP 验证；R3-02/03/04 已用独立 JVM + 真实 MySQL 租约 + 短 Python 桩验证恢复/竞争/隔离；仍缺完整 Spring 上下文与生产建表 |
 | 质量门禁 | `.github/workflows/migration-quality.yml` | 配置有 Maven/MySQL/Redis/Vite；进程守卫测试已改为 Windows/Linux 双实现，远端 Actions 结果仍需实际查询 |
 
 所有文件名相对于仓库根 `F:\Study\postgraduate\毕业论文\security_model`。开始每轮前执行 `git status --short`，阅读相关 SDD 与源码，保留其他人已有修改；与表格事实不一致时，先提交事实差异供复核，不得沿用过期结论。
@@ -132,6 +132,8 @@ mvn -B -f migration-backend/pom.xml verify -Pmysql-it
 
 **实施顺序**：R3-A 已交付调度意图、条件抢占和单一启动恢复协调器；R3-B 已交付有界周期扫描与创建/启动/重试的请求幂等。执行由 `taskId + runId + attempt` 标识，所有进度和终态写入校验当前身份；单 GPU 的物理独占仍由 R2 进程证据与隔离策略保证，不能用防旧回调替代。
 
+> 2026-11-15 `930c934` 后补：R3-01 服务层事务回滚、R3-02 新 JVM 真实租约+短 Python 桩恢复、R3-03 双 JVM 竞争、R3-04 接受后记账前崩溃隔离均已落盘；子 JVM 使用真实 MyBatis/租约/协调器，但仍是测试最小上下文，runtime/资源 Mapper 为代理，不启动 LDD/GPU。详见 `09` §5.14 与 `20` §6.7。
+
 **幂等**：现有领取、导出唯一键和 run ID 防旧回调要保留；需要新增的操作优先是创建任务、启动请求和调度事件。`Idempotency-Key + operator + operation` 唯一，同 key 不同请求哈希返回冲突，同 key 同请求返回稳定结果；不要盲目对所有查询建幂等表。GPU 互斥需用数据库租约或有 fencing 的资源槽；Redis 锁只能辅助限流，不能独自保证恰好一次 GPU 执行。
 
 **验收**：模拟提交后进程退出、重复扫描、两个扫描器并发、租约过期和迟到结果；确认一个 `run_id` 最多一个有效完成，任务最终可恢复或显式失败，不无限悬挂。记录 MySQL 隔离级别和锁超时处理。
@@ -164,7 +166,7 @@ Redis 保持 MySQL 回源；新增缓存必须提供 key/TTL/失效/穿透/击�
 
 **验收**：问题回答附文档名、版本、章节和可定位引用；无命中文档时明确未知；更新/删除文档后旧片段不再召回；用户只能检索有权文档。用固定问答集评估召回和引用正确性，提示注入文本只能作为资料，不能改变系统命令。
 
-**当前实现落点（2026-11-15，本机验证；生产验收未完成）**：MySQL 文档/版本/chunk 表 + ACL SQL 前置过滤；Markdown 保章节与行号分块；确定性中文单字/二元组、IDF 加权与覆盖率/最低分拒答；`/api/knowledge/query` 返回引用；通用 OpenAI-compatible 适配器默认关闭，本机 `deepseek` profile 可启用；知识页展示回答/检索/未知与引用卡片。混合检索先形成词法候选池，向量只合并进词法池，词法为空直接拒答；业务 `retire()` 成功后 best-effort 删除向量。固定评估为可答 10 + 未知 5 + 越权/注入 5 共 20 题。生产库未建表，不写 R6 验收通过。ADR 见 `05` ADR-020/ADR-022/ADR-023。
+**当前实现落点（2026-11-15，本机验证；生产验收未完成）**：MySQL 文档/版本/chunk 表 + ACL SQL 前置过滤；Markdown 保章节与行号分块；确定性中文单字/二元组、IDF 加权与覆盖率/最低分拒答；`/api/knowledge/query` 返回引用；通用 OpenAI-compatible 适配器默认关闭，本机 `deepseek` profile 可启用；知识页展示回答/检索/未知与引用卡片。混合检索先形成词法候选池，向量只合并进词法池，词法为空直接拒答；业务 `retire()` 成功后清理向量，失败由 `KnowledgeVectorReconcileJob` 有界对账。固定评估为可答 10 + 未知 5 + 越权/注入 5 共 20 题。生产库未建表，不写 R6 验收通过。ADR 见 `05` ADR-020/ADR-022/ADR-023/ADR-024。
 
 ## 10. R7：受控实验 Agent
 
@@ -181,7 +183,7 @@ Redis 保持 MySQL 回源；新增缓存必须提供 key/TTL/失效/穿透/击�
 - 写安全：`AssistantPreviewService` 只生成 token 哈希；`AssistantConfirmationService` 重校验 + 原子消费；create 比对 `expectedConfigFingerprint`，start/retry 比对当前 `plan(task).fingerprint()`；`AssistantWriteExecutor` 才调用原命令服务与 R3 幂等。
 - 外发边界：`KnowledgeSanitizer` 对自由文本中的所有绝对多段路径（含 `/api/private`、含空格路径）统一替换为 `[已过滤路径]`，不按 `/api` 前缀豁免；最终 body 由真实 ChatService + 适配器 + 假 HTTP 两次请求验证。`AssistantModelEvidence` 按参数名投影 `type/default/min/max/options`，真实 LDD schema 不被 400 字截断。
 - 并发边界：模型线程池 4/16、全局请求槽 4、单用户并发槽默认 1（`max-concurrent-per-user`）；工具线程池用 `DelegatingSecurityContextExecutorService` 传播登录身份，剩余预算已传入 `execute(arguments, timeoutMillis)`，但同步工具仍不可保证底层 JDBC/Redis 物理中断。
-- 证据：`AssistantChatServiceTest`（12 项）、`AssistantPreviewServiceTest`、`AssistantConfirmationServiceTest`、`AssistantConfirmationEndToEndIT`（19 项）、`TaskCommandServicePipelineIT`（6 项）、`TaskCancellationDispatcherTest`（2 项）、`KnowledgeSanitizerTest`、`AssistantOutboundPrivacyTest`、`AssistantModelEvidenceTest`；细节见 `09` §5.13、`20` §10 与 §6.6。
+- 证据：`AssistantChatServiceTest`（12 项）、`AssistantPreviewServiceTest`、`AssistantConfirmationServiceTest`、`AssistantConfirmationEndToEndIT`（22 项）、`TaskCommandServicePipelineIT`（7 项）、`MySqlTaskPersistenceIT`（22 项，含 R3-02/03/04）、`TaskCancellationDispatcherTest`（2 项）、`KnowledgeSanitizerTest`、`AssistantOutboundPrivacyTest`、`AssistantModelEvidenceTest`；细节见 `09` §5.13/§5.14、`20` §10 与 §6.6/§6.7。
 
 ## 11. R8：可选分布式验收
 

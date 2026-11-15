@@ -205,6 +205,30 @@ public class KnowledgeIndexService {
         return retired;
     }
 
+    /**
+     * Bounded reconciliation for a failed Redis cleanup after retirement. MySQL remains the
+     * authority: every candidate is already retired, so a repeated VREM is harmless.
+     */
+    public synchronized int reconcileRetiredVectors(int limit) {
+        if (vectorStore == null || !vectorStore.enabled()) {
+            return 0;
+        }
+        int bounded = Math.max(1, Math.min(200, limit));
+        List<KnowledgeDocument> retired = documentMapper.findRetired(bounded);
+        int cleaned = 0;
+        for (KnowledgeDocument document : retired) {
+            try {
+                if (vectorStore.removeDocument(document.getDocumentId())) {
+                    cleaned++;
+                }
+            } catch (RuntimeException exception) {
+                log.warn("退役知识向量对账失败: documentId={}, reason={}",
+                        document.getDocumentId(), exception.getClass().getSimpleName());
+            }
+        }
+        return cleaned;
+    }
+
     private UpsertResult upsert(String sourceType, String sourceKey, String title,
                                 String visibility, Long ownerUserId, String content) {
         IndexResult result = upsertDetailed(sourceType, sourceKey, title, visibility, ownerUserId, content);
@@ -234,15 +258,16 @@ public class KnowledgeIndexService {
         return new IndexResult(true, drafts.size(), saved);
     }
 
-    private void removeVectorsQuietly(Long documentId) {
+    private boolean removeVectorsQuietly(Long documentId) {
         if (vectorStore == null || !vectorStore.enabled()) {
-            return;
+            return false;
         }
         try {
-            vectorStore.removeDocument(documentId);
+            return vectorStore.removeDocument(documentId);
         } catch (RuntimeException exception) {
             log.warn("旧知识向量清理失败: documentId={}, reason={}", documentId,
                     exception.getClass().getSimpleName());
+            return false;
         }
     }
 

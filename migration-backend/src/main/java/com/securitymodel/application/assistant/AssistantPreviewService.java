@@ -43,14 +43,17 @@ public class AssistantPreviewService {
         this.maxPending = Math.max(1, maxPending);
     }
 
+    @org.springframework.transaction.annotation.Transactional(rollbackFor = Exception.class)
     public AssistantPreviewResponse preview(String toolName, JsonNode arguments) {
         return preview(toolName, arguments, null, Long.MAX_VALUE);
     }
 
+    @org.springframework.transaction.annotation.Transactional(rollbackFor = Exception.class)
     public AssistantPreviewResponse preview(String toolName, JsonNode arguments, Long sessionId) {
         return preview(toolName, arguments, sessionId, Long.MAX_VALUE);
     }
 
+    @org.springframework.transaction.annotation.Transactional(rollbackFor = Exception.class)
     public AssistantPreviewResponse preview(String toolName, JsonNode arguments, Long sessionId,
                                             long timeoutMillis) {
         long deadline = timeoutMillis == Long.MAX_VALUE
@@ -100,6 +103,14 @@ public class AssistantPreviewService {
         confirmation.setCreatedAt(LocalDateTime.now());
         confirmation.setExpiresAt(LocalDateTime.now().plusSeconds(confirmationTtlSeconds));
         confirmationMapper.insert(confirmation);
+        if (deadline != Long.MAX_VALUE && System.nanoTime() > deadline) {
+            // The insert itself may outlive the request deadline. Throwing rolls the row back
+            // with this transaction, so a late token can never be used for confirmation.
+            auditService.record(sessionId, toolName, result.operation(), result.targetTaskId(),
+                    result.targetRunId(), "FAILED", elapsedMs(started));
+            throw new AssistantException("ASSISTANT_TOOL_TIMEOUT", HttpStatus.GATEWAY_TIMEOUT,
+                    "写预览已超过剩余时限，确认记录未保存");
+        }
 
         auditService.record(sessionId, toolName, result.operation(), result.targetTaskId(),
                 result.targetRunId(), "PREVIEWED", elapsedMs(started));

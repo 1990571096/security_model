@@ -83,6 +83,20 @@ class KnowledgeSanitizerTest {
     }
 
     @Test
+    void redactsSingleAndSpacedDirectoriesWithoutExtensions() {
+        String raw = "目录 /secrets、/custom dir/private directory、/数据目录 "
+                + "以及 /2026/reports 和普通 and/or 文本";
+        String sanitized = KnowledgeSanitizer.sanitize(raw);
+
+        assertFalse(sanitized.contains("/secrets"));
+        assertFalse(sanitized.contains("/custom dir"));
+        assertFalse(sanitized.contains("/数据目录"));
+        assertFalse(sanitized.contains("/2026/reports"));
+        assertTrue(sanitized.contains("[已过滤路径]"));
+        assertTrue(sanitized.contains("and/or"), "ordinary slash prose must survive");
+    }
+
+    @Test
     void capsOutboundText() {
         String value = KnowledgeSanitizer.forModel("x".repeat(1000), 120);
         assertTrue(value.length() <= 120);

@@ -44,9 +44,9 @@ class AssistantOutboundPrivacyTest {
                 public AssistantToolResult execute(com.fasterxml.jackson.databind.JsonNode arguments) {
                     com.fasterxml.jackson.databind.node.ObjectNode data = objectMapper.createObjectNode();
                     data.put("taskId", 1);
-                    data.put("taskName", "报告 /secret.txt 和 /custom dir/private sample.png");
+                    data.put("taskName", "报告 /secret.txt、/secrets 和 /custom dir/private directory");
                     return new AssistantToolResult(
-                            "读取 /api/private/samples.png 和 /训练数据/样本.png", data,
+                            "读取 /api/private/samples.png、/训练数据/样本.png 和 /数据目录", data,
                             null, null, 1L, null, null);
                 }
             };
@@ -56,7 +56,8 @@ class AssistantOutboundPrivacyTest {
                     6, 5, 60, 1);
 
             AssistantChatResponse response = service.chat(null,
-                    "分析 /datasets/private/sample.png、/secret.txt、/api/private/samples.png "
+                    "分析 /datasets/private/sample.png、/secret.txt、/secrets、"
+                            + "/api/private/samples.png、/custom dir/private directory、/数据目录 "
                             + "和 /custom dir/private sample.png 的样本");
 
             assertEquals("answered", response.status());
@@ -65,6 +66,8 @@ class AssistantOutboundPrivacyTest {
                 assertFalse(body.contains("/datasets/private"), body);
                 assertFalse(body.contains("/训练数据"), body);
                 assertFalse(body.contains("/secret.txt"), body);
+                assertFalse(body.contains("/secrets"), body);
+                assertFalse(body.contains("/数据目录"), body);
                 assertFalse(body.contains("/api/private"), body);
                 assertFalse(body.contains("/custom dir"), body);
                 assertTrue(body.contains("[已过滤路径]"), body);

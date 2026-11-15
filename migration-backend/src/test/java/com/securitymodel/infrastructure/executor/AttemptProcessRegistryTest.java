@@ -45,7 +45,7 @@ class AttemptProcessRegistryTest {
     void exitedProcessIsReportedAsExited(@TempDir Path workspace) throws Exception {
         AttemptProcessRegistry registry = new AttemptProcessRegistry(objectMapper, workspace.toString());
         Path attemptDir = Files.createDirectories(workspace.resolve("pre_defense-3").resolve("attempt-1"));
-        Process process = new ProcessBuilder("cmd", "/c", "exit", "0").start();
+        Process process = exitProcess();
         registry.prepare(attemptDir);
         registry.record(attemptDir, process);
         Files.writeString(attemptDir.resolve("python-children.json"), "{\"pids\":[]}", StandardCharsets.UTF_8);
@@ -57,9 +57,7 @@ class AttemptProcessRegistryTest {
     @Test
     void missingStartTimeIsUnknownAndNotKilled(@TempDir Path workspace) throws Exception {
         Path attemptDir = Files.createDirectories(workspace.resolve("pre_defense-4").resolve("attempt-1"));
-        Process process = new ProcessBuilder("ping", "-n", "20", "127.0.0.1")
-                .redirectErrorStream(true)
-                .start();
+        Process process = sleepingProcess();
         Files.writeString(attemptDir.resolve("process.json"),
                 "{\"schema_version\":2,\"state\":\"running\",\"pid\":" + process.pid() + "}",
                 StandardCharsets.UTF_8);
@@ -74,9 +72,7 @@ class AttemptProcessRegistryTest {
     void liveProcessIsKilledWhenIdentityMatches(@TempDir Path workspace) throws Exception {
         AttemptProcessRegistry registry = new AttemptProcessRegistry(objectMapper, workspace.toString());
         Path attemptDir = Files.createDirectories(workspace.resolve("pre_defense-5").resolve("attempt-1"));
-        Process process = new ProcessBuilder("ping", "-n", "20", "127.0.0.1")
-                .redirectErrorStream(true)
-                .start();
+        Process process = sleepingProcess();
         registry.prepare(attemptDir);
         registry.record(attemptDir, process);
         Files.writeString(attemptDir.resolve("python-children.json"), "{\"pids\":[]}", StandardCharsets.UTF_8);
@@ -88,10 +84,8 @@ class AttemptProcessRegistryTest {
     @Test
     void exitedParentWithLiveRecordedChildIsUnknown(@TempDir Path workspace) throws Exception {
         Path attemptDir = Files.createDirectories(workspace.resolve("pre_defense-6").resolve("attempt-1"));
-        Process parent = new ProcessBuilder("cmd", "/c", "exit", "0").start();
-        Process child = new ProcessBuilder("ping", "-n", "20", "127.0.0.1")
-                .redirectErrorStream(true)
-                .start();
+        Process parent = exitProcess();
+        Process child = sleepingProcess();
         AttemptProcessRegistry registry = new AttemptProcessRegistry(objectMapper, workspace.toString());
         registry.record(attemptDir, parent);
         Files.writeString(attemptDir.resolve("python-children.json"),
@@ -106,9 +100,7 @@ class AttemptProcessRegistryTest {
     @Test
     void reusedPidIsNotKilledAndIsReportedExited(@TempDir Path workspace) throws Exception {
         Path attemptDir = Files.createDirectories(workspace.resolve("pre_defense-7").resolve("attempt-1"));
-        Process unrelated = new ProcessBuilder("ping", "-n", "20", "127.0.0.1")
-                .redirectErrorStream(true)
-                .start();
+        Process unrelated = sleepingProcess();
         Files.writeString(attemptDir.resolve("process.json"),
                 "{\"schema_version\":2,\"state\":\"running\",\"pid\":" + unrelated.pid()
                         + ",\"started_at\":\"2000-01-01T00:00:00Z\"}", StandardCharsets.UTF_8);
@@ -133,7 +125,7 @@ class AttemptProcessRegistryTest {
     void missingChildrenRecordIsUnknownEvenWhenRootIsExited(@TempDir Path workspace) throws Exception {
         AttemptProcessRegistry registry = new AttemptProcessRegistry(objectMapper, workspace.toString());
         Path attemptDir = Files.createDirectories(workspace.resolve("pre_defense-12").resolve("attempt-1"));
-        Process process = new ProcessBuilder("cmd", "/c", "exit", "0").start();
+        Process process = exitProcess();
         registry.prepare(attemptDir);
         registry.record(attemptDir, process);
         process.waitFor();
@@ -145,8 +137,7 @@ class AttemptProcessRegistryTest {
     void corruptedChildrenRecordDoesNotKillUnverifiedPid(@TempDir Path workspace) throws Exception {
         AttemptProcessRegistry registry = new AttemptProcessRegistry(objectMapper, workspace.toString());
         Path attemptDir = Files.createDirectories(workspace.resolve("pre_defense-13").resolve("attempt-1"));
-        Process unrelated = new ProcessBuilder("ping", "-n", "20", "127.0.0.1")
-                .redirectErrorStream(true).start();
+        Process unrelated = sleepingProcess();
         registry.prepare(attemptDir);
         registry.record(attemptDir, unrelated);
         Files.writeString(attemptDir.resolve("python-children.json"), "{broken", StandardCharsets.UTF_8);
@@ -170,5 +161,25 @@ class AttemptProcessRegistryTest {
     void blankWorkspaceNeverFallsBackToTheRepositoryRoot() {
         AttemptProcessRegistry registry = new AttemptProcessRegistry(objectMapper, "");
         assertEquals(AttemptProcessRegistry.ReapOutcome.UNKNOWN, registry.reapIfOrphaned(9L, 1));
+    }
+
+    private static Process exitProcess() throws java.io.IOException {
+        if (isWindows()) {
+            return new ProcessBuilder("cmd", "/c", "exit", "0").start();
+        }
+        return new ProcessBuilder("sh", "-c", "exit 0").start();
+    }
+
+    private static Process sleepingProcess() throws java.io.IOException {
+        if (isWindows()) {
+            return new ProcessBuilder("ping", "-n", "20", "127.0.0.1")
+                    .redirectErrorStream(true).start();
+        }
+        return new ProcessBuilder("sh", "-c", "sleep 20")
+                .redirectErrorStream(true).start();
+    }
+
+    private static boolean isWindows() {
+        return System.getProperty("os.name", "").toLowerCase().contains("win");
     }
 }

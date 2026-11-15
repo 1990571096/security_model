@@ -439,10 +439,10 @@ Agent 采用外部大模型 API，本机不部署大模型。生成模型和 emb
 
 **决策**
 1. **工具线程传播身份**：`AssistantChatService.toolExecutor` 用 `DelegatingSecurityContextExecutorService` 包装，保持 4 线程 + 16 队列和 `@PreDestroy` 关闭；工具线程调用真实 `CurrentUserService.requireStableIdentity()` 必须得到请求用户。HTTP 测试用 alice 任务 700、bob 任务 300 连续交替两次，验证线程复用后不串号。
-2. **最终外发体保守脱敏**：`KnowledgeSanitizer` 新增可含空格的 `ABSOLUTE_FILE_PATH`，并在 `UNIX_PATH` 之前替换；`GENERIC_UNIX_PATH` 不再豁免 `/api` 等前缀，自由文本中的所有绝对多段路径统一替换为 `[已过滤路径]`。不能按前缀直接豁免任意文本；可信接口字段与自由文本分开处理，无法安全判定的路径保守过滤。测试必须覆盖工具执行后的第二次模型请求，不能只测脱敏函数。
-3. **有效 SQL 配置与预览 deadline**：有效配置键为 `mybatis-plus.configuration.default-statement-timeout`，默认 5 秒；`SqlSessionFactory` 读到的有效超时必须有测试断言。`AssistantPreviewService.preview(toolName, arguments, sessionId, timeoutMillis)` 先计算 deadline，工具返回后、插入确认记录前再次检查；超时抛 `ASSISTANT_TOOL_TIMEOUT`，不保存确认记录。用户文案只承诺“后续工具与模型调用不会继续；底层操作可能仍在收尾”，不承诺 JDBC/Redis 已物理终止。
-4. **业务退役清理向量**：`KnowledgeIndexService.retire()` 在 `writer.retire` 成功后调用 `removeVectorsQuietly`；MySQL 仍是事实源，向量清理 best effort，失败只记日志。测试必须走真实 `KnowledgeIndexService.retire()` + 真实 Redis，而不是直接调用 `removeDocument()`。当前没有持久化补偿任务；残留向量可能占候选窗口，但 MySQL ACL 仍阻止退役内容被引用。
-5. **混合候选限定与完整 20 题**：`KnowledgeRetrievalService` 先以 `candidateLimit` 生成 `lexicalPool`；词法池为空直接返回空；向量只允许合并进 `lexicalPool`，不从全部 SQL 可见候选合并；`vectorHitCount` 只统计 `row != null && score >= 0.28` 的可读命中。`KnowledgeHybridEvaluationTest` 覆盖可答 10 + 未知 5 + 越权/注入 5 共 20 题，并构造共享 corpus + 私有 `task_report:99` 向量，验证向量通道不能注入他人的私有候选。
+2. **最终外发体保守脱敏**：`KnowledgeSanitizer` 新增可含空格的 `ABSOLUTE_FILE_PATH`，并在 `UNIX_PATH` 之前替换；`GENERIC_UNIX_PATH` 不再豁免 `/api` 等前缀，自由文本中的所有绝对多段路径统一替换为 `[已过滤路径]`。不能按前缀直接豁免任意文本；可信接口字段与自由文本分开处理，无法安全判定的路径保守过滤。ADR-024 起再补 `ABSOLUTE_DIRECTORY_PATH` 与 `ABSOLUTE_SINGLE_SEGMENT`，覆盖无扩展名、单层、含空格和中文目录；目录段字符集限定为字母/数字/汉字/点/下划线/连字符，避免跨中文标点吞并正文。测试必须覆盖工具执行后的第二次模型请求，不能只测脱敏函数。
+3. **有效 SQL 配置与预览 deadline**：有效配置键为 `mybatis-plus.configuration.default-statement-timeout`，默认 5 秒；`SqlSessionFactory` 读到的有效超时必须有测试断言。`AssistantPreviewService.preview(toolName, arguments, sessionId, timeoutMillis)` 先计算 deadline，工具返回后、插入确认记录前再次检查；超时抛 `ASSISTANT_TOOL_TIMEOUT`，不保存确认记录。用户文案只承诺“后续工具与模型调用不会继续；底层操作可能仍在收尾”，不承诺 JDBC/Redis 已物理终止。ADR-024 起 `preview` 三个重载均加事务，insert 完成后再检查 deadline；若 insert 自身阻塞跨过 deadline，事务回滚并返回 `ASSISTANT_TOOL_TIMEOUT`。
+4. **业务退役清理向量**：`KnowledgeIndexService.retire()` 在 `writer.retire` 成功后调用 `removeVectorsQuietly`；MySQL 仍是事实源，向量清理 best effort，失败只记日志。测试必须走真实 `KnowledgeIndexService.retire()` + 真实 Redis，而不是直接调用 `removeDocument()`。ADR-024 起 `removeDocument` 返回 boolean 并汇总逐 chunk VREM，新增 `findRetired` 有界扫描 + `KnowledgeVectorReconcileJob` 定时对账；仍不是持久化 outbox，重复对账幂等但非增量。
+5. **混合候选限定与完整 20 题**：`KnowledgeRetrievalService` 先以 `candidateLimit` 生成 `lexicalPool`；词法池为空直接返回空；向量只允许合并进 `lexicalPool`，不从全部 SQL 可见候选合并；`vectorHitCount` 只统计 `row != null && score >= 0.28` 的可读命中。`KnowledgeHybridEvaluationTest` 覆盖可答 10 + 未知 5 + 越权/注入 5 共 20 题，并构造共享 corpus + 私有 `task_report:99` 向量，验证向量通道不能注入他人的私有候选。ADR-024 的过宽目录正则曾使 `01-system-scope.md` 分块漂移、未知题误命中；现已用新增回归固定住。
 
 **证据**
 - `AssistantChatServiceTest.toolThreadReceivesAuthenticatedIdentity`、`AssistantConfirmationEndToEndIT.chatToolsKeepCallerIdentityAcrossPoolThreadReuse`。
@@ -450,8 +450,34 @@ Agent 采用外部大模型 API，本机不部署大模型。生成模型和 emb
 - `AssistantPreviewServiceTest`、`AssistantConfirmationEndToEndIT.myBatisPlusStatementTimeoutIsApplied`。
 - `KnowledgeVectorStoreRedisIT.retireBusinessEntryCleansItsVectors`。
 - `KnowledgeHybridEvaluationTest`（20 题完整范围 + 私有候选注入防护）。
-- 全量 `mvn -B -f migration-backend/pom.xml verify -Pmysql-it`（`MYSQL_IT_PASSWORD`、`REDIS_IT=true`）→ 230 单元 + 81 IT，BUILD SUCCESS，日志 `tmp/review-current-full-verify.log`。
+- 全量 `mvn -B -f migration-backend/pom.xml verify -Pmysql-it`（`MYSQL_IT_PASSWORD`、`REDIS_IT=true`）→ 当时 230 单元 + 81 IT，BUILD SUCCESS，日志 `tmp/review-current-full-verify.log`；ADR-024 收口后为 231 单元 + 89 IT。
 
-**边界**：写预览 `insert` 自身在 deadline 后完成是否仍落库、退役向量清理失败的持久化补偿、底层 JDBC/Redis 物理终止、真实 Python 子进程/GPU 租约跨 JVM 竞争均未证明；本 ADR 不代表生产库迁移、Ubuntu Java 17 CI 或 R3/R6/R7 整体验收完成。
+**边界**：ADR-023 本轮的写预览 insert 自身在 deadline 后完成是否仍落库、退役向量清理失败的持久化补偿、底层 JDBC/Redis 物理终止、真实 Python 子进程/GPU 租约跨 JVM 竞争均未证明；后续由 ADR-024 补齐服务层回滚、跨 JVM 恢复/竞争、insert 阻塞超时、退役对账和真实 body 回归。本 ADR 不代表生产库迁移、Ubuntu Java 17 CI 或 R3/R6/R7 整体验收完成。
 
 **非目标**：不扩展新功能；不实现 RabbitMQ/Worker；不重跑 LDD；不把本机测试写成生产验收。
+
+## ADR-024：`930c934` 后五项收口证据
+
+日期：2026-11-15；状态：**代码、定向/全量本机证据已补；生产库迁移、远端 Java 17 CI 与 R4 仍未开始**。
+
+**背景**：`930c934` 已修复工具线程身份、最终外发体、SQL 超时、退役向量和混合候选，但仍留下五类可验证缺口：无扩展名单层/空格/中文绝对目录未覆盖，R3 恢复仍依赖替身/同 JVM 内存，R7 insert 阻塞超时与错误 token 未证明，R6 退役清理失败只有日志，文档仍把 `activeCount` 当任务数。本 ADR 只补证据与边界，不新增算法或 Agent 功能。
+
+**决策**
+1. **四层路径脱敏**：`ABSOLUTE_FILE_PATH` 保留带扩展名路径；新增 `ABSOLUTE_DIRECTORY_PATH` 识别无扩展名多段目录，首段以 ASCII 字母/下划线/汉字开头，段内允许空格；新增 `ABSOLUTE_SINGLE_SEGMENT` 识别 `/secrets`、`/数据目录` 等单层目录；`GENERIC_UNIX_PATH` 兜底。替换顺序为 file → directory → single → UNIX → generic，均在 Windows/UNC 之后、邮箱/手机号/身份证之前。目录字符集不包含中文标点、引号、括号，防止把正文当路径吞并；无法可靠区分时保守过滤。
+2. **R3-01 服务层事务回滚**：在真实 `RequestIdempotencyService.execute` 包裹的真实 `TaskCommandService.start` 路径中，于租约领取/task claim 之后、`dispatchIntentService.createPending` 之前注入 `ExecutionFingerprintService.buildRuntimeSnapshot` 异常；断言任务回 `pending`、`current_run_id` 为空、槽位无残留 token、意图 0 条、幂等记录 0 条、执行器零调用。首次发现测试临时表缺 `expires_at`，已补齐。
+3. **R3-02/03/04 新 JVM 闭环**：测试专用 `R3RecoveryChildMain` 用真实 MyBatis + `UnpooledDataSource` 构建 `PreDefenseTaskMapper`/`TaskDispatchIntentMapper`/`GpuLeaseMapper`，真实 `GpuLeaseService`、`TaskDispatchIntentService`、`TaskDispatchCoordinator`、`DispatchRecoveryCoordinator`、真实 MySQL 租约和短 Python 协议桩（`print('R3_STUB_OK')` + PID），证据写入 `sys_r3_execution_evidence`。R3-02 由父进程写旧租约、新 JVM 释放并重新 acquire 后重放 pending；R3-03 两个新 JVM 同时重放同一 pending，条件更新只有一个 `pending→submitting` 成功；R3-04 写入 `submitting` 意图和真实长睡眠 Python，但故意缺 `python-children.json`，新 JVM 启动扫描得到 `UNKNOWN` 后 `markBlocked + failAndAbandon`，不重放，槽位保持隔离且 Python 仍存活。
+4. **R7 确认边界**：`AssistantPreviewService` 三个 `preview` 重载加 `@Transactional(rollbackFor = Exception.class)`；insert 完成后再检查 deadline，若 insert 阻塞跨过 deadline，抛 `ASSISTANT_TOOL_TIMEOUT`（“写预览已超过剩余时限，确认记录未保存”）并回滚，迟到记录不能成为凭据。真实 MySQL `BEFORE INSERT` 触发器 `SLEEP(0.8)` 验证 100ms 预算下 0 行确认、1 条 FAILED 审计、任务仍 running；篡改 token 返回 403 `ASSISTANT_CONFIRMATION_INVALID` 并写 `TOKEN_MISMATCH` 审计；alice/bob 两线程并发 `/api/assistant/chat` 各自任务 700/300 不串号。五类写工具首次/重复/并发矩阵沿用既有 19 项，不再重复造用例。
+5. **R6 退役补偿**：`KnowledgeVectorStore.removeDocument` 改返回 boolean 并逐 VREM 汇总；`KnowledgeIndexService.reconcileRetiredVectors(limit)` 对 `findRetired` 有界扫描重新清理，单条失败继续；`KnowledgeVectorReconcileJob` 默认 300s 周期、60s 首批延迟、批量 50。真实 MySQL + 真实 Redis 8 测试用 `FlakyVectorStore` 首次抛 `simulated-redis-outage`，断言退役立即生效、Redis 残留、恢复后对账清掉、重复对账安全。
+6. **文档与门禁**：`09` 的“运行中任务”改为 MySQL `runningTaskCount`，`activeCount` 仅表示线程池活动线程；`20` 增补验收 ID 五列映射；运行手册记录隔离库演练命令与结果；Java 17 本机构建与远端 CI 分别记录，不把本机 Windows/JDK20 结果当 CI。
+
+**证据**
+- P1：`KnowledgeSanitizerTest.redactsSingleAndSpacedDirectoriesWithoutExtensions`、`AssistantOutboundPrivacyTest.finalModelRequestBodyContainsNoFilesystemPathsOrKey`；`tmp/round2-p1-final.log`。
+- R3：`TaskCommandServicePipelineIT.launchFailureRollsBackClaimLeaseIntentAndIdempotencyRecord`（全类 7 项）、`MySqlTaskPersistenceIT.newJvmRecoversPendingIntentWithRealLeaseAndPythonStub`、`twoNewJvmsRaceSamePendingIntentOnlyOneDispatches`、`acceptedBeforeBookkeepingCrashKeepsSlotQuarantinedWhileProcessUnconfirmed`；`tmp/round2-r3-01.log`、`tmp/round2-r3-pipeline.log`、`tmp/round2-r3-02.log`、`tmp/round2-r3-03.log`、`tmp/round2-r3-04.log`。
+- R7：`AssistantConfirmationEndToEndIT.confirmationInsertBlockedPastDeadlineLeavesNoUsableToken`、`tamperedTokenCannotConfirmAndIsAudited`、`concurrentAliceAndBobChatsKeepIdentityIsolated`；`tmp/round2-r7-a.log`、`tmp/round2-r7-b.log`。
+- R6：`KnowledgeRetrievalMySqlIT.retireSurvivesRedisFailureThenReconcilesResidualVectors`；`tmp/round2-r6.log`。
+- 全量：`tmp/round2-full-verify-final.log`（231 单测 + 89 IT）；前端构建日志 `tmp/round2-frontend.log`。
+- CI：远端 `930c934` 已触发 `Migration Quality`（run `43686578054`），python/frontend 成功，backend 因既有 Windows-only `cmd`/`ping -n` 测试与 `PythonProcessWaiter` 未等待销毁退出而失败；跨平台 helper 与等待已修复，本机 JDK20 `tmp/round2-cross-platform.log`、JDK17 全量 `tmp/round2-full-verify-jdk17.log`（Temurin 17.0.21，231 单测 + 89 IT）均通过，待下次推送复验远端 CI。Java 17 本机运行环境已补，仍不能用本机替代 Ubuntu CI。
+
+**边界**：R3 子 JVM 的用户/数据集/算法 Mapper 与 runtime 指纹仍是测试代理/子类，不是完整 Spring 上下文；真实执行器是短 Python 桩，不启动 LDD、不使用 GPU。R7 insert 阻塞用 MySQL 触发器 `SLEEP` 模拟，不是真实行锁/表锁等待；迟到记录失效依赖事务回滚。R6 故障是测试替身抛异常，不是实际停 Redis 进程；补偿是有界扫描，不是持久化 outbox，重复扫描会重复尝试但幂等。以上证据不外推为生产级多实例调度或整体阶段验收。
+
+**非目标**：不新增算法、Agent 功能或 MQ/Worker；不重跑 LDD 128/5；不写生产库；不把本机结果替代远端 CI。

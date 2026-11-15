@@ -531,6 +531,213 @@ class MySqlTaskPersistenceIT {
     }
 
     @Test
+    void newJvmRecoversPendingIntentWithRealLeaseAndPythonStub() throws Exception {
+        long taskId = System.currentTimeMillis() * 1000 + 703;
+        String runId = "run-crash-" + taskId;
+        String output = runCrashWindow(taskId, "pending", fixtureRuntimeHash());
+        assertTrue(output.startsWith("COMMITTED " + taskId), output);
+
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS sys_gpu_lease (
+                  slot_id VARCHAR(32) NOT NULL PRIMARY KEY,
+                  lease_token CHAR(36) NULL,
+                  task_id BIGINT NULL,
+                  run_id VARCHAR(64) NULL,
+                  attempt INT NULL,
+                  fencing_token BIGINT NOT NULL DEFAULT 0,
+                  acquired_at DATETIME(3) NULL,
+                  heartbeat_at DATETIME(3) NULL,
+                  expires_at DATETIME(3) NULL,
+                  released_at DATETIME(3) NULL,
+                  blocked_at DATETIME(3) NULL,
+                  blocked_reason VARCHAR(64) NULL
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                """);
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS sys_r3_execution_evidence (
+                  evidence_id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                  task_id BIGINT NOT NULL,
+                  run_id VARCHAR(64) NOT NULL,
+                  attempt INT NOT NULL,
+                  java_pid BIGINT NOT NULL,
+                  python_pid BIGINT NOT NULL,
+                  output VARCHAR(255) NOT NULL,
+                  exit_code INT NOT NULL,
+                  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                """);
+        jdbc.update("DELETE FROM sys_r3_execution_evidence WHERE task_id = ?", taskId);
+        String slot = "r3recovery";
+        jdbc.update("DELETE FROM sys_gpu_lease WHERE slot_id = ?", slot);
+        jdbc.update("""
+                INSERT INTO sys_gpu_lease
+                  (slot_id, lease_token, task_id, run_id, attempt, fencing_token,
+                   acquired_at, heartbeat_at, expires_at)
+                VALUES (?, 'old-jvm-token', ?, ?, 1, 1, NOW(3), NOW(3), NOW(3) + INTERVAL 5 MINUTE)
+                """, slot, taskId, runId);
+
+        String recoveryOutput = runRecoveryChild(taskId, runId, 1, slot);
+        assertTrue(recoveryOutput.contains("RECOVERED=true"), recoveryOutput);
+
+        assertEquals("running", taskMapper.selectById(taskId).getStatus());
+        assertEquals("submitted", intentMapper.findByRun(taskId, runId, 1).getStatus());
+        assertEquals(runId, jdbc.queryForObject(
+                "SELECT run_id FROM sys_gpu_lease WHERE slot_id = ?", String.class, slot));
+        assertNotNull(jdbc.queryForObject(
+                "SELECT lease_token FROM sys_gpu_lease WHERE slot_id = ?", String.class, slot));
+        assertEquals(1, jdbc.queryForObject(
+                "SELECT COUNT(*) FROM sys_r3_execution_evidence WHERE task_id = ?",
+                Integer.class, taskId));
+        assertEquals(0, jdbc.queryForObject(
+                "SELECT exit_code FROM sys_r3_execution_evidence WHERE task_id = ?",
+                Integer.class, taskId));
+        assertTrue(jdbc.queryForObject(
+                "SELECT python_pid FROM sys_r3_execution_evidence WHERE task_id = ?",
+                Long.class, taskId) > 0);
+    }
+
+    @Test
+    void twoNewJvmsRaceSamePendingIntentOnlyOneDispatches() throws Exception {
+        long taskId = System.currentTimeMillis() * 1000 + 704;
+        String runId = "run-crash-" + taskId;
+        String output = runCrashWindow(taskId, "pending", fixtureRuntimeHash());
+        assertTrue(output.startsWith("COMMITTED " + taskId), output);
+
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS sys_gpu_lease (
+                  slot_id VARCHAR(32) NOT NULL PRIMARY KEY,
+                  lease_token CHAR(36) NULL,
+                  task_id BIGINT NULL,
+                  run_id VARCHAR(64) NULL,
+                  attempt INT NULL,
+                  fencing_token BIGINT NOT NULL DEFAULT 0,
+                  acquired_at DATETIME(3) NULL,
+                  heartbeat_at DATETIME(3) NULL,
+                  expires_at DATETIME(3) NULL,
+                  released_at DATETIME(3) NULL,
+                  blocked_at DATETIME(3) NULL,
+                  blocked_reason VARCHAR(64) NULL
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                """);
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS sys_r3_execution_evidence (
+                  evidence_id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                  task_id BIGINT NOT NULL,
+                  run_id VARCHAR(64) NOT NULL,
+                  attempt INT NOT NULL,
+                  java_pid BIGINT NOT NULL,
+                  python_pid BIGINT NOT NULL,
+                  output VARCHAR(255) NOT NULL,
+                  exit_code INT NOT NULL,
+                  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                """);
+        jdbc.update("DELETE FROM sys_r3_execution_evidence WHERE task_id = ?", taskId);
+        String slot = "r3race";
+        jdbc.update("DELETE FROM sys_gpu_lease WHERE slot_id = ?", slot);
+        jdbc.update("""
+                INSERT INTO sys_gpu_lease
+                  (slot_id, lease_token, task_id, run_id, attempt, fencing_token,
+                   acquired_at, heartbeat_at, expires_at)
+                VALUES (?, 'old-jvm-token', ?, ?, 1, 1, NOW(3), NOW(3), NOW(3) + INTERVAL 5 MINUTE)
+                """, slot, taskId, runId);
+
+        Process first = recoveryProcess(taskId, runId, 1, slot);
+        Process second = recoveryProcess(taskId, runId, 1, slot);
+        assertTrue(first.waitFor(30, TimeUnit.SECONDS), "first recovery child did not exit");
+        assertTrue(second.waitFor(30, TimeUnit.SECONDS), "second recovery child did not exit");
+        String firstOutput = new String(first.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        String secondOutput = new String(second.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        assertTrue((firstOutput.contains("RECOVERED=true") && secondOutput.contains("RECOVERED=false"))
+                || (firstOutput.contains("RECOVERED=false") && secondOutput.contains("RECOVERED=true")),
+                firstOutput + "\n---\n" + secondOutput);
+
+        assertEquals("submitted", intentMapper.findByRun(taskId, runId, 1).getStatus());
+        assertEquals(1, jdbc.queryForObject(
+                "SELECT COUNT(*) FROM sys_r3_execution_evidence WHERE task_id = ?",
+                Integer.class, taskId));
+        assertNotNull(jdbc.queryForObject(
+                "SELECT lease_token FROM sys_gpu_lease WHERE slot_id = ?", String.class, slot));
+    }
+
+    @Test
+    void acceptedBeforeBookkeepingCrashKeepsSlotQuarantinedWhileProcessUnconfirmed() throws Exception {
+        long taskId = System.currentTimeMillis() * 1000 + 705;
+        String runId = "run-crash-" + taskId;
+        String output = runCrashWindow(taskId, "submitting", fixtureRuntimeHash());
+        assertTrue(output.startsWith("COMMITTED " + taskId), output);
+
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS sys_gpu_lease (
+                  slot_id VARCHAR(32) NOT NULL PRIMARY KEY,
+                  lease_token CHAR(36) NULL,
+                  task_id BIGINT NULL,
+                  run_id VARCHAR(64) NULL,
+                  attempt INT NULL,
+                  fencing_token BIGINT NOT NULL DEFAULT 0,
+                  acquired_at DATETIME(3) NULL,
+                  heartbeat_at DATETIME(3) NULL,
+                  expires_at DATETIME(3) NULL,
+                  released_at DATETIME(3) NULL,
+                  blocked_at DATETIME(3) NULL,
+                  blocked_reason VARCHAR(64) NULL
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                """);
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS sys_r3_execution_evidence (
+                  evidence_id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                  task_id BIGINT NOT NULL,
+                  run_id VARCHAR(64) NOT NULL,
+                  attempt INT NOT NULL,
+                  java_pid BIGINT NOT NULL,
+                  python_pid BIGINT NOT NULL,
+                  output VARCHAR(255) NOT NULL,
+                  exit_code INT NOT NULL,
+                  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                """);
+        jdbc.update("DELETE FROM sys_r3_execution_evidence WHERE task_id = ?", taskId);
+        String slot = "r3block";
+        jdbc.update("DELETE FROM sys_gpu_lease WHERE slot_id = ?", slot);
+        jdbc.update("""
+                INSERT INTO sys_gpu_lease
+                  (slot_id, lease_token, task_id, run_id, attempt, fencing_token,
+                   acquired_at, heartbeat_at, expires_at)
+                VALUES (?, 'accepted-token', ?, ?, 1, 1, NOW(3), NOW(3), NOW(3) + INTERVAL 5 MINUTE)
+                """, slot, taskId, runId);
+
+        Path workspace = java.nio.file.Files.createTempDirectory("r3-process-");
+        String python = System.getenv().getOrDefault("PYTHON_IT_EXECUTABLE", "python");
+        Process accepted = new ProcessBuilder(python, "-c", "import time; time.sleep(30)")
+                .redirectErrorStream(true).start();
+        try {
+            var registry = new com.securitymodel.infrastructure.executor.AttemptProcessRegistry(
+                    new com.fasterxml.jackson.databind.ObjectMapper(), workspace.toString());
+            Path taskDir = workspace.resolve("pre_defense-" + taskId).resolve("attempt-1");
+            registry.prepare(taskDir);
+            registry.record(taskDir, accepted);
+            // Deliberately no python-children.json: recovery cannot prove the whole tree is gone.
+
+            String recovery = runRecoveryChild(taskId, runId, 1, slot, workspace.toString(), "startup");
+            assertTrue(recovery.contains("RECOVERED=startup"), recovery);
+            assertEquals("failed", taskMapper.selectById(taskId).getStatus());
+            assertEquals("abandoned", intentMapper.findByRun(taskId, runId, 1).getStatus());
+            assertNotNull(jdbc.queryForObject(
+                    "SELECT blocked_at FROM sys_gpu_lease WHERE slot_id = ?",
+                    LocalDateTime.class, slot));
+            assertEquals("accepted-token", jdbc.queryForObject(
+                    "SELECT lease_token FROM sys_gpu_lease WHERE slot_id = ?", String.class, slot));
+            assertEquals(0, jdbc.queryForObject(
+                    "SELECT COUNT(*) FROM sys_r3_execution_evidence WHERE task_id = ?",
+                    Integer.class, taskId));
+            assertTrue(accepted.isAlive(), "the accepted process must not be replayed or silently reaped");
+        } finally {
+            accepted.destroyForcibly();
+            deleteRecursively(workspace);
+        }
+    }
+
+    @Test
     void independentJvmCommitOfSubmittingIntentIsConvergedWithoutReplay() throws Exception {
         long taskId = System.currentTimeMillis() * 1000 + 701;
         String output = runCrashWindow(taskId, "submitting", fixtureRuntimeHash());
@@ -599,6 +806,36 @@ class MySqlTaskPersistenceIT {
                 .start();
         assertTrue(child.waitFor(15, TimeUnit.SECONDS), "crash child did not exit");
         return new String(child.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+    }
+
+    private String runRecoveryChild(long taskId, String runId, int attempt, String slot) throws Exception {
+        return runRecoveryChild(taskId, runId, attempt, slot, "", "replay");
+    }
+
+    private String runRecoveryChild(long taskId, String runId, int attempt, String slot,
+                                    String workspace, String mode) throws Exception {
+        Process child = recoveryProcess(taskId, runId, attempt, slot, workspace, mode);
+        assertTrue(child.waitFor(30, TimeUnit.SECONDS), "recovery child did not exit");
+        return new String(child.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+    }
+
+    private Process recoveryProcess(long taskId, String runId, int attempt, String slot) throws Exception {
+        return recoveryProcess(taskId, runId, attempt, slot, "", "replay");
+    }
+
+    private Process recoveryProcess(long taskId, String runId, int attempt, String slot,
+                                    String workspace, String mode) throws Exception {
+        String java = Path.of(System.getProperty("java.home"), "bin",
+                System.getProperty("os.name").toLowerCase().contains("win") ? "java.exe" : "java")
+                .toString();
+        String python = System.getenv().getOrDefault("PYTHON_IT_EXECUTABLE", "python");
+        return new ProcessBuilder(java, "-cp",
+                System.getProperty("surefire.test.class.path", System.getProperty("java.class.path")),
+                R3RecoveryChildMain.class.getName(), schemaUrl(), USERNAME, PASSWORD,
+                String.valueOf(taskId), runId, String.valueOf(attempt), slot, python,
+                workspace, mode)
+                .redirectErrorStream(true)
+                .start();
     }
 
     @Test
@@ -868,6 +1105,20 @@ class MySqlTaskPersistenceIT {
                 mock(GpuLeaseService.class), mock(TaskDispatchCoordinator.class),
                 new SchedulingReadinessGate(),
                 mock(com.securitymodel.infrastructure.observability.TaskRuntimeMetrics.class), 30, 300, 20));
+    }
+
+    private static void deleteRecursively(Path root) {
+        try (var paths = java.nio.file.Files.walk(root)) {
+            paths.sorted(java.util.Comparator.reverseOrder()).forEach(path -> {
+                try {
+                    java.nio.file.Files.deleteIfExists(path);
+                } catch (java.io.IOException ignored) {
+                    // Temporary evidence directory; a leftover does not change the test result.
+                }
+            });
+        } catch (java.io.IOException ignored) {
+            // The unique temp directory is disposable.
+        }
     }
 
     private static void createIsolatedSchema() {

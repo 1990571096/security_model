@@ -3,6 +3,11 @@ package com.securitymodel.interfaces.web;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.securitymodel.SecurityModelApplication;
 import com.securitymodel.application.assistant.AssistantModel;
+import com.securitymodel.application.assistant.AssistantException;
+import com.securitymodel.application.assistant.AssistantPreviewService;
+import com.securitymodel.application.audit.AuthenticatedUser;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.context.SecurityContextHolder;
 import com.securitymodel.application.assistant.AssistantSessionService;
 import com.securitymodel.application.resource.ResourceQueryService;
 import com.securitymodel.application.task.GpuLeaseService;
@@ -45,6 +50,7 @@ import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.timeout;
@@ -86,6 +92,8 @@ class AssistantConfirmationEndToEndIT {
     private ObjectMapper objectMapper;
     @Autowired
     private JdbcTemplate jdbc;
+    @Autowired
+    private AssistantPreviewService previewService;
     @Autowired
     private SqlSessionFactory sqlSessionFactory;
     @MockBean
@@ -293,8 +301,116 @@ class AssistantConfirmationEndToEndIT {
     }
 
     @Test
+    void concurrentAliceAndBobChatsKeepIdentityIsolated() throws Exception {
+        when(assistantModel.respond(any())).thenAnswer(invocation -> {
+            AssistantModel.ModelRequest request = invocation.getArgument(0);
+            boolean afterTool = request.messages().stream()
+                    .anyMatch(message -> "tool".equals(message.role()));
+            if (afterTool) {
+                return AssistantModel.ModelReply.answer("已完成", "fake");
+            }
+            long taskId = request.question().contains("300") ? 300L : ALICE_RUNNING_TASK;
+            return AssistantModel.ModelReply.toolCall("get_my_task_summary",
+                    objectMapper.createObjectNode().put("taskId", taskId), "fake");
+        });
+        String alice = login("alice");
+        String bob = login("bob");
+        ExecutorService pool = Executors.newFixedThreadPool(2);
+        CountDownLatch start = new CountDownLatch(1);
+        try {
+            Future<String> aliceResult = pool.submit(() -> {
+                start.await();
+                return mockMvc.perform(post("/api/assistant/chat")
+                                .header("Authorization", alice)
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content("{\"question\":\"查看我的任务 700\"}"))
+                        .andExpect(status().isOk())
+                        .andExpect(jsonPath("$.toolResults[0].data.taskId").value(700))
+                        .andReturn().getResponse().getContentAsString();
+            });
+            Future<String> bobResult = pool.submit(() -> {
+                start.await();
+                return mockMvc.perform(post("/api/assistant/chat")
+                                .header("Authorization", bob)
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content("{\"question\":\"查看我的任务 300\"}"))
+                        .andExpect(status().isOk())
+                        .andExpect(jsonPath("$.toolResults[0].data.taskId").value(300))
+                        .andReturn().getResponse().getContentAsString();
+            });
+            start.countDown();
+            assertTrue(aliceResult.get(20, TimeUnit.SECONDS).contains("\"taskId\":700"));
+            assertTrue(bobResult.get(20, TimeUnit.SECONDS).contains("\"taskId\":300"));
+        } finally {
+            pool.shutdownNow();
+        }
+    }
+
+    @Test
     void myBatisPlusStatementTimeoutIsApplied() {
         assertEquals(5, sqlSessionFactory.getConfiguration().getDefaultStatementTimeout());
+    }
+
+    @Test
+    void confirmationInsertBlockedPastDeadlineLeavesNoUsableToken() throws Exception {
+        jdbc.execute("DROP TRIGGER IF EXISTS trg_assistant_confirmation_slow_insert");
+        jdbc.execute("""
+                CREATE TRIGGER trg_assistant_confirmation_slow_insert
+                BEFORE INSERT ON sys_assistant_confirmation
+                FOR EACH ROW SET @slow_confirmation = SLEEP(0.8)
+                """);
+        SecurityContextHolder.getContext().setAuthentication(
+                new UsernamePasswordAuthenticationToken(
+                        new AuthenticatedUser(2L, "alice", false), null, List.of()));
+        try {
+            AssistantException timeout = assertThrows(AssistantException.class,
+                    () -> previewService.preview("preview_cancel_task",
+                            objectMapper.createObjectNode().put("taskId", ALICE_RUNNING_TASK),
+                            null, 100));
+            assertEquals("ASSISTANT_TOOL_TIMEOUT", timeout.getCode());
+        } finally {
+            jdbc.execute("DROP TRIGGER IF EXISTS trg_assistant_confirmation_slow_insert");
+            SecurityContextHolder.clearContext();
+        }
+        assertEquals(0, jdbc.queryForObject(
+                "SELECT COUNT(*) FROM sys_assistant_confirmation", Integer.class));
+        assertEquals(1, jdbc.queryForObject("""
+                SELECT COUNT(*) FROM sys_assistant_tool_audit
+                WHERE user_id = 2 AND tool_name = 'preview_cancel_task' AND result_code = 'FAILED'
+                """, Integer.class));
+        assertEquals("running", jdbc.queryForObject(
+                "SELECT status FROM sys_pre_defense WHERE task_id = ?", String.class, ALICE_RUNNING_TASK));
+    }
+
+    @Test
+    void tamperedTokenCannotConfirmAndIsAudited() throws Exception {
+        String alice = login("alice");
+        String preview = mockMvc.perform(post("/api/assistant/tools/preview_cancel_task/preview")
+                        .header("Authorization", alice)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"taskId\":" + ALICE_RUNNING_TASK + "}"))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        long confirmationId = objectMapper.readTree(preview).path("confirmationId").asLong();
+        String token = objectMapper.readTree(preview).path("token").asText();
+        String tampered = (token.charAt(0) == 'A' ? "B" : "A") + token.substring(1);
+
+        mockMvc.perform(post("/api/assistant/confirmations/confirm")
+                        .header("Authorization", alice)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(Map.of(
+                                "confirmationId", confirmationId, "token", tampered))))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("ASSISTANT_CONFIRMATION_INVALID"));
+        assertEquals("pending", jdbc.queryForObject(
+                "SELECT status FROM sys_assistant_confirmation WHERE confirmation_id = ?",
+                String.class, confirmationId));
+        assertEquals("running", jdbc.queryForObject(
+                "SELECT status FROM sys_pre_defense WHERE task_id = ?", String.class, ALICE_RUNNING_TASK));
+        assertEquals(1, jdbc.queryForObject("""
+                SELECT COUNT(*) FROM sys_assistant_tool_audit
+                WHERE user_id = 2 AND result_code = 'TOKEN_MISMATCH'
+                """, Integer.class));
     }
 
     @Test

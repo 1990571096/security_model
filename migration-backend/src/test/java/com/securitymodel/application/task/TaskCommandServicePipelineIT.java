@@ -16,6 +16,7 @@ import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.boot.test.mock.mockito.SpyBean;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -27,6 +28,8 @@ import java.sql.DriverManager;
 import java.sql.Statement;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -34,9 +37,13 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -68,6 +75,10 @@ class TaskCommandServicePipelineIT {
     private PreDefenseTaskMapper taskMapper;
     @Autowired
     private GpuLeaseService gpuLeaseService;
+    @Autowired
+    private RequestIdempotencyService idempotencyService;
+    @SpyBean
+    private ExecutionFingerprintService fingerprintService;
     @MockBean
     private DefenseTaskExecutor executor;
     @MockBean
@@ -138,6 +149,39 @@ class TaskCommandServicePipelineIT {
                 "SELECT COUNT(*) FROM sys_task_dispatch_intent WHERE task_id = ?", Integer.class, TASK_ID));
         verify(executor, timeout(5000).times(1)).runPreDefense(any());
         verify(executor, never()).cancelPreDefense(any(Long.class), any());
+    }
+
+    @Test
+    void launchFailureRollsBackClaimLeaseIntentAndIdempotencyRecord() {
+        doThrow(new IllegalStateException("injected-after-claim"))
+                .when(fingerprintService).buildRuntimeSnapshot(any());
+        String key = "rollback-" + UUID.randomUUID();
+        try {
+            assertThrows(IllegalStateException.class, () -> idempotencyService.execute(
+                    "task.start", key, Map.of("taskId", TASK_ID), TASK_ID,
+                    () -> {
+                        commandService.start(TASK_ID, null);
+                        return new IdempotencyResult(200, objectMapper.createObjectNode());
+                    }));
+
+            assertEquals("pending", jdbc.queryForObject(
+                    "SELECT status FROM sys_pre_defense WHERE task_id = ?", String.class, TASK_ID));
+            assertNull(jdbc.queryForObject(
+                    "SELECT current_run_id FROM sys_pre_defense WHERE task_id = ?",
+                    String.class, TASK_ID));
+            assertTrue(jdbc.queryForList(
+                    "SELECT lease_token FROM sys_gpu_lease WHERE slot_id = 'default-gpu-0'",
+                    String.class).stream().allMatch(java.util.Objects::isNull));
+            assertEquals(0, jdbc.queryForObject(
+                    "SELECT COUNT(*) FROM sys_task_dispatch_intent WHERE task_id = ?",
+                    Integer.class, TASK_ID));
+            assertEquals(0, jdbc.queryForObject(
+                    "SELECT COUNT(*) FROM sys_request_idempotency WHERE idempotency_key = ?",
+                    Integer.class, key));
+            verify(executor, never()).runPreDefense(any());
+        } finally {
+            reset(fingerprintService);
+        }
     }
 
     @Test
@@ -459,6 +503,24 @@ class TaskCommandServicePipelineIT {
                       submitted_at DATETIME(3) NULL,
                       PRIMARY KEY (intent_id),
                       UNIQUE KEY uk_dispatch_intent_run (task_id, run_id, attempt)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                    """);
+            statement.execute("""
+                    CREATE TABLE IF NOT EXISTS sys_request_idempotency (
+                      record_id BIGINT NOT NULL AUTO_INCREMENT,
+                      owner_user_id BIGINT NOT NULL,
+                      operation VARCHAR(64) NOT NULL,
+                      idempotency_key VARCHAR(128) NOT NULL,
+                      request_hash CHAR(64) NOT NULL,
+                      resource_id BIGINT NULL,
+                      status VARCHAR(20) NOT NULL,
+                      response_code INT NULL,
+                      response_body LONGTEXT NULL,
+                      created_at DATETIME(3) NOT NULL,
+                      updated_at DATETIME(3) NOT NULL,
+                      expires_at DATETIME(3) NOT NULL,
+                      PRIMARY KEY (record_id),
+                      UNIQUE KEY uk_request_idempotency (owner_user_id, operation, idempotency_key)
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
                     """);
         } catch (Exception exception) {

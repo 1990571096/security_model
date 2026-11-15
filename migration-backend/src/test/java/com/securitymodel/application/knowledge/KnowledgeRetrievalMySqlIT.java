@@ -20,6 +20,9 @@ import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.junit.jupiter.SpringJUnitConfig;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.junit.jupiter.api.Assumptions;
 
 import java.sql.DriverManager;
 import java.sql.Statement;
@@ -176,6 +179,57 @@ class KnowledgeRetrievalMySqlIT {
                 Long.class, first.getDocumentId()));
     }
 
+    @Test
+    void retireSurvivesRedisFailureThenReconcilesResidualVectors() throws Exception {
+        Assumptions.assumeTrue("true".equals(System.getenv("REDIS_IT")),
+                "real Redis is required for retirement compensation");
+        LettuceConnectionFactory factory = new LettuceConnectionFactory("127.0.0.1", 6379);
+        factory.afterPropertiesSet();
+        StringRedisTemplate redis = new StringRedisTemplate(factory);
+        redis.afterPropertiesSet();
+        String key = "security-model:it:vectors:" + UUID.randomUUID();
+        try {
+            KnowledgeVectorStore realStore = new KnowledgeVectorStore(
+                    redis, chunkMapper, new LocalEmbeddingModel(true), true, key, 40);
+            Long documentId = insertDocument("task_report:retire-compensation", 1,
+                    "private", 1L, "retirement");
+            insertChunk(documentId, 0, "退役文档的残留向量内容");
+            assertEquals(1, realStore.indexDocument(documentId, "private", 1L));
+
+            FlakyVectorStore flaky = new FlakyVectorStore(realStore, redis, chunkMapper, key);
+            KnowledgeIndexService index = new KnowledgeIndexService(
+                    documentMapper, writer, null, null, null, "unused", 800, flaky);
+            flaky.failNextRemove = true;
+            assertTrue(index.retire(documentId));
+            assertEquals("retired", jdbc.queryForObject(
+                    "SELECT status FROM sys_knowledge_document WHERE document_id = ?",
+                    String.class, documentId));
+            assertTrue(realStore.search("退役文档的残留向量内容", 5, 1L, false).hits().stream()
+                    .anyMatch(hit -> hit.chunkId() == chunkIdOf(documentId)),
+                    "the simulated Redis outage must leave a residual vector");
+
+            assertEquals(1, index.reconcileRetiredVectors(10));
+            assertTrue(realStore.search("退役文档的残留向量内容", 5, 1L, false).hits().stream()
+                    .noneMatch(hit -> hit.chunkId() == chunkIdOf(documentId)));
+            assertEquals(0, jdbc.queryForObject(
+                    "SELECT COUNT(*) FROM sys_knowledge_document WHERE document_id = ? AND status = 'active'",
+                    Integer.class, documentId));
+            // Repeated reconciliation is safe when the vectors are already gone.
+            index.reconcileRetiredVectors(10);
+            assertTrue(realStore.search("退役文档的残留向量内容", 5, 1L, false).hits().stream()
+                    .noneMatch(hit -> hit.chunkId() == chunkIdOf(documentId)));
+        } finally {
+            redis.delete(key);
+            factory.destroy();
+        }
+    }
+
+    private long chunkIdOf(Long documentId) {
+        return jdbc.queryForObject(
+                "SELECT chunk_id FROM sys_knowledge_chunk WHERE document_id = ? ORDER BY chunk_id LIMIT 1",
+                Long.class, documentId);
+    }
+
     private Long insertDocument(String sourceKey, int version, String visibility,
                                 Long ownerUserId, String title) {
         KnowledgeDocument document = new KnowledgeDocument();
@@ -243,6 +297,36 @@ class KnowledgeRetrievalMySqlIT {
     private static String env(String name, String defaultValue) {
         String value = System.getenv(name);
         return value == null ? defaultValue : value;
+    }
+
+    private static class FlakyVectorStore extends KnowledgeVectorStore {
+        private final KnowledgeVectorStore delegate;
+        private volatile boolean failNextRemove;
+
+        FlakyVectorStore(KnowledgeVectorStore delegate, StringRedisTemplate redis,
+                         KnowledgeChunkMapper mapper, String key) {
+            super(redis, mapper, new LocalEmbeddingModel(true), true, key, 40);
+            this.delegate = delegate;
+        }
+
+        @Override
+        public boolean enabled() {
+            return delegate.enabled();
+        }
+
+        @Override
+        public int indexDocument(Long documentId, String visibility, Long ownerUserId) {
+            return delegate.indexDocument(documentId, visibility, ownerUserId);
+        }
+
+        @Override
+        public boolean removeDocument(Long documentId) {
+            if (failNextRemove) {
+                failNextRemove = false;
+                throw new IllegalStateException("simulated-redis-outage");
+            }
+            return delegate.removeDocument(documentId);
+        }
     }
 
     @TestConfiguration(proxyBeanMethods = false)

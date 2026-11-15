@@ -184,6 +184,32 @@ SOURCE sql/security_model_assistant.sql;
 - 审计表 `sys_assistant_tool_audit` 只存工具名、operator、目标、结果码和耗时；不存 prompt、参数正文或 token。会话 7 天，用户可删除自己的会话。
 - 未配置模型时页面明确显示 `model_disabled`，不得写成“助手联调完成”。
 
+### 2026-11-15 隔离库收口演练
+
+目标：不用生产库 `eladmin`，在随机隔离 schema 中验证“全新初始化 → Spring 上下文启动 → 登录/JWT → 助手预览确认 → 报告/任务读取”以及跨用户隔离。
+
+```powershell
+# 在仓库根执行；MYSQL_IT_PASSWORD 只放在当前进程环境，不写入文件
+$env:MYSQL_IT_PASSWORD = '123456'
+$env:REDIS_IT = 'true'
+mvn -B -f migration-backend/pom.xml test -Pmysql-it `
+  "-Dtest=OwnershipEndToEndIT,AssistantConfirmationEndToEndIT"
+```
+
+实际依赖与结果（2026-11-15 本机）：
+- 每个 IT 通过 `OwnershipE2ESupport.schemaUrl` 创建随机 schema，执行 `sql/eladmin.sql`、`security_model_mvp_seed.sql` 及 R1/R2/R3/R6/R7 增量脚本，结束后删除 schema；不触碰 `security_model_demo` 或 `eladmin`。
+- `OwnershipEndToEndIT` 10 项通过：alice/bob 登录后读取各自任务、跨用户 403、禁用账号立即失效、旧 token 拒绝、管理员观测鉴权、导出/产物归属、审计查询归属；报告内容由任务详情与任务进度接口读取（当前没有独立的 `/api/report` 端点）。
+- `AssistantConfirmationEndToEndIT` 22 项通过：真实 HTTP + MySQL 下的五类写工具首次/重复/并发确认、预览零写入、资源变化 409、导出跨用户下载 403、insert 阻塞超时、错误 token 篡改、alice/bob 并发身份隔离。
+- 日志：`tmp/round2-isolated-drill.log`。本轮未启动独立 `spring-boot:run` 端口、未打开浏览器；这是全 Spring 上下文 + MockMvc 的隔离库演练，不是人工端到端 UI 验收。
+
+业务库迁移必须单独记录：本演练只证明脚本在空 schema 可重复执行；生产 `eladmin` 的备份、执行窗口、执行人、逐表行数核对和回滚仍需要单独授权，不能把本节写成“生产库已迁移”。
+
+### CI 与 Java 17 证据
+
+- 本机 JDK 20 与 Temurin JDK 17.0.21 均已跑 `mvn verify -Pmysql-it`，计数为 **231 单测 + 89 IT**；JDK17 日志 `tmp/round2-full-verify-jdk17.log`，JDK20 日志 `tmp/round2-full-verify-final.log`。这只证明本机 Java 17 运行，不等于 Ubuntu CI/生产部署已验证。
+- 远端 `Migration Quality` 已对 `930c934` 实际触发（run `43686578054`）：`python` 与 `frontend` 成功，`backend` 在单测阶段失败。失败原因是 `AttemptProcessRegistryTest`/`PythonProcessWaiterTest` 硬编码 Windows `cmd`、`ping -n`，以及 `PythonProcessWaiter` 销毁进程后未等待退出；已改为按 OS 选择 `sh -c 'sleep 20'`/`ping -n` 和 `sh -c 'exit 0'`/`cmd /c exit`，并在 `destroyProcessTree` 后 `waitFor(2s)`。
+- 该修复的本机定向日志为 `tmp/round2-cross-platform.log`；因为尚未推送，远端 CI 仍是失败的旧结果。下一次推送后必须重新查看 `https://github.com/1990571096/security_model/actions`，不能把本机 JDK20 结果写成“Java 17 CI 通过”。
+
 ### 备份与回滚
 
 备份必须放在仓库外，且不得提交 Git。以下命令只作为模板，路径和数据库名由执行人替换；生产执行前仍需单独授权。

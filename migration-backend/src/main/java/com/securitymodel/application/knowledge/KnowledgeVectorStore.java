@@ -98,18 +98,26 @@ public class KnowledgeVectorStore {
     }
 
     /** Remove vectors for a retired document version; stale hits are also filtered by ACL. */
-    public void removeDocument(Long documentId) {
+    public boolean removeDocument(Long documentId) {
         if (!enabled || documentId == null) {
-            return;
+            return false;
         }
         List<KnowledgeChunk> chunks = chunkMapper.findByDocumentId(documentId);
         if (chunks == null) {
-            return;
+            return true;
         }
+        boolean allRemoved = true;
         for (KnowledgeChunk chunk : chunks) {
-            executeIntegerCommand("VREM", List.of(key, "c:" + chunk.getChunkId()));
+            if (!executeIntegerCommand("VREM", List.of(key, "c:" + chunk.getChunkId()))) {
+                allRemoved = false;
+            }
         }
-        log.info("知识向量清理完成: documentId={}, chunks={}", documentId, chunks.size());
+        if (allRemoved) {
+            log.info("知识向量清理完成: documentId={}, chunks={}", documentId, chunks.size());
+        } else {
+            log.warn("知识向量清理未完成: documentId={}, chunks={}", documentId, chunks.size());
+        }
+        return allRemoved;
     }
 
     /**
