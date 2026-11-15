@@ -387,7 +387,7 @@ Agent 采用外部大模型 API，本机不部署大模型。生成模型和 emb
 ## ADR-021：R7 受控实验助手（工具白名单、预览确认与模型端口）
 
 日期：2026-11-14
-状态：代码已实施；外部模型未接入，待供应商授权与适配器实现。
+状态：代码已实施；本机 `deepseek` profile 已接真实 DeepSeek 适配器，生产默认仍关闭；最终请求体隐私与工具预算见 ADR-022。
 
 **背景**：R7 需要让助手读取实验上下文并辅助生成参数草稿，但不能让模型直接改任务、启动训练、读任意文件或跨用户取数。R6 已有本地检索和模型端口，R3 已有请求幂等与条件状态写入。
 
@@ -401,7 +401,32 @@ Agent 采用外部大模型 API，本机不部署大模型。生成模型和 emb
 7. **配额**：按用户每日请求上限默认 50，数据库条件自增，超出返回 429；配额只限制助手入口，不限制核心 API。
 
 **非目标/边界**
-- 不接真实外部模型；`AssistantModel` 的具体供应商适配器待 API、费用与数据留存授权。
+- 生产默认不接外部模型；本机 `deepseek` profile 仅用于联调，`AssistantModel` 供应商适配器的生产启用仍需费用/数据留存授权。
 - 不把 R7 的预览确认当作生产级审批流；当前没有双人复核、组织级 RBAC 或跨实例分布式锁。
 - 不新增 RabbitMQ/独立 Worker，不改变 R2/R3 的 GPU 单槽和进程隔离语义。
 - 生产库 `eladmin` 未执行 `sql/security_model_assistant.sql`，不能宣称生产级助手已上线。
+
+## ADR-022：R6/R7 审查整改——哈希向量只做词法重排、向量 ACL 前置与工具预算
+
+日期：2026-11-15；状态：**代码与本机定向/全量测试已实施，生产验收未完成**。
+
+**背景**：独立审查确认 222 单测 + 75 IT 全绿，但发现外部模型请求仍可能带绝对路径、向量先全局排名后过滤 ACL、混合检索未复跑原 20 题、Agent 工具未接收总预算、R3“重放一次”只有 Mock 证据。R6/R7 需要在不引入 RabbitMQ 的前提下先关闭这些链路问题。
+
+**决策**
+1. **哈希向量不是语义召回**：`LocalEmbeddingModel` 是本地 256 维字符/词 n-gram 哈希 + L2 归一化，不能介绍为 BGE/神经 embedding。`KnowledgeRetrievalService` 先做 ACL-first 词法候选；词法候选为空时直接返回空（拒答锚），向量只用于对词法候选重排，不允许向量单独回答未知问题。20 题评估按真实服务路径运行，可答 top5 10/10、5 个未知全部拒绝。
+2. **ACL 在向量候选阶段生效**：`VADD` 用 `SETATTR` 写 visibility/owner/documentId；`VSIM` 追加 `FILTER (.visibility == "shared" or .owner == <userId>)`，普通用户只在自己的候选窗口内排名，管理员跨用户读不加过滤。`removeDocument` 删除退役版本向量。Redis 8 不可用或命令失败时本轮 `retrievalMode=lexical`，不按配置虚报 `hybrid`。VADD/VREM 的整数回复使用 `executeIntegerCommand`，只忽略 Spring `ByteArrayOutput` 的已知解码限制；写入真假由 `VCARD/VSIM` 验证。
+3. **外发路径统一脱敏**：`KnowledgeSanitizer` 除 API 路由前缀外，任意绝对多段路径（含中文）替换为 `[已过滤路径]`；最终请求体由真实 `AssistantChatService` + 真实 DeepSeek 适配器 + 本地假 HTTP 捕获验证，不能只测脱敏函数。
+4. **工具预算传播但保留边界**：`AssistantTool` 增加带 `timeoutMillis` 的默认方法；读工具在独立有界执行器中按剩余预算执行，超时取消并终止后续工具/模型调用；MyBatis 语句超时 5s。Future 取消不保证底层 JDBC/Redis 已物理停止，写预览事务取消后的提交仍需故障注入验证。
+5. **R3 证据分层**：测试使用真实 `TaskDispatchCoordinator`、真实 MySQL 意图、真实本地接受登记和真实状态写入，执行器仍用测试替身；证明“真实重放分支派发一次、第二次恢复不重跑”，不证明真实 Python 子进程接收或真实 GPU 租约表领取。`CrashWindowChildMain` 必须写真实 request JSON/hash，禁止再用 `{}` 冒充可重放快照。
+6. **监控口径**：`runningTaskCount` 取 MySQL `status=running` 统计；线程池 `activeCount` 只表示活动线程，二者不能混用。
+7. **CI 与运行时一致**：质量工作流 Redis 服务改为 `redis:8.0`，因为代码依赖 Redis 8 `vectorset` 命令；Redis 7 只应作为降级测试环境，不能作为混合检索 CI 基线。
+
+**证据**
+- `KnowledgeSanitizerTest`（未知 Unix/中文路径）、`AssistantOutboundPrivacyTest`（最终 HTTP body）。
+- `KnowledgeVectorStoreRedisIT`（真实 Redis 8：shared/owner 过滤、50 条他人私有片段不挤占、admin 跨用户、删除清理）。
+- `KnowledgeHybridEvaluationTest`（原 20 题混合路径 + Redis 失败降级）。
+- `AssistantChatServiceTest`（工具预算传播、慢工具超时、后续模型不调用）。
+- `MySqlTaskPersistenceIT.independentJvmPendingIntentRunsRealReplayCoordinatorOnce`（真实协调器一次派发/二次恢复不重跑；修复 DTO Jackson 构造器）。
+- 全量验证日志 `tmp/review-fix-full-verify5.log`；本 ADR 不代表生产库迁移、真实 Python 重放、Ubuntu CI 或整体 R3/R7 验收完成。
+
+**非目标**：不引入 RabbitMQ/Worker；不接 BGE/ONNX；不重跑 LDD；不把哈希向量或假 HTTP 测试写成生产外发验收。

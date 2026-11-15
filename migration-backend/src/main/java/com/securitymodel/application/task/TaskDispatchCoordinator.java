@@ -153,6 +153,8 @@ public class TaskDispatchCoordinator {
                 return false;
             }
         } catch (TaskCommandException exception) {
+            log.warn("调度重放快照校验失败: taskId={}, runId={}, reason={}",
+                    intent.getTaskId(), intent.getRunId(), exception.getMessage());
             failAndAbandon(intent.getTaskId(), intent.getRunId(), intent.getAttempt(),
                     "DISPATCH_SNAPSHOT_INVALID", exception.getMessage());
             return false;

@@ -110,7 +110,7 @@ const poolPercent = computed(() => {
 })
 
 const overviewStats = computed(() => [
-  { label: '运行中任务', value: executor.value.activeCount ?? 0, desc: '执行池 activityCount', badge: '实时', type: 'success' },
+  { label: '运行中任务', value: executor.value.runningTaskCount ?? 0, desc: 'MySQL status=running', badge: '实时', type: 'success' },
   { label: '等待队列', value: executor.value.queueSize ?? 0, desc: '尚未被线程接手的提交', badge: '队列', type: 'warning' },
   { label: 'GPU 槽位', value: gpuSlot.value.state || 'unknown', desc: '单槽租约，不显示虚构节点', badge: '租约', type: gpuSlot.value.state === 'blocked' ? 'danger' : 'success' },
   { label: '可接收任务', value: executor.value.acceptingTasks ? '是' : '否', desc: '执行池 shutdown/terminated 状态', badge: '调度', type: 'primary' }

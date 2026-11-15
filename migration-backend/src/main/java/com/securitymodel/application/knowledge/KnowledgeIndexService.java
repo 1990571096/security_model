@@ -209,7 +209,7 @@ public class KnowledgeIndexService {
         String hash = sha256(content);
         KnowledgeDocument active = documentMapper.findActiveBySourceKey(sourceKey);
         if (active != null && hash.equals(active.getContentHash())) {
-            indexVectorsQuietly(active.getDocumentId());
+            indexVectorsQuietly(active.getDocumentId(), active.getVisibility(), active.getOwnerUserId());
             return new IndexResult(false, 0, active);
         }
         String safeTitle = safe(KnowledgeSanitizer.sanitize(title), 255);
@@ -223,7 +223,7 @@ public class KnowledgeIndexService {
         if (active != null) {
             removeVectorsQuietly(active.getDocumentId());
         }
-        indexVectorsQuietly(saved.getDocumentId());
+        indexVectorsQuietly(saved.getDocumentId(), saved.getVisibility(), saved.getOwnerUserId());
         return new IndexResult(true, drafts.size(), saved);
     }
 
@@ -239,12 +239,12 @@ public class KnowledgeIndexService {
         }
     }
 
-    private void indexVectorsQuietly(Long documentId) {
+    private void indexVectorsQuietly(Long documentId, String visibility, Long ownerUserId) {
         if (vectorStore == null || !vectorStore.enabled()) {
             return;
         }
         try {
-            vectorStore.indexDocument(documentId);
+            vectorStore.indexDocument(documentId, visibility, ownerUserId);
         } catch (RuntimeException exception) {
             // Vector indexing is an enhancement; lexical retrieval remains the fallback.
             log.warn("知识向量索引失败，保留关键词检索: documentId={}, reason={}",

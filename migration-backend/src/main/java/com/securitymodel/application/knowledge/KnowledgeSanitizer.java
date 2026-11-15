@@ -19,6 +19,11 @@ public final class KnowledgeSanitizer {
             Pattern.compile("(?i)(?<![\\p{L}\\p{N}])/(?:home|users|tmp|var|opt|root|etc|usr|mnt|media|private|"
                     + "proc|sys|workspace|workspaces|data|app|srv|build|project|projects)"
                     + "(?:/" + PATH_TOKEN + "|\\s+" + PATH_TOKEN + ")+");
+    // Any absolute multi-segment path is redacted, not only paths whose first segment is
+    // on a fixed allow-list. API routes remain readable so error messages stay useful.
+    private static final Pattern GENERIC_UNIX_PATH =
+            Pattern.compile("(?<![\\p{L}\\p{N}:/])/(?!(?:api|auth|actuator|swagger-ui|v3|error)(?:/|\\b))"
+                    + "(?:[^\\s/]+/)+[^\\s/]+");
     private static final Pattern BEARER =
             Pattern.compile("(?i)bearer\\s+[A-Za-z0-9._~+/-]+=*");
     private static final Pattern SECRET_ASSIGNMENT =
@@ -56,6 +61,7 @@ public final class KnowledgeSanitizer {
         value = WINDOWS_PATH.matcher(value).replaceAll("[已过滤路径]");
         value = UNC_PATH.matcher(value).replaceAll("[已过滤路径]");
         value = UNIX_PATH.matcher(value).replaceAll("[已过滤路径]");
+        value = GENERIC_UNIX_PATH.matcher(value).replaceAll("[已过滤路径]");
         value = EMAIL.matcher(value).replaceAll("[已过滤]");
         value = ID_CARD.matcher(value).replaceAll("[已过滤]");
         value = PHONE.matcher(value).replaceAll("[已过滤]");

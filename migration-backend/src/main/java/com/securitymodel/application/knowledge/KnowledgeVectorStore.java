@@ -53,8 +53,8 @@ public class KnowledgeVectorStore {
         return enabled;
     }
 
-    /** Index one document's chunks. Returns how many vectors were written. */
-    public int indexDocument(Long documentId) {
+    /** Index one document's chunks with visibility attributes used by ACL-scoped VSIM. */
+    public int indexDocument(Long documentId, String visibility, Long ownerUserId) {
         if (!enabled || documentId == null) {
             return 0;
         }
@@ -62,13 +62,14 @@ public class KnowledgeVectorStore {
         if (chunks == null || chunks.isEmpty()) {
             return 0;
         }
+        String attributes = attributes(visibility, ownerUserId, documentId);
         int written = 0;
         for (KnowledgeChunk chunk : chunks) {
             float[] vector = embedding.embed(chunk.getContent());
             if (vector.length == 0) {
                 continue;
             }
-            List<String> args = new ArrayList<>(vector.length + 5);
+            List<String> args = new ArrayList<>(vector.length + 7);
             args.add(key);
             args.add("VALUES");
             args.add(Integer.toString(embedding.dimension()));
@@ -76,13 +77,24 @@ public class KnowledgeVectorStore {
                 args.add(Float.toString(value));
             }
             args.add("c:" + chunk.getChunkId());
-            if (execute("VADD", args) != null) {
+            args.add("SETATTR");
+            args.add(attributes);
+            // VADD returns an integer reply; ByteArrayOutput cannot decode it and throws
+            // after the command has already executed. Use the nested output type.
+            if (executeIntegerCommand("VADD", args)) {
                 written++;
             }
         }
-        log.info("知识向量索引完成: documentId={}, chunks={}, written={}", documentId,
-                chunks.size(), written);
+        log.info("知识向量索引完成: documentId={}, visibility={}, chunks={}, written={}",
+                documentId, visibility, chunks.size(), written);
         return written;
+    }
+
+    private String attributes(String visibility, Long ownerUserId, Long documentId) {
+        String safeVisibility = "private".equals(visibility) ? "private" : "shared";
+        long safeOwner = ownerUserId == null ? 0L : ownerUserId;
+        return "{\"visibility\":\"" + safeVisibility + "\",\"owner\":" + safeOwner
+                + ",\"documentId\":" + documentId + "}";
     }
 
     /** Remove vectors for a retired document version; stale hits are also filtered by ACL. */
@@ -95,17 +107,22 @@ public class KnowledgeVectorStore {
             return;
         }
         for (KnowledgeChunk chunk : chunks) {
-            execute("VREM", List.of(key, "c:" + chunk.getChunkId()));
+            executeIntegerCommand("VREM", List.of(key, "c:" + chunk.getChunkId()));
         }
         log.info("知识向量清理完成: documentId={}, chunks={}", documentId, chunks.size());
     }
 
-    public List<VectorHit> search(String question, int count) {
+    /**
+     * Vector search scoped to the caller's visibility, not globally ranked then filtered.
+     * Redis evaluates {@code FILTER} before returning candidates, so other users' private
+     * chunks cannot consume the result window.
+     */
+    public SearchResult search(String question, int count, Long ownerUserId, boolean allVisible) {
         if (!enabled || question == null || question.isBlank()) {
-            return List.of();
+            return new SearchResult(List.of(), false);
         }
         float[] vector = embedding.embed(question);
-        List<String> args = new ArrayList<>(vector.length + 6);
+        List<String> args = new ArrayList<>(vector.length + 10);
         args.add(key);
         args.add("VALUES");
         args.add(Integer.toString(embedding.dimension()));
@@ -115,8 +132,23 @@ public class KnowledgeVectorStore {
         args.add("WITHSCORES");
         args.add("COUNT");
         args.add(Integer.toString(Math.max(1, Math.min(limit, count))));
+        String filter = visibilityFilter(ownerUserId, allVisible);
+        if (!filter.isBlank()) {
+            args.add("FILTER");
+            args.add(filter);
+        }
         Object result = executeList("VSIM", args);
-        return parse(result);
+        return new SearchResult(parse(result), result != null);
+    }
+
+    private String visibilityFilter(Long ownerUserId, boolean allVisible) {
+        if (allVisible) {
+            return "";
+        }
+        if (ownerUserId == null) {
+            return ".visibility == \"shared\"";
+        }
+        return "(.visibility == \"shared\" or .owner == " + ownerUserId + ")";
     }
 
     public boolean ping() {
@@ -141,6 +173,47 @@ public class KnowledgeVectorStore {
         }
     }
 
+    /**
+     * Executes integer-reply vector commands (VADD/VREM) through Lettuce. Spring's raw
+     * {@code execute} path decodes with {@code ByteArrayOutput}, which throws
+     * {@code UnsupportedOperationException} after the command has already executed; that
+     * specific decode failure is treated as accepted, other Redis errors are not.
+     */
+    private boolean executeIntegerCommand(String command, List<String> args) {
+        RedisConnection connection = null;
+        try {
+            connection = redis.getConnectionFactory().getConnection();
+            if (!(connection instanceof LettuceConnection lettuce)) {
+                return false;
+            }
+            byte[][] encoded = new byte[args.size()][];
+            for (int i = 0; i < args.size(); i++) {
+                encoded[i] = args.get(i).getBytes(StandardCharsets.UTF_8);
+            }
+            lettuce.execute(command, encoded);
+            return true;
+        } catch (RuntimeException exception) {
+            Throwable cause = exception.getCause();
+            if (cause instanceof UnsupportedOperationException
+                    && cause.getMessage() != null
+                    && cause.getMessage().contains("does not support set")) {
+                log.debug("Redis 整数命令已执行，忽略 ByteArrayOutput 解码限制: command={}", command);
+                return true;
+            }
+            log.warn("Redis 向量写命令失败: command={}, reason={}", command,
+                    exception.getClass().getSimpleName());
+            return false;
+        } finally {
+            if (connection != null) {
+                try {
+                    connection.close();
+                } catch (RuntimeException ignored) {
+                    // connection may already be closed by the factory
+                }
+            }
+        }
+    }
+
     private Object executeList(String command, List<String> args) {
         RedisConnection connection = null;
         try {
@@ -155,33 +228,6 @@ public class KnowledgeVectorStore {
             return lettuce.execute(command, new NestedMultiOutput<>(ByteArrayCodec.INSTANCE), encoded);
         } catch (RuntimeException exception) {
             log.warn("Redis 向量查询命令失败: command={}, reason={}", command,
-                    exception.getClass().getSimpleName());
-            return null;
-        } finally {
-            if (connection != null) {
-                try {
-                    connection.close();
-                } catch (RuntimeException ignored) {
-                    // connection may already be closed by the factory
-                }
-            }
-        }
-    }
-
-    private Object execute(String command, List<String> args) {
-        RedisConnection connection = null;
-        try {
-            connection = redis.getConnectionFactory().getConnection();
-            if (!(connection instanceof LettuceConnection lettuce)) {
-                return null;
-            }
-            byte[][] encoded = new byte[args.size()][];
-            for (int i = 0; i < args.size(); i++) {
-                encoded[i] = args.get(i).getBytes(StandardCharsets.UTF_8);
-            }
-            return lettuce.execute(command, encoded);
-        } catch (RuntimeException exception) {
-            log.debug("Redis 向量命令失败: command={}, reason={}", command,
                     exception.getClass().getSimpleName());
             return null;
         } finally {
@@ -237,5 +283,8 @@ public class KnowledgeVectorStore {
     }
 
     public record VectorHit(Long chunkId, double score) {
+    }
+
+    public record SearchResult(List<VectorHit> hits, boolean available) {
     }
 }

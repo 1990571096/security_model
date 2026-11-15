@@ -93,7 +93,8 @@ public class TaskProgressController {
                 && executor.getQueue().remainingCapacity() == 0);
         status.put("acceptingTasks", !executor.isShutdown() && !executor.isTerminated());
         status.put("quota", quotaPolicy.status());
-        status.put("runningTaskCount", status.get("activeCount"));
+        Map<String, Object> taskStats = taskProgressQueryService.statistics();
+        status.put("runningTaskCount", taskStats.getOrDefault("runningCount", 0));
         status.put("maxRunningTasks", quotaPolicy.status().get("maxRunningTasks"));
         status.put("gpuSlot", gpuSlotStatus());
         return status;

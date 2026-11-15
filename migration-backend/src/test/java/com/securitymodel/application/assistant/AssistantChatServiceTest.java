@@ -52,6 +52,22 @@ class AssistantChatServiceTest {
     }
 
     @Test
+    void readToolReceivesRemainingBudget() {
+        StubTool read = new StubTool("get_my_task_summary", false,
+                new AssistantToolResult("任务 #1 pending", objectMapper.createObjectNode()
+                        .put("taskId", 1), null, null, 1L, null, null));
+        AssistantModel model = sequence(
+                AssistantModel.ModelReply.toolCall("get_my_task_summary",
+                        objectMapper.createObjectNode().put("taskId", 1), "fake"),
+                AssistantModel.ModelReply.answer("任务是 pending。", "fake"));
+        AssistantChatService service = service(new AssistantToolRegistry(List.of(read)), model, null);
+
+        assertEquals("answered", service.chat(null, "我的任务怎么样").status());
+        assertTrue(read.lastBudgetMillis.get() > 0);
+        assertTrue(read.lastBudgetMillis.get() <= 60_000);
+    }
+
+    @Test
     void writeToolOnlyReturnsPendingConfirmation() {
         StubTool write = new StubTool("preview_start_task", true,
                 new AssistantToolResult("preview", objectMapper.createObjectNode(), "start",
@@ -340,6 +356,7 @@ class AssistantChatServiceTest {
         private final AssistantToolResult result;
         private final long delayMillis;
         private final AtomicInteger executions = new AtomicInteger();
+        private final AtomicLong lastBudgetMillis = new AtomicLong(-1);
 
         StubTool(String name, boolean write, AssistantToolResult result) {
             this(name, write, result, 0);
@@ -368,6 +385,13 @@ class AssistantChatServiceTest {
                 }
             }
             return result;
+        }
+
+        @Override
+        public AssistantToolResult execute(com.fasterxml.jackson.databind.JsonNode arguments,
+                                           long timeoutMillis) {
+            lastBudgetMillis.set(timeoutMillis);
+            return execute(arguments);
         }
     }
 }

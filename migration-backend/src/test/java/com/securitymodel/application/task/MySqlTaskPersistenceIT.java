@@ -435,9 +435,9 @@ class MySqlTaskPersistenceIT {
     }
 
     @Test
-    void independentJvmCommitsPendingIntentAndRecoveryReplaysExactlyOnce() throws Exception {
+    void independentJvmPendingIntentIsPersistedAndRecoveryDelegates() throws Exception {
         long taskId = System.currentTimeMillis() * 1000 + 700;
-        String output = runCrashWindow(taskId, "pending");
+        String output = runCrashWindow(taskId, "pending", fixtureRuntimeHash());
         assertTrue(output.startsWith("COMMITTED " + taskId), output);
 
         assertEquals("running", taskMapper.selectById(taskId).getStatus());
@@ -463,9 +463,77 @@ class MySqlTaskPersistenceIT {
     }
 
     @Test
+    void independentJvmPendingIntentRunsRealReplayCoordinatorOnce() throws Exception {
+        long taskId = System.currentTimeMillis() * 1000 + 702;
+        String runtimeHash = fixtureRuntimeHash();
+        String output = runCrashWindow(taskId, "pending", runtimeHash);
+        assertTrue(output.startsWith("COMMITTED " + taskId), output);
+
+        com.fasterxml.jackson.databind.ObjectMapper objectMapper =
+                new com.fasterxml.jackson.databind.ObjectMapper();
+        TaskDispatchIntentService intents = new TaskDispatchIntentService(intentMapper, objectMapper);
+        com.securitymodel.infrastructure.executor.DefenseTaskExecutor executor =
+                mock(com.securitymodel.infrastructure.executor.DefenseTaskExecutor.class);
+        com.securitymodel.infrastructure.executor.AttemptProcessRegistry registry =
+                new com.securitymodel.infrastructure.executor.AttemptProcessRegistry(objectMapper, "");
+        GpuLeaseService leases = mock(GpuLeaseService.class);
+        com.securitymodel.domain.lease.GpuLease lease = new com.securitymodel.domain.lease.GpuLease();
+        lease.setSlotId("gpu-0");
+        lease.setLeaseToken("lease-real-replay");
+        lease.setTaskId(taskId);
+        lease.setRunId("run-crash-" + taskId);
+        lease.setAttempt(1);
+        lease.setFencingToken(7L);
+        when(leases.acquire(taskId, "run-crash-" + taskId, 1)).thenReturn(lease);
+
+        ExecutionFingerprintService fingerprints = mock(ExecutionFingerprintService.class);
+        com.fasterxml.jackson.databind.node.ObjectNode runtime = fixtureRuntime(objectMapper);
+        when(fingerprints.buildRuntimeSnapshot(any())).thenReturn(runtime);
+        when(fingerprints.sha256(runtime.toString())).thenReturn(runtimeHash);
+
+        com.securitymodel.infrastructure.persistence.mapper.DatasetMapper datasets =
+                mock(com.securitymodel.infrastructure.persistence.mapper.DatasetMapper.class);
+        com.securitymodel.domain.dataset.Dataset dataset = new com.securitymodel.domain.dataset.Dataset();
+        dataset.setDatasetId(1L);
+        dataset.setEnabled(true);
+        when(datasets.selectById(1L)).thenReturn(dataset);
+        com.securitymodel.infrastructure.persistence.mapper.AlgorithmMapper algorithms =
+                mock(com.securitymodel.infrastructure.persistence.mapper.AlgorithmMapper.class);
+        com.securitymodel.domain.algorithm.Algorithm algorithm = new com.securitymodel.domain.algorithm.Algorithm();
+        algorithm.setAlgorithmId(1L);
+        algorithm.setEnabled(true);
+        when(algorithms.selectById(1L)).thenReturn(algorithm);
+        com.securitymodel.infrastructure.persistence.mapper.SysUserMapper users =
+                mock(com.securitymodel.infrastructure.persistence.mapper.SysUserMapper.class);
+        com.securitymodel.domain.user.SysUser owner = new com.securitymodel.domain.user.SysUser();
+        owner.setUserId(2L);
+        owner.setEnabled(true);
+        when(users.selectById(2L)).thenReturn(owner);
+
+        TaskDispatchCoordinator dispatch = new TaskDispatchCoordinator(
+                intents, executor, registry, leases, fingerprints, taskMapper, users,
+                datasets, algorithms, objectMapper);
+        DispatchRecoveryCoordinator recovery = new DispatchRecoveryCoordinator(
+                taskMapper, intents, registry, leases, dispatch, new SchedulingReadinessGate(),
+                mock(com.securitymodel.infrastructure.observability.TaskRuntimeMetrics.class),
+                30, 300, 20);
+
+        recovery.recoverAtStartup();
+
+        verify(executor, times(1)).runPreDefense(any());
+        assertEquals("submitted", intentMapper.findByRun(taskId, "run-crash-" + taskId, 1).getStatus());
+        assertEquals("running", taskMapper.selectById(taskId).getStatus());
+        assertTrue(registry.isLocallyAccepted(taskId, "run-crash-" + taskId, 1));
+
+        // A second recovery must observe the locally accepted attempt, not execute it again.
+        recovery.recoverAtStartup();
+        verify(executor, times(1)).runPreDefense(any());
+    }
+
+    @Test
     void independentJvmCommitOfSubmittingIntentIsConvergedWithoutReplay() throws Exception {
         long taskId = System.currentTimeMillis() * 1000 + 701;
-        String output = runCrashWindow(taskId, "submitting");
+        String output = runCrashWindow(taskId, "submitting", fixtureRuntimeHash());
         assertTrue(output.startsWith("COMMITTED " + taskId), output);
 
         TaskDispatchIntent intent = intentMapper.findByRun(taskId, "run-crash-" + taskId, 1);
@@ -492,14 +560,41 @@ class MySqlTaskPersistenceIT {
                 org.mockito.ArgumentMatchers.anyString());
     }
 
-    private String runCrashWindow(long taskId, String intentStatus) throws Exception {
+    private static com.fasterxml.jackson.databind.node.ObjectNode fixtureRuntime(
+            com.fasterxml.jackson.databind.ObjectMapper objectMapper) {
+        com.fasterxml.jackson.databind.node.ObjectNode runtime = objectMapper.createObjectNode();
+        runtime.put("snapshotSchema", "security-model.execution.v2");
+        runtime.putObject("datasetFingerprint").put("available", true);
+        runtime.putObject("algorithmFingerprint").put("available", true);
+        return runtime;
+    }
+
+    private static String fixtureRuntimeHash() {
+        try {
+            return sha256(fixtureRuntime(new com.fasterxml.jackson.databind.ObjectMapper()).toString());
+        } catch (Exception exception) {
+            throw new IllegalStateException(exception);
+        }
+    }
+
+    private static String sha256(String value) throws Exception {
+        byte[] hash = java.security.MessageDigest.getInstance("SHA-256")
+                .digest(value.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        StringBuilder hex = new StringBuilder();
+        for (byte item : hash) {
+            hex.append(String.format("%02x", item));
+        }
+        return hex.toString();
+    }
+
+    private String runCrashWindow(long taskId, String intentStatus, String runtimeHash) throws Exception {
         String java = Path.of(System.getProperty("java.home"), "bin",
                 System.getProperty("os.name").toLowerCase().contains("win") ? "java.exe" : "java")
                 .toString();
         Process child = new ProcessBuilder(java, "-cp",
                 System.getProperty("surefire.test.class.path", System.getProperty("java.class.path")),
                 CrashWindowChildMain.class.getName(), schemaUrl(), USERNAME, PASSWORD,
-                String.valueOf(taskId), intentStatus)
+                String.valueOf(taskId), intentStatus, runtimeHash)
                 .redirectErrorStream(true)
                 .start();
         assertTrue(child.waitFor(15, TimeUnit.SECONDS), "crash child did not exit");

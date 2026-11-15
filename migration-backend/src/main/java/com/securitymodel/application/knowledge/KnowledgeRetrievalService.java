@@ -28,6 +28,7 @@ public class KnowledgeRetrievalService {
     private final double minScore;
     private final boolean adminCrossUserRead;
     private final ThreadLocal<Integer> vectorHitCount = ThreadLocal.withInitial(() -> 0);
+    private final ThreadLocal<String> retrievalMode = ThreadLocal.withInitial(() -> "lexical");
 
     public KnowledgeRetrievalService(
             KnowledgeDocumentMapper documentMapper,
@@ -63,9 +64,11 @@ public class KnowledgeRetrievalService {
 
     public List<KnowledgeHit> search(String question) {
         vectorHitCount.set(0);
+        retrievalMode.set("lexical");
         AuthenticatedUser identity = currentUserService.requireStableIdentity();
         List<KnowledgeSearchRow> candidates;
-        if (identity.admin() && adminCrossUserRead) {
+        boolean allVisible = identity.admin() && adminCrossUserRead;
+        if (allVisible) {
             candidates = documentMapper.findSearchableAll(candidateLimit);
         } else {
             candidates = documentMapper.findSearchableForUser(identity.userId(), candidateLimit);
@@ -75,11 +78,21 @@ public class KnowledgeRetrievalService {
         }
         List<KnowledgeHit> lexical = KnowledgeRanker.rank(question, candidates, topK,
                 minCoverage, minScore);
+        if (lexical.isEmpty()) {
+            // The hash-vector channel is a reranker, not a license to answer an unknown
+            // question. Keeping the lexical refusal anchor preserves the 20-question set.
+            return List.of();
+        }
         if (vectorStore == null || !vectorStore.enabled()) {
             return lexical;
         }
-        List<KnowledgeVectorStore.VectorHit> vectorHits =
-                vectorStore.search(question, Math.max(20, topK * 8));
+        KnowledgeVectorStore.SearchResult vectorResult = vectorStore.search(question,
+                Math.max(20, topK * 8), identity.userId(), allVisible);
+        if (!vectorResult.available()) {
+            return lexical;
+        }
+        retrievalMode.set("hybrid");
+        List<KnowledgeVectorStore.VectorHit> vectorHits = vectorResult.hits();
         vectorHitCount.set(vectorHits.size());
         if (vectorHits.isEmpty()) {
             return lexical;
@@ -143,7 +156,7 @@ public class KnowledgeRetrievalService {
     }
 
     public String retrievalMode() {
-        return vectorStore != null && vectorStore.enabled() ? "hybrid" : "lexical";
+        return retrievalMode.get();
     }
 
     public int vectorHitCount() {

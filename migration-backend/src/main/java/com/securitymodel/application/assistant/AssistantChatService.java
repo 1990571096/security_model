@@ -43,6 +43,7 @@ public class AssistantChatService {
     private final CurrentUserService currentUserService;
     private final ObjectMapper objectMapper;
     private final ExecutorService modelExecutor;
+    private final ExecutorService toolExecutor;
     private final Semaphore requestSlots = new Semaphore(4, true);
     private final Map<Long, Semaphore> userSlots = new ConcurrentHashMap<>();
     private final int maxModelCalls;
@@ -74,6 +75,12 @@ public class AssistantChatService {
         this.modelExecutor = new ThreadPoolExecutor(4, 4, 0, TimeUnit.MILLISECONDS,
                 new ArrayBlockingQueue<>(16), runnable -> {
                     Thread thread = new Thread(runnable, "assistant-model");
+                    thread.setDaemon(true);
+                    return thread;
+                }, new ThreadPoolExecutor.AbortPolicy());
+        this.toolExecutor = new ThreadPoolExecutor(4, 4, 0, TimeUnit.MILLISECONDS,
+                new ArrayBlockingQueue<>(16), runnable -> {
+                    Thread thread = new Thread(runnable, "assistant-tool");
                     thread.setDaemon(true);
                     return thread;
                 }, new ThreadPoolExecutor.AbortPolicy());
@@ -209,8 +216,10 @@ public class AssistantChatService {
                 }
                 toolCalls++;
                 ToolExecution execution;
+                long toolBudgetMillis = Math.max(1,
+                        TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime()));
                 try {
-                    execution = executeTool(session, reply.toolCall(), trace -> {
+                    execution = executeTool(session, reply.toolCall(), toolBudgetMillis, trace -> {
                         if (trace.pending() != null) {
                             pending.add(trace.pending());
                         }
@@ -225,6 +234,11 @@ public class AssistantChatService {
                                 citations, "timeout", modelCalls, toolCalls);
                     }
                 } catch (AssistantException exception) {
+                    if ("ASSISTANT_TOOL_TIMEOUT".equals(exception.getCode())) {
+                        return finish(session, question, "timeout",
+                                "工具执行超过剩余时限，未完成的业务写入不会继续。", traces, pending,
+                                citations, "tool_timeout", modelCalls, toolCalls);
+                    }
                     return finish(session, question, "tool_error", exception.getMessage(), traces, pending,
                             citations, exception.getCode(), modelCalls, toolCalls);
                 }
@@ -246,13 +260,16 @@ public class AssistantChatService {
     }
 
     private ToolExecution executeTool(AssistantSession session, AssistantModel.ToolCall call,
+                                      long timeoutMillis,
                                       java.util.function.Consumer<ToolExecution> observer) {
         AssistantTool tool = registry.find(call.toolName());
         long started = System.nanoTime();
         try {
             if (tool.descriptor().write()) {
-                AssistantPreviewResponse preview = previewService.preview(
-                        call.toolName(), call.arguments(), session.getSessionId());
+                AssistantPreviewResponse preview = executeWithBudget(
+                        () -> previewService.preview(
+                                call.toolName(), call.arguments(), session.getSessionId()),
+                        timeoutMillis);
                 AssistantChatResponse.AssistantToolTrace trace = new AssistantChatResponse.AssistantToolTrace(
                         call.toolName(), preview.preview().path("warning").asText(
                         "已生成预览，必须由用户单独确认后才会执行。"),
@@ -265,7 +282,10 @@ public class AssistantChatService {
                 observer.accept(execution);
                 return execution;
             }
-            AssistantToolResult result = tool.execute(call.arguments());
+            AssistantToolResult result = executeReadWithBudget(tool, call.arguments(), timeoutMillis);
+            if (elapsedMs(started) > timeoutMillis) {
+                throw timeout();
+            }
             auditService.record(session.getSessionId(), call.toolName(), result.operation(),
                     result.targetTaskId(), result.targetRunId(), "OK", elapsedMs(started));
             ToolExecution execution = new ToolExecution(new AssistantChatResponse.AssistantToolTrace(
@@ -283,6 +303,47 @@ public class AssistantChatService {
             throw new AssistantException("ASSISTANT_TOOL_FAILED", HttpStatus.BAD_GATEWAY,
                     "工具执行失败，未写入业务数据");
         }
+    }
+
+    private AssistantToolResult executeReadWithBudget(AssistantTool tool,
+                                                      com.fasterxml.jackson.databind.JsonNode arguments,
+                                                      long timeoutMillis) {
+        return executeWithBudget(() -> tool.execute(arguments, timeoutMillis), timeoutMillis);
+    }
+
+    private <T> T executeWithBudget(java.util.concurrent.Callable<T> call, long timeoutMillis) {
+        Future<T> future;
+        try {
+            future = toolExecutor.submit(call);
+        } catch (RejectedExecutionException exception) {
+            throw new AssistantException("ASSISTANT_TOOL_BUSY", HttpStatus.SERVICE_UNAVAILABLE,
+                    "工具执行队列已满，请稍后重试");
+        }
+        try {
+            return future.get(Math.max(1, timeoutMillis), TimeUnit.MILLISECONDS);
+        } catch (TimeoutException exception) {
+            future.cancel(true);
+            throw timeout();
+        } catch (InterruptedException exception) {
+            future.cancel(true);
+            Thread.currentThread().interrupt();
+            throw timeout();
+        } catch (ExecutionException exception) {
+            Throwable cause = exception.getCause();
+            if (cause instanceof AssistantException assistantException) {
+                throw assistantException;
+            }
+            if (cause instanceof org.springframework.security.access.AccessDeniedException denied) {
+                throw denied;
+            }
+            throw new AssistantException("ASSISTANT_TOOL_FAILED", HttpStatus.BAD_GATEWAY,
+                    "工具执行失败，未写入业务数据");
+        }
+    }
+
+    private AssistantException timeout() {
+        return new AssistantException("ASSISTANT_TOOL_TIMEOUT", HttpStatus.GATEWAY_TIMEOUT,
+                "工具执行超过剩余时限");
     }
 
     private List<JsonNode> citations(JsonNode data) {
@@ -317,6 +378,7 @@ public class AssistantChatService {
     @PreDestroy
     void shutdownModelExecutor() {
         modelExecutor.shutdownNow();
+        toolExecutor.shutdownNow();
     }
 
     private long elapsedMs(long started) {

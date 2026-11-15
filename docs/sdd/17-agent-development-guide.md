@@ -13,8 +13,8 @@
 - 保留 Java 17 / Spring Boot 3.5 / MySQL / Vue 3 / Vite / Redis；不为技术栈数量重写现有业务。
 - 交付目标是单机多用户真实运行，开发设备为 RTX 2060 6GB 显存、16GB 内存；分布式仅作可选设计与学习扩展，不是交付门槛。
 - 真实算法仅 LDD；其他训练前、训练中、训练后算法页面是展示资料，不得创建真实运行结果。正式论文实验配置与既有 128 batch / 5 epochs 工程验证配置均不得擅自修改或重跑。
-- MySQL 是任务、审计、报告事实源。Redis 当前只缓存资源目录；RabbitMQ、独立 Worker 均未实现。知识检索（R6）与受控助手（R7）已有代码落点，外部模型仍是禁用适配器，不能表述为“Agent/RAG 已生产上线”。
-- Agent 通过外部大模型 API 实现，本机不部署大模型。外发边界（目标约束）：仅限按当前用户权限过滤、经服务端白名单和脱敏的 SDD 文档片段、算法参数说明和实验报告摘要；原始样本、完整日志、本机绝对路径、凭据和用户个人信息不得发送给模型或 embedding 服务。当前实现已把任务失败原因改为错误码映射，并对模型证据做字段白名单，但外部模型尚未接入，不能据此宣称端到端外发验收完成。
+- MySQL 是任务、审计、报告事实源。Redis 当前缓存资源目录，并用于 Redis 8 `vectorset` 知识向量；RabbitMQ、独立 Worker 均未实现。知识检索（R6）与受控助手（R7）已有代码落点，DeepSeek 适配器只在本机 `deepseek` profile 下启用，不能表述为“Agent/RAG 已生产上线”。
+- Agent 通过外部大模型 API 实现，本机不部署大模型。外发边界（目标约束）：仅限按当前用户权限过滤、经服务端白名单和脱敏的 SDD 文档片段、算法参数说明和实验报告摘要；原始样本、完整日志、本机绝对路径、凭据和用户个人信息不得发送给模型或 embedding 服务。当前实现已把任务失败原因改为错误码映射，对模型证据做字段白名单，并新增通用 Unix/中文绝对路径脱敏；真实 `AssistantChatService → DeepSeekAssistantModel → 本地假 HTTP` 测试已捕获最终请求体，确认禁发路径不在请求体中，但这仍是本机测试证据，不等于生产外发验收。
 - 数据集和产物保持在受控本地目录；多用户隔离必须覆盖实验任务、报告、日志、导出及下载，不得仅靠前端过滤。
 - 现有 `run_id` / `attempt`、原子领取、事务提交后派发、进度文件、前端轮询、失败重试和训练任务启动恢复应复用，不得重新造一套并存状态机。
 - 旧 `eladmin` 仅是历史基线，主要开发在 `migration-backend`、`migration-frontend`、`algorithm-runtime/vab`。外部 VaB 源码、数据集和已有产物不属于自动清理范围。
@@ -31,8 +31,8 @@
 | 导出 | `CleanSubsetExportService`、`CleanSubsetExportExecutor`、`ExportRecoveryRunner` | 已有去重、重启失败收敛与超时逻辑；进程树和文件边界继续回归 |
 | 安全 | `TaskAccessGuard`、`JwtAuthenticationFilter`、`OwnershipEndToEndIT` | 已有 owner 授权、账号状态回查和隔离库 HTTP 测试；业务库迁移与测试证据独立记录 |
 | Redis | `ResourceCatalogCache`、ADR-010 | 资源目录缓存已落地，不是分布式锁或任务状态存储 |
-| 知识检索 R6 | `KnowledgeIndexService`、`KnowledgeRetrievalMySqlIT`、`KnowledgeController` | 离线检索、ACL、引用与回答适配器已落地；真实外部模型/embedding 未接 |
-| 受控助手 R7 | `AssistantChatService`、`AssistantConfirmationService`、`AssistantSessionService`、`AssistantModelEvidence` | 工具白名单、预览确认、配额、审计、有界并发、单用户并发槽、结构化参数证据与资源指纹确认已落地；N1 改为 MySQL 权威读 + 计划资源副本，N5 助手确认矩阵扩到 17 项；外部模型仍为禁用适配器，真实 JVM 崩溃恢复与外部模型最终请求体捕获仍未完成 |
+| 知识检索 R6 | `KnowledgeIndexService`、`KnowledgeRetrievalMySqlIT`、`KnowledgeVectorStoreRedisIT`、`KnowledgeController` | 离线检索、ACL、引用、DeepSeek 回答适配器与 Redis 8 向量 ACL 混合检索已落地；本地 256 维哈希 embedding 只做词法候选重排，不是神经语义召回；生产库未建表 |
+| 受控助手 R7 | `AssistantChatService`、`AssistantConfirmationService`、`AssistantSessionService`、`AssistantModelEvidence` | 工具白名单、预览确认、配额、审计、有界并发、单用户并发槽、结构化参数证据与资源指纹确认已落地；DeepSeek 适配器本机可启用，工具剩余预算已传入 `execute(arguments, timeoutMillis)`；真实 JVM 重放已用真实 `TaskDispatchCoordinator` 验证一次派发/二次恢复不重跑；仍缺真实 Python 子进程接收与生产建表 |
 | 质量门禁 | `.github/workflows/migration-quality.yml` | 配置有 Maven/MySQL/Redis/Vite；进程守卫测试已改为 Windows/Linux 双实现，远端 Actions 结果仍需实际查询 |
 
 所有文件名相对于仓库根 `F:\Study\postgraduate\毕业论文\security_model`。开始每轮前执行 `git status --short`，阅读相关 SDD 与源码，保留其他人已有修改；与表格事实不一致时，先提交事实差异供复核，不得沿用过期结论。

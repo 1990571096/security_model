@@ -100,16 +100,18 @@ mvn -f migration-backend/pom.xml spring-boot:run -Dspring-boot.run.profiles=deep
 ## 4. 验证
 
 - `mvn -B -f migration-backend/pom.xml -Pmysql-it verify`（`MYSQL_IT_PASSWORD`、
-  `REDIS_IT=true`）→ 222 项单元测试 + 75 项 MySQL/Redis 集成测试全部通过。
-- 前端 `npm run build` 通过，Vite dev server 的 `/api`、`/auth` 代理可用。
-- 本机日志：`tmp/r11-final-verify.log`、`tmp/r11-frontend-build2.log`、
-  `tmp/r11-app-vector5.log`。
+  `REDIS_IT=true`）→ 227 项单元测试 + 78 项 MySQL/Redis 集成测试全部通过。
+- 最终外发请求体已由真实 ChatService + DeepSeek 适配器 + 本地假 HTTP 捕获，断言绝对路径、API Key 与 `Authorization` 不在 body 中。
+- 前端 `npm run build` 已通过（含监控页 `runningTaskCount` 改动），日志 `tmp/review-fix-frontend-build.log`。
+- 本机日志：`tmp/review-fix-full-verify5.log`、`tmp/review-fix-p1.log`、
+  `tmp/review-fix-vector-it3.log`、`tmp/r11-app-vector5.log`。
 
 ## 5. 事实边界
 
 - 本机真实冒烟已通过：DeepSeek 普通回答、function calling、创建预览、确认落库、
   本人任务查询、RAG 带引用回答。
-- 本地向量库已写入 408 个 SDD chunk；`VSIM` 查询可返回 chunkId。
+- 本地向量库已写入 408 个 SDD chunk；`VADD` 写入 visibility/owner 属性，`VSIM FILTER` 在候选阶段做 ACL。
+- 哈希 embedding 是词法候选重排，不是神经语义召回；词法候选为空时直接拒答，不能宣传成 BGE 语义检索。
 - 这不是生产级多用户验收：生产库迁移、BGE 神经 embedding、完整外部模型故障矩阵、
   Ubuntu CI 仍未完成。
 - 本地 embedding 是哈希特征，不等同于语义神经 embedding；演示时应明确说明。

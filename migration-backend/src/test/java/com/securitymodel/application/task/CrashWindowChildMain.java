@@ -15,15 +15,22 @@ public final class CrashWindowChildMain {
     }
 
     public static void main(String[] args) throws Exception {
-        if (args.length != 5) {
-            throw new IllegalArgumentException("url user password taskId intentStatus");
+        if (args.length != 6) {
+            throw new IllegalArgumentException("url user password taskId intentStatus runtimeHash");
         }
         String url = args[0];
         String user = args[1];
         String password = args[2];
         long taskId = Long.parseLong(args[3]);
         String intentStatus = args[4];
+        String runtimeHash = args[5];
         String runId = "run-crash-" + taskId;
+        String requestJson = "{\"taskId\":" + taskId + ",\"attempt\":1,\"runId\":\"" + runId
+                + "\",\"taskName\":\"crash-window-" + taskId
+                + "\",\"stage\":\"pre\",\"createdBy\":\"crash-child\",\"customParams\":\"{}\","
+                + "\"dataset\":{\"id\":1,\"name\":\"fixture-dataset\"},"
+                + "\"algorithm\":{\"id\":1,\"name\":\"fixture-algorithm\"}}";
+        String requestHash = sha256(requestJson);
 
         Class.forName("com.mysql.cj.jdbc.Driver");
         try (Connection connection = DriverManager.getConnection(url, user, password)) {
@@ -43,13 +50,15 @@ public final class CrashWindowChildMain {
             try (PreparedStatement intent = connection.prepareStatement("""
                     INSERT INTO sys_task_dispatch_intent
                       (task_id, run_id, attempt, status, schema_version, request_json, request_hash,
-                       created_at, updated_at)
-                    VALUES (?, ?, 1, ?, 1, '{}', ?, NOW(), NOW())
+                       runtime_hash, created_at, updated_at)
+                    VALUES (?, ?, 1, ?, 1, ?, ?, ?, NOW(), NOW())
                     """)) {
                 intent.setLong(1, taskId);
                 intent.setString(2, runId);
                 intent.setString(3, intentStatus);
-                intent.setString(4, "0".repeat(64));
+                intent.setString(4, requestJson);
+                intent.setString(5, requestHash);
+                intent.setString(6, runtimeHash);
                 intent.executeUpdate();
             }
         }
@@ -57,5 +66,15 @@ public final class CrashWindowChildMain {
         System.out.flush();
         Thread.sleep(200);
         Runtime.getRuntime().halt(0);
+    }
+
+    private static String sha256(String value) throws Exception {
+        byte[] hash = java.security.MessageDigest.getInstance("SHA-256")
+                .digest(value.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        StringBuilder hex = new StringBuilder();
+        for (byte item : hash) {
+            hex.append(String.format("%02x", item));
+        }
+        return hex.toString();
     }
 }
