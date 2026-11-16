@@ -76,6 +76,16 @@ public class PythonLddTaskExecutor implements DefenseTaskExecutor {
     @Override
     @Async("taskAsync")
     public void runPreDefense(DefenseTaskRequest request) {
+        executeAndWait(request);
+    }
+
+    /**
+     * Worker path: the caller blocks until this returns. The returned value is an audit
+     * outcome, not a command to ACK by itself; the consumer re-reads the MySQL terminal
+     * state before ACK.
+     */
+    @Override
+    public String executeAndWait(DefenseTaskRequest request) {
         String startedAt = OffsetDateTime.now().toString();
         long metricsStarted = System.nanoTime();
         String metricOutcome = "failed";
@@ -86,7 +96,7 @@ public class PythonLddTaskExecutor implements DefenseTaskExecutor {
         try {
             if (isCanceled(request)) {
                 metricOutcome = "canceled";
-                return;
+                return metricOutcome;
             }
             context = createContext(request);
             updateProgress(request, 10);
@@ -135,6 +145,7 @@ public class PythonLddTaskExecutor implements DefenseTaskExecutor {
                         request.getTaskId(), request.getRunId());
             }
         }
+        return metricOutcome;
     }
 
     @Override

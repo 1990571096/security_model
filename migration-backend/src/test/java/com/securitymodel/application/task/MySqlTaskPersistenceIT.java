@@ -1,5 +1,6 @@
 package com.securitymodel.application.task;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.securitymodel.domain.task.PreDefenseTask;
 import com.securitymodel.domain.task.TaskDispatchIntent;
 import com.securitymodel.infrastructure.persistence.mapper.PreDefenseTaskMapper;
@@ -40,6 +41,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -77,6 +79,12 @@ class MySqlTaskPersistenceIT {
 
     @Autowired
     private com.securitymodel.infrastructure.persistence.mapper.RequestIdempotencyMapper idempotencyMapper;
+
+    @Autowired
+    private com.securitymodel.infrastructure.persistence.mapper.DispatchOutboxMapper outboxMapper;
+
+    @Autowired
+    private com.securitymodel.infrastructure.persistence.mapper.DispatchConsumptionMapper consumptionMapper;
 
     @Autowired
     private JdbcTemplate jdbc;
@@ -165,6 +173,58 @@ class MySqlTaskPersistenceIT {
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
                 """);
         jdbc.update("DELETE FROM sys_task_dispatch_intent");
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS sys_dispatch_outbox (
+                  outbox_id BIGINT NOT NULL AUTO_INCREMENT,
+                  message_id VARCHAR(64) NOT NULL,
+                  event_type VARCHAR(32) NOT NULL,
+                  task_id BIGINT NOT NULL,
+                  run_id VARCHAR(64) NOT NULL,
+                  attempt INT NOT NULL,
+                  intent_id BIGINT NOT NULL,
+                  payload_hash CHAR(64) NOT NULL,
+                  payload_json LONGTEXT NOT NULL,
+                  status VARCHAR(20) NOT NULL,
+                  publish_attempts INT NOT NULL DEFAULT 0,
+                  claim_owner VARCHAR(128) NULL,
+                  claim_until DATETIME(3) NULL,
+                  claim_token CHAR(36) NULL,
+                  next_at DATETIME(3) NOT NULL,
+                  last_error VARCHAR(255) NULL,
+                  created_at DATETIME(3) NOT NULL,
+                  updated_at DATETIME(3) NOT NULL,
+                  published_at DATETIME(3) NULL,
+                  PRIMARY KEY (outbox_id),
+                  UNIQUE KEY uk_dispatch_outbox_message (message_id),
+                  UNIQUE KEY uk_dispatch_outbox_run (task_id, run_id, attempt, event_type),
+                  KEY idx_dispatch_outbox_claim (status, next_at),
+                  KEY idx_dispatch_outbox_expiry (status, claim_until)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                """);
+        jdbc.update("DELETE FROM sys_dispatch_outbox");
+        jdbc.execute("""
+                CREATE TABLE IF NOT EXISTS sys_dispatch_consumption (
+                  consumption_id BIGINT NOT NULL AUTO_INCREMENT,
+                  message_id VARCHAR(64) NOT NULL,
+                  task_id BIGINT NOT NULL,
+                  run_id VARCHAR(64) NOT NULL,
+                  attempt INT NOT NULL,
+                  worker_id VARCHAR(128) NOT NULL,
+                  status VARCHAR(20) NOT NULL,
+                  outcome VARCHAR(32) NULL,
+                  error_code VARCHAR(64) NULL,
+                  claim_owner VARCHAR(128) NULL,
+                  claim_until DATETIME(3) NULL,
+                  claim_token CHAR(36) NULL,
+                  created_at DATETIME(3) NOT NULL,
+                  updated_at DATETIME(3) NOT NULL,
+                  terminal_at DATETIME(3) NULL,
+                  PRIMARY KEY (consumption_id),
+                  UNIQUE KEY uk_dispatch_consumption_message (message_id),
+                  KEY idx_dispatch_consumption_claim (status, claim_until)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                """);
+        jdbc.update("DELETE FROM sys_dispatch_consumption");
         jdbc.execute("""
                 CREATE TABLE IF NOT EXISTS sys_request_idempotency (
                   record_id BIGINT NOT NULL AUTO_INCREMENT,
@@ -1096,6 +1156,120 @@ class MySqlTaskPersistenceIT {
                 "SELECT status FROM sys_pre_defense_export WHERE task_id=91", String.class));
         assertEquals("EXPORT_INTERRUPTED", jdbc.queryForObject(
                 "SELECT error_code FROM sys_pre_defense_export WHERE task_id=91", String.class));
+    }
+
+    @Test
+    void outboxClaimAndConditionalPublishAreDurable() {
+        TaskOutboxService service = new TaskOutboxService(outboxMapper, outboxObjectMapper());
+        LocalDateTime now = LocalDateTime.now();
+        TaskDispatchIntent intent = outboxIntent();
+        DefenseTaskRequest request = outboxRequest();
+        var outbox = service.createPending(request, intent, now);
+        var duplicate = service.createPending(request, intent, now);
+        assertEquals(outbox.getMessageId(), duplicate.getMessageId());
+        assertEquals(1, jdbc.queryForObject(
+                "SELECT COUNT(*) FROM sys_dispatch_outbox WHERE task_id = 801", Integer.class));
+
+        var claimed = service.claimBatch(now.plusSeconds(5), "relay-it", 1, 60);
+        assertEquals(1, claimed.size());
+        assertEquals("publishing", jdbc.queryForObject(
+                "SELECT status FROM sys_dispatch_outbox WHERE task_id = 801", String.class));
+        assertTrue(service.markPublished(claimed.get(0), LocalDateTime.now()));
+        assertEquals("published", jdbc.queryForObject(
+                "SELECT status FROM sys_dispatch_outbox WHERE task_id = 801", String.class));
+    }
+
+    @Test
+    void expiredPublishingIsReclaimedAndOldConfirmCannotWin() {
+        TaskOutboxService service = new TaskOutboxService(outboxMapper, outboxObjectMapper());
+        LocalDateTime now = LocalDateTime.now();
+        service.createPending(outboxRequest(), outboxIntent(), now);
+        var first = service.claimBatch(now.plusSeconds(5), "relay-old", 1, 60).get(0);
+        jdbc.update("UPDATE sys_dispatch_outbox SET claim_until = ? WHERE task_id = 801",
+                now.minusSeconds(5));
+        assertEquals(1, service.reclaimExpired(now));
+        assertEquals("failed", jdbc.queryForObject(
+                "SELECT status FROM sys_dispatch_outbox WHERE task_id = 801", String.class));
+
+        var second = service.claimBatch(now.plusSeconds(10), "relay-new", 1, 60).get(0);
+        assertFalse(service.markPublished(first, LocalDateTime.now()));
+        assertTrue(service.markPublished(second, LocalDateTime.now()));
+        assertEquals("published", jdbc.queryForObject(
+                "SELECT status FROM sys_dispatch_outbox WHERE task_id = 801", String.class));
+    }
+
+    @Test
+    void deadOutboxReplayIsConditionalAndKeepsMessageId() {
+        TaskOutboxService service = new TaskOutboxService(outboxMapper, outboxObjectMapper());
+        LocalDateTime now = LocalDateTime.now();
+        var outbox = service.createPending(outboxRequest(), outboxIntent(), now);
+        var claimed = service.claimBatch(now.plusSeconds(5), "relay-dead", 1, 60).get(0);
+        assertTrue(service.markDead(claimed, "broker exhausted", now));
+
+        assertTrue(service.replayDead(outbox.getMessageId(), now) != null);
+        var replayed = service.findByMessageId(outbox.getMessageId());
+        assertEquals(null, replayed);
+        var replayedRow = jdbc.queryForObject(
+                "SELECT message_id FROM sys_dispatch_outbox WHERE task_id = 801",
+                String.class);
+        assertEquals("new", jdbc.queryForObject(
+                "SELECT status FROM sys_dispatch_outbox WHERE message_id = ?",
+                String.class, replayedRow));
+        assertEquals(0, jdbc.queryForObject(
+                "SELECT publish_attempts FROM sys_dispatch_outbox WHERE message_id = ?",
+                Integer.class, replayedRow));
+        assertFalse(replayedRow.equals(outbox.getMessageId()));
+        assertFalse(service.replayDead(outbox.getMessageId(), now) != null);
+    }
+
+    @Test
+    void consumptionLedgerIsIdempotent() {
+        TaskDispatchConsumptionService service = new TaskDispatchConsumptionService(consumptionMapper);
+        LocalDateTime now = LocalDateTime.now();
+        DispatchEvent event = new DispatchEvent(DispatchEvent.SCHEMA_VERSION, "message-it-1",
+                DispatchEvent.EVENT_TASK_DISPATCH, 802L, "run-it", 1, null, 17L,
+                "b".repeat(64), now);
+        var first = service.claim(event, "worker-it", 300, now);
+        assertEquals(TaskDispatchConsumptionService.ClaimState.CLAIMED, first.state());
+        var second = service.claim(event, "worker-it", 300, now);
+        assertEquals(TaskDispatchConsumptionService.ClaimState.IN_PROGRESS, second.state());
+        assertTrue(service.markTerminal(event.messageId(), first.claimToken(), "success",
+                "TASK_SUCCESS", now));
+        var third = service.claim(event, "worker-it", 300, now);
+        assertEquals(TaskDispatchConsumptionService.ClaimState.DUPLICATE, third.state());
+        assertEquals(1, jdbc.queryForObject(
+                "SELECT COUNT(*) FROM sys_dispatch_consumption WHERE message_id = 'message-it-1'",
+                Integer.class));
+    }
+
+    private ObjectMapper outboxObjectMapper() {
+        return new ObjectMapper().registerModule(new com.fasterxml.jackson.datatype.jsr310.JavaTimeModule());
+    }
+
+    private TaskDispatchIntent outboxIntent() {
+        TaskDispatchIntent intent = new TaskDispatchIntent();
+        intent.setTaskId(801L);
+        intent.setRunId("run-outbox");
+        intent.setAttempt(1);
+        intent.setStatus(TaskDispatchIntent.PENDING);
+        intent.setSchemaVersion(1);
+        intent.setRequestJson("{}");
+        intent.setRequestHash("c".repeat(64));
+        intent.setCreatedAt(LocalDateTime.now());
+        intent.setUpdatedAt(LocalDateTime.now());
+        intentMapper.insert(intent);
+        return intent;
+    }
+
+    private DefenseTaskRequest outboxRequest() {
+        DefenseTaskRequest request = new DefenseTaskRequest();
+        request.setTaskId(801L);
+        request.setRunId("run-outbox");
+        request.setAttempt(1);
+        request.setTaskName("outbox test");
+        request.setStage("pre_defense");
+        request.setCreatedBy("tester");
+        return request;
     }
 
     private TaskRecoveryRunner recoveryRunner(PreDefenseTaskMapper mapper) {

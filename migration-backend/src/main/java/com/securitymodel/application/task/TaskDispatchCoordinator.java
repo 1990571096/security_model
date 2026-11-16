@@ -33,6 +33,7 @@ public class TaskDispatchCoordinator {
     private final DefenseTaskExecutor executor;
     private final AttemptProcessRegistry processRegistry;
     private final GpuLeaseService gpuLeaseService;
+    private final DispatchClaimTransactionService claimTransactionService;
     private final ExecutionFingerprintService fingerprintService;
     private final PreDefenseTaskMapper taskMapper;
     private final SysUserMapper userMapper;
@@ -50,16 +51,114 @@ public class TaskDispatchCoordinator {
                                    DatasetMapper datasetMapper,
                                    AlgorithmMapper algorithmMapper,
                                    ObjectMapper objectMapper) {
+        this(intentService, executor, processRegistry, gpuLeaseService, fingerprintService,
+                taskMapper, userMapper, datasetMapper, algorithmMapper, objectMapper,
+                new DispatchClaimTransactionService(intentService, gpuLeaseService));
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public TaskDispatchCoordinator(TaskDispatchIntentService intentService,
+                                   DefenseTaskExecutor executor,
+                                   AttemptProcessRegistry processRegistry,
+                                   GpuLeaseService gpuLeaseService,
+                                   ExecutionFingerprintService fingerprintService,
+                                   PreDefenseTaskMapper taskMapper,
+                                   SysUserMapper userMapper,
+                                   DatasetMapper datasetMapper,
+                                   AlgorithmMapper algorithmMapper,
+                                   ObjectMapper objectMapper,
+                                   DispatchClaimTransactionService claimTransactionService) {
         this.intentService = intentService;
         this.executor = executor;
         this.processRegistry = processRegistry;
         this.gpuLeaseService = gpuLeaseService;
+        this.claimTransactionService = claimTransactionService;
         this.fingerprintService = fingerprintService;
         this.taskMapper = taskMapper;
         this.userMapper = userMapper;
         this.datasetMapper = datasetMapper;
         this.algorithmMapper = algorithmMapper;
         this.objectMapper = objectMapper;
+    }
+
+    public enum QueueDispatchResult { TERMINAL, BUSY, STALE, UNCERTAIN }
+
+    /**
+     * Worker entry point. It blocks until Python exits, so the caller can decide ACK from a
+     * real completion signal instead of the async method's return. GPU_BUSY rolls the intent
+     * back to pending; it must not fail the task or leak a lease.
+     */
+    public QueueDispatchResult consume(TaskDispatchIntent intent, PreDefenseTask task) {
+        if (task == null || !"running".equals(task.getStatus())
+                || !intent.getRunId().equals(task.getCurrentRunId())
+                || !intent.getAttempt().equals(task.getCurrentAttempt())) {
+            return QueueDispatchResult.STALE;
+        }
+        DefenseTaskRequest request;
+        try {
+            request = intentService.readRequest(intent);
+            validateRequestIdentity(intent, task, request);
+            validateResources(request);
+            ObjectNode runtime = fingerprintService.buildRuntimeSnapshot(request);
+            String runtimeHash = fingerprintService.sha256(runtime.toString());
+            if (intent.getRuntimeHash() != null && !intent.getRuntimeHash().equals(runtimeHash)) {
+                failAndAbandon(intent.getTaskId(), intent.getRunId(), intent.getAttempt(),
+                        "DISPATCH_SNAPSHOT_CHANGED", "数据或算法指纹已变化，拒绝消费");
+                return QueueDispatchResult.STALE;
+            }
+        } catch (TaskCommandException exception) {
+            failAndAbandon(intent.getTaskId(), intent.getRunId(), intent.getAttempt(),
+                    "DISPATCH_SNAPSHOT_INVALID", exception.getMessage());
+            return QueueDispatchResult.STALE;
+        }
+        DispatchClaimTransactionService.ClaimOutcome claim;
+        try {
+            claim = claimTransactionService.claim(intent, LocalDateTime.now());
+        } catch (TaskCommandException exception) {
+            if (exception.getMessage() != null && exception.getMessage().startsWith("GPU_")) {
+                log.info("Worker 暂未取得 GPU 槽位: taskId={}, runId={}, reason={}",
+                        intent.getTaskId(), intent.getRunId(), exception.getMessage());
+                return QueueDispatchResult.BUSY;
+            }
+            throw exception;
+        }
+        if (!claim.claimed()) {
+            return QueueDispatchResult.STALE;
+        }
+        GpuLease lease = claim.lease();
+        request.setGpuLeaseToken(lease.getLeaseToken());
+        request.setGpuSlotId(lease.getSlotId());
+        request.setGpuFencingToken(lease.getFencingToken());
+        PreDefenseTask afterLease = taskMapper.selectById(intent.getTaskId());
+        if (afterLease == null || !"running".equals(afterLease.getStatus())) {
+            gpuLeaseService.releaseByRun(intent.getTaskId(), intent.getRunId());
+            intentService.abandon(intent.getTaskId(), intent.getRunId(), intent.getAttempt(),
+                    "TASK_CANCELED", LocalDateTime.now());
+            return QueueDispatchResult.TERMINAL;
+        }
+        try {
+            processRegistry.markAccepted(intent.getTaskId(), intent.getRunId(), intent.getAttempt());
+            executor.executeAndWait(request);
+        } catch (RuntimeException exception) {
+            // The process may already have started; never roll back or re-run blindly.
+            log.warn("Worker 执行结果不确定: taskId={}, runId={}, reason={}",
+                    intent.getTaskId(), intent.getRunId(), exception.getMessage());
+            return QueueDispatchResult.UNCERTAIN;
+        }
+        try {
+            intentService.markSubmitted(intent.getTaskId(), intent.getRunId(),
+                    intent.getAttempt(), LocalDateTime.now());
+        } catch (RuntimeException exception) {
+            log.warn("Worker 完成但意图回写失败: taskId={}, runId={}, reason={}",
+                    intent.getTaskId(), intent.getRunId(), exception.getMessage());
+        }
+        PreDefenseTask finished = taskMapper.selectById(intent.getTaskId());
+        return finished != null && isTerminal(finished.getStatus())
+                ? QueueDispatchResult.TERMINAL : QueueDispatchResult.UNCERTAIN;
+    }
+
+    private boolean isTerminal(String status) {
+        return "success".equals(status) || "failed".equals(status) || "canceled".equals(status);
     }
 
     /** Runs after the launch transaction commits; never throws into the caller's thread. */

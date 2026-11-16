@@ -72,6 +72,11 @@ public class AttemptProcessRegistry {
                 && locallyAccepted.contains(key(taskId, runId, attempt));
     }
 
+    /** Ops view: number of attempts this JVM has accepted and not yet cleared. */
+    public int localAcceptedCount() {
+        return locallyAccepted.size();
+    }
+
     private String key(Long taskId, String runId, Integer attempt) {
         return taskId + "|" + runId + "|" + attempt;
     }

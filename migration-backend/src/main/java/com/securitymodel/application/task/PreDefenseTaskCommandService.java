@@ -12,6 +12,7 @@ import com.securitymodel.domain.dataset.Dataset;
 import com.securitymodel.domain.hyper.Hyper;
 import com.securitymodel.domain.lease.GpuLease;
 import com.securitymodel.domain.task.PreDefenseTask;
+import com.securitymodel.domain.task.TaskDispatchIntent;
 import com.securitymodel.infrastructure.executor.DefenseTaskExecutor;
 import com.securitymodel.infrastructure.persistence.mapper.PreDefenseTaskMapper;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -46,6 +47,8 @@ public class PreDefenseTaskCommandService {
     private final SchedulingReadinessGate readinessGate;
     private final TaskDispatchIntentService dispatchIntentService;
     private final TaskDispatchCoordinator dispatchCoordinator;
+    private final DispatchRuntimePolicy dispatchRuntimePolicy;
+    private final TaskOutboxService taskOutboxService;
 
     public PreDefenseTaskCommandService(
             PreDefenseTaskMapper taskMapper,
@@ -67,7 +70,7 @@ public class PreDefenseTaskCommandService {
                 taskExecutionQuotaPolicy, gpuLeaseService, executionFingerprintService,
                 afterCommitTaskDispatcher, objectMapper, operationAuditService, currentUserService,
                 taskAccessGuard, readinessGate, dispatchIntentService, dispatchCoordinator,
-                new TaskCancellationDispatcher());
+                new TaskCancellationDispatcher(), new DispatchRuntimePolicy(), null);
     }
 
     @Autowired
@@ -87,7 +90,9 @@ public class PreDefenseTaskCommandService {
             SchedulingReadinessGate readinessGate,
             TaskDispatchIntentService dispatchIntentService,
             TaskDispatchCoordinator dispatchCoordinator,
-            TaskCancellationDispatcher taskCancellationDispatcher) {
+            TaskCancellationDispatcher taskCancellationDispatcher,
+            DispatchRuntimePolicy dispatchRuntimePolicy,
+            TaskOutboxService taskOutboxService) {
         this.taskMapper = taskMapper;
         this.resourceQueryService = resourceQueryService;
         this.defenseTaskExecutor = defenseTaskExecutor;
@@ -104,6 +109,8 @@ public class PreDefenseTaskCommandService {
         this.readinessGate = readinessGate;
         this.dispatchIntentService = dispatchIntentService;
         this.dispatchCoordinator = dispatchCoordinator;
+        this.dispatchRuntimePolicy = dispatchRuntimePolicy;
+        this.taskOutboxService = taskOutboxService;
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -248,8 +255,12 @@ public class PreDefenseTaskCommandService {
         }
         dispatchIntentService.abandon(taskId, task.getCurrentRunId(), task.getCurrentAttempt(),
                 "TASK_CANCELED", LocalDateTime.now());
-        taskCancellationDispatcher.dispatch(
-                () -> defenseTaskExecutor.cancelPreDefense(taskId, task.getCurrentRunId()));
+        if (dispatchRuntimePolicy.directDispatchOwnedByApi()) {
+            taskCancellationDispatcher.dispatch(
+                    () -> defenseTaskExecutor.cancelPreDefense(taskId, task.getCurrentRunId()));
+        }
+        // rabbit API has no local execution; the Worker's independent DB cancel monitor
+        // observes the committed canceled status and terminates its process tree.
         operationAuditService.recordTask(
                 taskId, "CANCEL", "running", "canceled",
                 Map.of("taskId", taskId), "取消 LDD 清洗任务");
@@ -436,11 +447,20 @@ public class PreDefenseTaskCommandService {
         if (!readinessGate.isReady()) {
             throw new TaskCommandException("SCHEDULING_NOT_READY: 启动恢复尚未完成，暂不接受新的执行请求");
         }
+        if (dispatchRuntimePolicy.rabbitMode() && !dispatchRuntimePolicy.writesOutbox()) {
+            throw new TaskCommandException(
+                    "DISPATCH_ROLE_FORBIDDEN: 当前进程不是 API 角色，不能提交新的派发事务");
+        }
+        boolean rabbitApi = dispatchRuntimePolicy.writesOutbox();
+        if (rabbitApi && taskOutboxService == null) {
+            throw new TaskCommandException("DISPATCH_OUTBOX_UNAVAILABLE: Outbox 持久层未装配");
+        }
         int attempt = nextAttempt(task.getExecutionSnapshot());
         String runId = UUID.randomUUID().toString();
-        // The lease and the task claim share one transaction: losing the GPU slot rolls the
-        // claim back, and a failed claim rolls the lease back, so neither can half-commit.
-        GpuLease lease = gpuLeaseService.acquire(task.getTaskId(), runId, attempt);
+        // db: lease + task claim + intent share one transaction. rabbit: the API must not
+        // occupy the physical GPU while the message waits; the Worker acquires it later.
+        GpuLease lease = rabbitApi ? null
+                : gpuLeaseService.acquire(task.getTaskId(), runId, attempt);
         DefenseTaskRequest request;
         try {
             request = buildExecutionRequest(task, runId, attempt, lease, approvedPlan);
@@ -453,13 +473,23 @@ public class PreDefenseTaskCommandService {
                 throw new TaskCommandException("任务状态已变化，请刷新后重试");
             }
             ObjectNode runtime = executionFingerprintService.buildRuntimeSnapshot(request);
-            dispatchIntentService.createPending(request,
+            TaskDispatchIntent intent = dispatchIntentService.createPending(request,
                     executionFingerprintService.sha256(runtime.toString()), startTime);
+            if (rabbitApi) {
+                taskOutboxService.createPending(request, intent, startTime, task.getOwnerUserId());
+            }
         } catch (RuntimeException exception) {
             // The DB transaction will roll the lease row back, but this JVM's in-memory
             // heartbeat registry must also forget it or it may try to renew a dead lease.
-            gpuLeaseService.forgetLocal(lease.getLeaseToken());
+            if (lease != null) {
+                gpuLeaseService.forgetLocal(lease.getLeaseToken());
+            }
             throw exception;
+        }
+        if (rabbitApi) {
+            // Relay publishes only after the command transaction commits. No Python is
+            // started in the API process for rabbit mode.
+            return;
         }
         // Dispatch runs only after commit; it is intentionally outside the rollback cleanup.
         afterCommitTaskDispatcher.dispatch(
@@ -505,9 +535,9 @@ public class PreDefenseTaskCommandService {
                 .dataset(approvedPlan.dataset())
                 .algorithm(approvedPlan.algorithm())
                 .hyperParameter(approvedPlan.hyper())
-                .gpuLeaseToken(lease.getLeaseToken())
-                .gpuSlotId(lease.getSlotId())
-                .gpuFencingToken(lease.getFencingToken())
+                .gpuLeaseToken(lease == null ? null : lease.getLeaseToken())
+                .gpuSlotId(lease == null ? null : lease.getSlotId())
+                .gpuFencingToken(lease == null ? null : lease.getFencingToken())
                 .build();
     }
 
@@ -536,11 +566,15 @@ public class PreDefenseTaskCommandService {
         attempt.set("request", objectMapper.valueToTree(request));
         attempt.set("runtime", executionFingerprintService.buildRuntimeSnapshot(request));
         attempt.set("quota", quota);
-        ObjectNode gpuLease = objectMapper.createObjectNode();
-        gpuLease.put("slotId", lease.getSlotId());
-        gpuLease.put("fencingToken", lease.getFencingToken());
-        gpuLease.put("expiresAt", lease.getExpiresAt() == null ? null : lease.getExpiresAt().toString());
-        attempt.set("gpuLease", gpuLease);
+        if (lease == null) {
+            attempt.putNull("gpuLease");
+        } else {
+            ObjectNode gpuLease = objectMapper.createObjectNode();
+            gpuLease.put("slotId", lease.getSlotId());
+            gpuLease.put("fencingToken", lease.getFencingToken());
+            gpuLease.put("expiresAt", lease.getExpiresAt() == null ? null : lease.getExpiresAt().toString());
+            attempt.set("gpuLease", gpuLease);
+        }
         attempt.put("snapshotHash", executionFingerprintService.sha256(attempt.toString()));
         attempts.add(attempt);
         snapshot.put("version", 2);

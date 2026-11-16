@@ -27,7 +27,8 @@ public class TaskDispatchIntentService {
         this.objectMapper = objectMapper;
     }
 
-    public void createPending(DefenseTaskRequest request, String runtimeHash, LocalDateTime now) {
+    public TaskDispatchIntent createPending(DefenseTaskRequest request, String runtimeHash,
+                                            LocalDateTime now) {
         TaskDispatchIntent intent = new TaskDispatchIntent();
         intent.setTaskId(request.getTaskId());
         intent.setRunId(request.getRunId());
@@ -40,6 +41,7 @@ public class TaskDispatchIntentService {
         intent.setCreatedAt(now);
         intent.setUpdatedAt(now);
         mapper.insert(intent);
+        return intent;
     }
 
     public TaskDispatchIntent findByRun(Long taskId, String runId, Integer attempt) {
@@ -49,8 +51,21 @@ public class TaskDispatchIntentService {
         return mapper.findByRun(taskId, runId, attempt);
     }
 
+    public TaskDispatchIntent findByRunForUpdate(Long taskId, String runId, Integer attempt) {
+        if (taskId == null || runId == null || attempt == null) {
+            return null;
+        }
+        return mapper.findByRunForUpdate(taskId, runId, attempt);
+    }
+
     public boolean markSubmitting(Long taskId, String runId, Integer attempt, LocalDateTime now) {
         return mapper.markSubmitting(taskId, runId, attempt, now) == 1;
+    }
+
+    /** Rabbit Worker: GPU_BUSY must leave the intent safely retryable, not failed. */
+    public boolean rollbackSubmitting(Long taskId, String runId, Integer attempt,
+                                      LocalDateTime now) {
+        return mapper.rollbackSubmitting(taskId, runId, attempt, now) == 1;
     }
 
     public void markSubmitted(Long taskId, String runId, Integer attempt, LocalDateTime now) {

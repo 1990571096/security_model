@@ -21,6 +21,15 @@ public interface TaskDispatchIntentMapper extends BaseMapper<TaskDispatchIntent>
                                  @Param("runId") String runId,
                                  @Param("attempt") Integer attempt);
 
+    @Select("""
+            SELECT * FROM sys_task_dispatch_intent
+            WHERE task_id = #{taskId} AND run_id = #{runId} AND attempt = #{attempt}
+            FOR UPDATE
+            """)
+    TaskDispatchIntent findByRunForUpdate(@Param("taskId") Long taskId,
+                                          @Param("runId") String runId,
+                                          @Param("attempt") Integer attempt);
+
     @Update("""
             UPDATE sys_task_dispatch_intent
             SET status = 'submitting', updated_at = #{now}
@@ -66,6 +75,17 @@ public interface TaskDispatchIntentMapper extends BaseMapper<TaskDispatchIntent>
                        @Param("attempt") Integer attempt,
                        @Param("errorCode") String errorCode,
                        @Param("now") LocalDateTime now);
+
+    @Update("""
+            UPDATE sys_task_dispatch_intent
+            SET status = 'pending', updated_at = #{now}
+            WHERE task_id = #{taskId} AND run_id = #{runId} AND attempt = #{attempt}
+              AND status = 'submitting'
+            """)
+    int rollbackSubmitting(@Param("taskId") Long taskId,
+                           @Param("runId") String runId,
+                           @Param("attempt") Integer attempt,
+                           @Param("now") LocalDateTime now);
 
     @Select("""
             SELECT * FROM sys_task_dispatch_intent

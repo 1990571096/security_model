@@ -21,11 +21,28 @@ spring:
       password: ${REDIS_PASSWORD:}
       connect-timeout: ${REDIS_CONNECT_TIMEOUT:300ms}
       timeout: ${REDIS_COMMAND_TIMEOUT:500ms}
+  rabbitmq:
+    host: ${RABBITMQ_HOST:localhost}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USERNAME:guest}
+    password: ${RABBITMQ_PASSWORD:guest}
+    virtual-host: ${RABBITMQ_VHOST:/}
+    publisher-confirm-type: correlated
+    publisher-returns: true
+    listener:
+      simple:
+        acknowledge-mode: manual
+        prefetch: 1
 mybatis-plus:
   configuration:
     # Keep one slow query from holding an assistant request slot indefinitely.
     default-statement-timeout: ${DB_STATEMENT_TIMEOUT_SECONDS:5}
 management:
+  health:
+    # The default profile has no RabbitMQ; dispatch health is exposed by the
+    # admin-only /api/observability/dispatch endpoint instead.
+    rabbit:
+      enabled: false
   endpoints:
     web:
       exposure:
@@ -49,6 +66,10 @@ security-model:
   legacy:
     base-url: ${SECURITY_MODEL_LEGACY_BASE_URL:http://localhost:8000}
   dispatch:
+    # R4: db keeps the R3 in-process path; rabbit writes Outbox and lets a Worker execute.
+    # role=worker is only valid with mode=rabbit (validated at startup).
+    mode: ${SECURITY_MODEL_DISPATCH_MODE:db}
+    role: ${SECURITY_MODEL_DISPATCH_ROLE:api}
     # Persistent dispatch intent recovery (R3). Only intents older than the age threshold
     # are scanned; a pending intent older than the expiry is failed explicitly.
     pending-scan-age-seconds: ${SECURITY_MODEL_DISPATCH_PENDING_SCAN_AGE_SECONDS:30}
@@ -56,6 +77,29 @@ security-model:
     scan-batch-size: ${SECURITY_MODEL_DISPATCH_SCAN_BATCH_SIZE:20}
     scan-interval-ms: ${SECURITY_MODEL_DISPATCH_SCAN_INTERVAL_MS:10000}
     scan-initial-delay-ms: ${SECURITY_MODEL_DISPATCH_SCAN_INITIAL_DELAY_MS:30000}
+    outbox:
+      claim-seconds: ${SECURITY_MODEL_DISPATCH_OUTBOX_CLAIM_SECONDS:60}
+      batch-size: ${SECURITY_MODEL_DISPATCH_OUTBOX_BATCH_SIZE:20}
+      relay-interval-ms: ${SECURITY_MODEL_DISPATCH_OUTBOX_RELAY_INTERVAL_MS:3000}
+      max-publish-attempts: ${SECURITY_MODEL_DISPATCH_OUTBOX_MAX_PUBLISH_ATTEMPTS:3}
+      confirm-timeout-ms: ${SECURITY_MODEL_DISPATCH_OUTBOX_CONFIRM_TIMEOUT_MS:5000}
+      retry-delays-seconds: ${SECURITY_MODEL_DISPATCH_OUTBOX_RETRY_DELAYS_SECONDS:5,30,120}
+    worker:
+      consumption-claim-seconds: ${SECURITY_MODEL_DISPATCH_WORKER_CONSUMPTION_CLAIM_SECONDS:300}
+      cancel-scan-interval-ms: ${SECURITY_MODEL_DISPATCH_WORKER_CANCEL_SCAN_INTERVAL_MS:2000}
+      cancel-lookback-seconds: ${SECURITY_MODEL_DISPATCH_WORKER_CANCEL_LOOKBACK_SECONDS:3600}
+      max-retries: ${SECURITY_MODEL_DISPATCH_WORKER_MAX_RETRIES:3}
+    rabbit:
+      exchange: ${SECURITY_MODEL_DISPATCH_RABBIT_EXCHANGE:security-model.dispatch}
+      queue: ${SECURITY_MODEL_DISPATCH_RABBIT_QUEUE:security-model.dispatch.worker}
+      routing-key: ${SECURITY_MODEL_DISPATCH_RABBIT_ROUTING_KEY:task.dispatch}
+      dead-letter-exchange: ${SECURITY_MODEL_DISPATCH_RABBIT_DLX:security-model.dispatch.dlx}
+      dead-letter-queue: ${SECURITY_MODEL_DISPATCH_RABBIT_DLQ:security-model.dispatch.dlq}
+      dead-letter-routing-key: ${SECURITY_MODEL_DISPATCH_RABBIT_DLQ_ROUTING_KEY:task.dispatch.dead}
+      retry-queue-prefix: ${SECURITY_MODEL_DISPATCH_RABBIT_RETRY_PREFIX:security-model.dispatch.retry.}
+  executor:
+    # Relay, cancellation scan and recovery must not share one scheduling thread.
+    scheduler-pool-size: ${SECURITY_MODEL_EXECUTOR_SCHEDULER_POOL_SIZE:4}
   observability:
     # A running task whose update_time is older than this is counted as stale.
     stale-progress-seconds: ${SECURITY_MODEL_OBSERVABILITY_STALE_PROGRESS_SECONDS:600}

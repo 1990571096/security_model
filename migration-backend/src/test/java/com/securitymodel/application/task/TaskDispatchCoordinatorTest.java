@@ -11,6 +11,7 @@ import com.securitymodel.infrastructure.persistence.mapper.PreDefenseTaskMapper;
 import com.securitymodel.infrastructure.persistence.mapper.DatasetMapper;
 import com.securitymodel.infrastructure.persistence.mapper.AlgorithmMapper;
 import org.junit.jupiter.api.Test;
+import org.springframework.dao.DataAccessResourceFailureException;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -195,6 +196,45 @@ class TaskDispatchCoordinatorTest {
         verify(taskMapper).failBeforeExecution(eq(1L), eq("run-1"), eq(1), any(), any());
         verify(intentService).abandon(eq(1L), eq("run-1"), eq(1),
                 eq("DISPATCH_SNAPSHOT_CHANGED"), any());
+    }
+
+    @Test
+    void consumeDatabaseFailureIsNotMisclassifiedAsGpuBusy() {
+        TaskDispatchIntent intent = intent();
+        DefenseTaskRequest request = request();
+        when(intentService.readRequest(intent)).thenReturn(request);
+        ObjectNode runtime = objectMapper.createObjectNode();
+        runtime.set("datasetFingerprint", objectMapper.createObjectNode().put("available", true));
+        runtime.set("algorithmFingerprint", objectMapper.createObjectNode().put("available", true));
+        when(fingerprintService.buildRuntimeSnapshot(any())).thenReturn(runtime);
+        when(fingerprintService.sha256(any())).thenReturn(intent.getRuntimeHash());
+        when(intentService.markSubmitting(eq(1L), eq("run-1"), eq(1), any())).thenReturn(true);
+        when(gpuLeaseService.acquire(eq(1L), eq("run-1"), eq(1)))
+                .thenThrow(new DataAccessResourceFailureException("db down"));
+
+        org.junit.jupiter.api.Assertions.assertThrows(DataAccessResourceFailureException.class,
+                () -> coordinator.consume(intent, task()));
+        verify(executor, never()).executeAndWait(any());
+    }
+
+    @Test
+    void consumeGpuBusyRemainsBusyWithoutExecutor() {
+        TaskDispatchIntent intent = intent();
+        DefenseTaskRequest request = request();
+        when(intentService.readRequest(intent)).thenReturn(request);
+        ObjectNode runtime = objectMapper.createObjectNode();
+        runtime.set("datasetFingerprint", objectMapper.createObjectNode().put("available", true));
+        runtime.set("algorithmFingerprint", objectMapper.createObjectNode().put("available", true));
+        when(fingerprintService.buildRuntimeSnapshot(any())).thenReturn(runtime);
+        when(fingerprintService.sha256(any())).thenReturn(intent.getRuntimeHash());
+        when(intentService.markSubmitting(eq(1L), eq("run-1"), eq(1), any())).thenReturn(true);
+        when(gpuLeaseService.acquire(eq(1L), eq("run-1"), eq(1)))
+                .thenThrow(new TaskCommandException("GPU_BUSY: 占用"));
+
+        org.junit.jupiter.api.Assertions.assertEquals(
+                TaskDispatchCoordinator.QueueDispatchResult.BUSY,
+                coordinator.consume(intent, task()));
+        verify(executor, never()).executeAndWait(any());
     }
 
     private DefenseTaskRequest request() {

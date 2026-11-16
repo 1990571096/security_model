@@ -191,4 +191,13 @@ public interface PreDefenseTaskMapper extends BaseMapper<PreDefenseTask> {
             @Param("runId") String runId,
             @Param("cleaningResult") String cleaningResult,
             @Param("endTime") LocalDateTime endTime);
+
+    @Select("""
+            SELECT * FROM sys_pre_defense
+            WHERE status = 'canceled' AND update_time >= #{cutoff}
+            ORDER BY update_time DESC
+            LIMIT #{limit}
+            """)
+    List<PreDefenseTask> findCanceledSince(@Param("cutoff") LocalDateTime cutoff,
+                                           @Param("limit") int limit);
 }

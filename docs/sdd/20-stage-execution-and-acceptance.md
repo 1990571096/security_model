@@ -238,7 +238,7 @@ R3-01/02/03/05/06/07/08/09/10 必须含真实 MySQL 证据；R3-04 包含短进�
 | N3 真实完成与回滚链路 | 历史证据 + 当前实现验收 | 历史证据：`TaskCommandServicePipelineIT` 按两种确定性顺序验证终态，取消先发生时迟到完成不能改终态，完成先发生时取消返回业务拒绝且执行器零调用；R3-01 已补真实服务层事务异常回滚：任务/租约/意图/幂等记录无残留，执行器零调用。该批用例的执行器是 Mockito 替身，只作为 2026-11-14 的历史证据保留。当前实现验收改由 `R3ProductionExecutorChainIT` 的完整 Spring `@Async` 代理 + 真实 `PythonLddTaskExecutor` 正常/取消/超时/非法结果 4 项，以及 R3-04 真实派发崩溃窗口承接；不得再用 Mockito 描述当前执行器证据。 |
 | N4 真实进程崩溃恢复 | 已完成（测试最小上下文） | R3-02/03/04 用 `R3RecoveryChildMain` 在独立 JVM 中构建真实 MyBatis mapper、真实 `GpuLeaseService`/`TaskDispatchIntentService`/`TaskDispatchCoordinator`/`DispatchRecoveryCoordinator`、真实 MySQL 租约和短 Python 协议桩；R3-02 新 JVM 恢复 pending 并执行一次；R3-03 双 JVM 竞争只有一个派发；R3-04 接受后未记账崩溃扫描为 `UNKNOWN`，`markBlocked + failAndAbandon`，不重放，Python 仍存活。证据写入 `sys_r3_execution_evidence`。 |
 | N5 五类写工具确认矩阵 | 已完成（可控阻塞） | `AssistantConfirmationEndToEndIT` 22 项：create/start/retry/cancel/export 均有首次与重复或并发同凭据证据；cancel 有过期/跨用户；start/create 有资源变化 409 且零租约/零派发；export 有跨用户下载 403；alice/bob 工具线程复用身份与有效 MyBatis-Plus 超时；新增真实 MySQL 触发器 `SLEEP(0.8)` 下 insert 跨 deadline 的 0 行确认、错误 token 篡改 403 + `TOKEN_MISMATCH` 审计、alice/bob 并发 chat 身份隔离。 |
-| N6 质量门禁与文档同步 | 已完成（本机 + 远端 CI） | 本机 JDK20 与 Temurin 17.0.21 下 `mvn verify -Pmysql-it` 均为 **232 单测 + 96 IT** 全绿（`tmp/round3-full-verify-final.log`、`tmp/round3-full-verify-jdk17-final.log`）；Python 11/11（`tmp/round3-python-tests-final.log`）；前端 `npm run build` 通过（`tmp/round3-frontend-final.log`）。远端 `930c934` 的 Migration Quality 曾失败（run `43686578054`）；跨平台修复后 `106e4d3` 的 run `43707281672` success；2026-11-15 收口提交 `bb4a79f` 的 run `43726078023` backend/frontend/python 全绿。2026-11-16 起 workflow `push/pull_request` 增加 `docs/sdd/**`，文档语料变化纳入 CI；修复提交的 SHA/tree/run 见本轮交付记录。 |
+| N6 质量门禁与文档同步 | 已完成（本机 + 远端 CI） | 2026-11-16 R4 实现后本机 Temurin 17.0.21 `mvn verify -Pmysql-it` 为 **252 单测 + 100 IT** 全绿（`tmp/round5-r4-final-verify5.log`），此前 JDK20 与 Temurin 17.0.21 基线为 232 + 96（`tmp/round3-full-verify-final.log`、`tmp/round3-full-verify-jdk17-final.log`）；Python 11/11（`tmp/round5-r4-python-tests2.log`）；前端 `npm run build` 30.68s 通过（`tmp/round5-r4-frontend-build2.log`）。远端 `930c934` 的 Migration Quality 曾失败（run `43686578054`）；跨平台修复后 `106e4d3` 的 run `43707281672` success；2026-11-15 收口提交 `bb4a79f` 的 run `43726078023` backend/frontend/python 全绿。2026-11-16 起 workflow `push/pull_request` 增加 `docs/sdd/**`，文档语料变化纳入 CI；R4 本轮尚未推送，远端 CI 不能沿用旧 run。 |
 
 **附带修正（2026-11-14，取消通道收口）**：`AfterCommitTaskDispatcher` 恢复为提交后同步执行，不再向 `taskAsync` 二次提交；训练链路的唯一异步边界回到 `PythonLddTaskExecutor.runPreDefense` 的 `@Async("taskAsync")`。取消信号改由独立 `TaskCancellationDispatcher` 在事务提交后提交到专用 `cancelAsync`（core=1、max=1、queue=32），队列满时在提交线程执行，避免与训练/导出/派发共池后被排队或拒绝。`TaskCancellationDispatcherTest` 覆盖队列饱和回退和“提交前不发信号”；`TaskCommandServicePipelineIT` 覆盖取消先/完成先两种顺序，当前 7 项通过。
 
@@ -277,9 +277,9 @@ R3-01/02/03/05/06/07/08/09/10 必须含真实 MySQL 证据；R3-04 包含短进�
 | R7-06 模型断线/预算超限不影响核心 | 模型线程池有界、总预算/工具预算、超时取消；核心 API 不共享失败 | `AssistantChatServiceTest`、`AssistantConfirmationEndToEndIT` 超时用例 | 单元 + 真实 HTTP + MySQL 触发器阻塞 | `tmp/round2-r7-a.log` | 底层 JDBC 物理终止不保证 |
 | R7-07 审计/请求体无禁发 | 审计只存工具名/operator/target/resultCode/duration；请求体脱敏 | `AssistantOutboundPrivacyTest`、`AssistantConfirmationEndToEndIT` 审计断言 | 真实 HTTP/MySQL/假 HTTP | `tmp/round2-p1-final.log`、`tmp/round2-r7-a.log` | 无 |
 
-## 6.8 R3/R6/R7 冻结必选需求逐项结果（2026-11-16）
+## 6.8 R3/R6/R7/R4 冻结必选需求逐项结果（2026-11-16）
 
-判定口径：**实现验收**只看代码、迁移脚本、隔离测试和可复现实跑证据；**部署验收**要求生产库迁移、真实 GPU/LDD、组织级审批或多实例网络条件下运行。两者分开记录，不把“部署未执行”反向写成“实现失败”，也不把隔离测试写成部署通过。本轮没有必选 ID 判定为实现失败；R6-03 的阈值 `0.30` 属于有限样本校准，后续增加独立保留题集是质量改进，不是新增验收阻塞。
+判定口径：**实现验收**只看代码、迁移脚本、隔离测试和可复现实跑证据；**部署验收**要求生产库迁移、真实 GPU/LDD、组织级审批或多实例网络条件下运行。两者分开记录，不把“部署未执行”反向写成“实现失败”，也不把隔离测试写成部署通过。本轮没有 R3/R6/R7 必选 ID 判定为实现失败；R4 已在真实 RabbitMQ + 隔离 MySQL + 双 JVM + 短 Python 桩下执行 R4-01/02/03/04（GPU_BUSY/毒消息）/05/06（启动拒绝）/07，R4-04 DB 故障、R4-02 confirm 丢失、R4-06 drain 热切换、R4-08 成功重放/越权/竞争仍未执行，继续按边界登记。R6-03 的阈值 `0.30` 属于有限样本校准，后续增加独立保留题集是质量改进，不是新增验收阻塞。
 
 #### R3 调度与恢复
 
@@ -321,22 +321,39 @@ R3-01/02/03/05/06/07/08/09/10 必须含真实 MySQL 证据；R3-04 包含短进�
 | R7-06 | 模型线程池有界、总预算/工具预算、超时取消；核心 API 不共享失败 | `AssistantChatServiceTest`、`AssistantConfirmationEndToEndIT` | `tmp/round2-r7-a.log` | 通过（隔离） | 未执行 | 底层 JDBC 物理终止不保证 |
 | R7-07 | 审计只存工具名/operator/target/resultCode/duration；请求体脱敏 | `AssistantOutboundPrivacyTest`、`AssistantConfirmationEndToEndIT` | `tmp/round2-p1-final.log`、`tmp/round2-r7-a.log` | 通过（隔离） | 未执行 | 无 |
 
-**未通过 ID**：无。**未执行部署验收**：R3/R6/R7 全部条目；原因是生产库 `eladmin` 未迁移、未运行真实 LDD/GPU、未启用组织级双人审批、未搭建多实例网络分区。这些是部署阶段外部条件，不作为本轮实现验收失败；R4/R8 也不因它们提前阻塞。
+#### R4 单机可靠派发（真实 Broker 双 JVM 已执行，仍有未执行边界）
+
+| 需求 ID | 实现方法 | 具体测试 | 实跑证据 | 实现验收 | 部署验收 | 剩余边界 |
+|---|---|---|---|---|---|---|
+| R4-01 | rabbit API 同事务写任务/意图/Outbox，不领租约；Relay 条件领取后事务外发布，失败退避 | 真实 RabbitMQ + MySQL + API/Worker；任务 `2122209791151980545` 正常派发；停 Broker 后创建 `2122210212130078722`，重启 Broker 后 Outbox 由 failed 重试至 published | `tmp/r4-stack/api.log`、`tmp/r4-stack/worker.log`、`tmp/r4-stack-start5.log`；Outbox `716c...` published attempts 1；停 Broker 任务 Outbox attempts 3 | 通过（正常/停 Broker 恢复） | 未执行 | 事务回滚未单独注入；生产库/真实 LDD 未执行 |
+| R4-02 | `message_id` 唯一消费账本、terminal 幂等、旧 token 条件回写；mandatory return + per-publish confirm | 管理 API 重发同一 payload：`routed=true`，Python 启动次数不增，consumption 保持 terminal/success；删除 worker 队列且 API 关闭 RabbitAdmin 自动声明后创建 `2122214846991208449`，Outbox 立即 dead、未进入 published | `tmp/r4-stack/workspace/r4-python-invocations.jsonl`（4 条旧记录，重发未新增）；`tmp/r4-stack/api.log` 记录 `RABBIT_UNROUTABLE`；`tmp/r4-stack/taskid-unroutable6.txt` | 通过（重复幂等 + 不可路由） | 未执行 | confirm 丢失/迟到确认、真实网络分区未执行 |
+| R4-03 | Worker 心跳、进程身份、孤儿隔离、未确认退出不释放槽位 | 短桩 sleep 300 秒启动 Python 后强杀 Worker（PID 14424），重启 Worker；recovery 检测 PID 4736 存活并杀进程树；任务 `2122215986243866625` 收敛 failed、intent abandoned、consumption terminal `DISPATCH_UNCERTAIN_RECOVERY`，无新 attempt | `tmp/r4-stack/worker.log`（`Killed orphaned executor process tree ... pid=4736`）、`tmp/r4-stack/taskid-orphan.txt`；`sys_gpu_lease` 该任务行 0，槽位 released | 通过（孤儿隔离/不重跑） | 未执行 | 跨主机/网络分区未执行 |
+| R4-04 | `GPU_BUSY` 回滚 pending；DB 故障延迟重投；毒消息 REJECT→DLQ；5/30/120 退避 | 人工占用 `default-gpu-0` 后启动任务 `2122216323369439234`；Worker 三次 5/30/120 重试后消费记录 failed、任务 failed、intent abandoned、Outbox dead、DLQ 1；向队列发布 `not-json` 毒消息，Worker 拒绝并进入 DLQ | `tmp/r4-stack/taskid-gpubusy.txt`、`tmp/r4-stack/worker.log`（GPU_BUSY 4 次、`拒绝非法调度事件`）；Rabbit 管理 API DLQ messages 2 | 部分通过（GPU_BUSY 耗尽 + 毒消息） | 未执行 | **DB 故障注入（停 MySQL）未执行**；DB 故障 120 秒延迟重投只有代码/单测证据 |
+| R4-05 | 取消独立巡检；取消先/完成先条件更新；不确定不重跑 | 真实任务 `2122210811173199873` 启动 2 秒后取消 | 任务 canceled、consumption terminal/canceled `TASK_CANCELED`、GPU lease released、Python PID 32272 不存在、Python 启动 1 次 | 通过（执行中取消） | 未执行 | 完成后取消保留原终态未单独注入 |
+| R4-06 | `mode/role` 校验；`db/worker` 拒绝启动；旧队列隔离与停机切回 | 独立 JVM 以 `mode=db role=worker` 启动，20 秒内退出码 1，异常明确 `db 模式只允许 role=api|all`；30 秒 sleep 任务 `2122221325269860354` 运行期间执行 `R4.DrainCheck.ps1`，脚本以退出码 1 拒绝切换，随后取消任务得到 canceled | `tmp/r4-mode-reject2.log`；`tmp/r4-drain-refusal2.log`（`unpublished=0 publishing=0 processing=0 running=1`）；`tmp/r4-stack/taskid-drain.txt` | 部分通过（启动拒绝 + 脚本 drain 拒绝） | 未执行 | **应用层没有运行期热切换入口，drain 拒绝由运维脚本强制**；旧队列隔离未执行 |
+| R4-07 | rabbit API 恢复只标记就绪，不扫描/误杀 Worker 任务 | Worker 执行 sleep 任务 `2122210676426948609` 时重启 API（PID 29980→12676） | Worker 不中断，任务 success、Outbox published 1、consume terminal success、Python 启动 1 次；`tmp/r4-stack/taskid-apirestart.txt` | 通过 | 未执行 | 多 API 实例未执行 |
+| R4-08 | 运维查询 admin-only；`POST /api/observability/dispatch/dead/{messageId}/replay` 仅重放 `dead + running + pending`，failed/uncertain 拒绝并指向任务重试 | 对 `abe21c55...`（任务已 failed）调用重放，admin 返回 `DLQ_REPLAY_REQUIRES_NEW_ATTEMPT`；`test` 用户同一路径返回 HTTP 403 `ACCESS_DENIED`；任务 `2122219894743760898` 在 Broker 停止时 `failed`，由 SQL 标记 dead（task 仍 running、intent pending），重启 Broker 后重放旧 `42587bd8...` 得到新 `1c607941...`，Worker 领取 GPU 租约后任务 success、intent submitted、consumption terminal `TASK_SUCCESS`、Python 1 次 | `tmp/r4-stack/api.log`、`tmp/r4-stack/taskid-replaysuccess.txt`、DB 查询、`r4-python-invocations.jsonl` | 通过（成功重放 + 非 owner 403 + failed 拒绝） | 未执行 | **dead 状态由 SQL 注入模拟“Broker 停止后的待处理死信”**；owner 与取消/新 attempt 真实并发竞争未执行 |
+
+**R4 当前结论**：真实 RabbitMQ 4.1.8 + Erlang 27.3.4.18 + 隔离 schema/vhost + 双 JVM + 短 Python 桩已执行 R4-01/02/03/04（GPU_BUSY/毒消息）/05/06（启动拒绝 + drain 脚本拒绝）/07/08（成功重放 + 非 owner 403 + failed 拒绝）；六项整改后全量 `mvn verify -Pmysql-it` 为 263 单测 + 100 IT（`tmp/r4-final-verify.log`）。R4-04 DB 故障、R4-02 confirm 丢失、R4-06 旧队列隔离、R4-08 owner 与取消/新 attempt 真实竞争仍未执行。**不得标记 R4 阶段通过**；但评审列出的“消费确认、恢复顺序、事务原子性、重放、发布确认”六项缺陷已关闭，未执行项按边界登记，不用单测总数替代场景验收。
+
+**未通过 ID**：无。**未执行部署验收**：R3/R6/R7 全部条目；直接原因是生产库 `eladmin` 未迁移、未运行真实 LDD/GPU。组织级双人审批、多实例网络分区属于未来扩展，不是本轮单机部署的必选门槛；R4/R8 也不因它们提前阻塞。
 
 ## 7. R4：单机 API + 独立 Worker + Transactional Outbox + RabbitMQ
 
-仅用户选择后实施；前置 R3 全部通过。范围限一台机器上的 API + 独立 Worker，沿用受控共享目录，不默认引入对象存储/Kubernetes。**2026-11-16 仅提交设计稿**：`21-r4-outbox-rabbitmq-design.md` / ADR-026；不创建 Outbox 表、不启用 RabbitMQ、不启动 Worker，真实 MySQL + RabbitMQ + 短 Python 桩验收未执行。
+仅用户选择后实施；前置 R3 全部通过。范围限一台机器上的 API + 独立 Worker，沿用受控共享目录，不默认引入对象存储/Kubernetes。**2026-11-16 已按评审修订契约并实现主体代码**：`21-r4-outbox-rabbitmq-design.md` / ADR-026 冻结“rabbit API 不领租约、角色化恢复、Outbox 领取回收、真实完成信号、取消/完成先后语义、DLQ 重放分级”；真实 MySQL + RabbitMQ + 短 Python 桩验收必须在环境具备后执行，缺少 RabbitMQ 时登记阻塞。
+
+已落地实现：`sql/security_model_task_outbox.sql`/回滚脚本、`DispatchOutbox`/`DispatchConsumption`/`DispatchEvent`、`DispatchRuntimePolicy`、`TaskOutboxService`、`TaskDispatchConsumptionService`、`DispatchTransport`/`RabbitDispatchTransport`、`RabbitDispatchConfiguration`、`TaskOutboxRelay`、`DispatchMessageHandler`/`DispatchMessageListener`、`WorkerCancellationMonitor`、`DispatchOperationsService`/`DispatchObservabilityController`；命令服务 rabbit 分支、`TaskDispatchCoordinator.consume`、角色化 `DispatchRecoveryCoordinator`、`DefenseTaskExecutor.executeAndWait`。单测 20 项（`DispatchRuntimePolicyTest` 4、`TaskOutboxServiceTest` 4、`TaskDispatchConsumptionServiceTest` 4、`DispatchMessageHandlerTest` 5、`TaskOutboxRelayTest` 3）与 MySQL 4 项 IT 已通过；真实 Broker 用例未执行。默认仍为 `db/api`，Rabbit 组件仅 `mode=rabbit` 加载。
 
 实施顺序：
 
-1. ADR 固定事件 v1（messageId/taskId/runId/attempt/schemaVersion），配置 `dispatch.mode=db|rabbit`，启用一种时另一种不能派发。
-2. 在业务事务写 Outbox；发布器按行条件抢占，publisher confirm 后记成功，未确认有限退避重发。
+1. ADR 固定事件 v1（messageId/taskId/runId/attempt/schemaVersion），配置 `dispatch.mode=db|rabbit`、`dispatch.role=api|worker|all`；db 仅 api/all，rabbit 的 API 只写 Outbox、Worker 才执行。
+2. 在业务事务写任务冻结快照/意图/Outbox；rabbit 模式 API 不领取 GPU。发布器按行条件抢占并写 `claim_owner/claim_token/claim_until`，publisher confirm 后条件记账，过期 `publishing` 回收，重复发布保持同一 `messageId`。
 3. durable queue、持久消息、manual ACK、prefetch=1；Worker 以数据库当前 run/attempt 和消费记录做幂等，消息不携带凭据或任意路径。
-4. Worker 领取单槽，复用 LDD 协议/进度/取消/产物授权；只有终态已持久化或受控转移到重试/DLQ 后 ACK。
-5. 临时分发失败最多重试 3 次，退避 5/30/120 秒；算法 OOM/协议错误不自动重训。死信查看/人工重试均走 owner/admin 权限及审计。
-6. 实现取消意图、Worker 失联和 R2 隔离；提供停机切回 db 模式步骤，活跃消息/任务未清空时拒绝热切换。
+4. Worker 在消费事务内领取单槽，复用 LDD 协议/进度/取消/产物授权；`executeAndWait` 真实完成后才 ACK；`GPU_BUSY` 回滚意图为 pending 并保持可重试。
+5. 临时分发失败最多重试 3 次，退避 5/30/120 秒；算法 OOM/协议错误不自动重训。死信查看/人工重试均走 owner/admin 权限及审计；pending 可同 attempt 续传，failed/uncertain 创建新 attempt。
+6. 独立取消巡检扫描数据库取消状态；取消先成功拒绝迟到结果，完成先成功拒绝取消并保留原终态；实现 Worker 失联和 R2 隔离；提供停机切回 db 模式步骤，活跃消息/任务未清空时拒绝热切换，旧队列消息隔离。
 
-验收 ID：R4-01 停 MQ 后恢复投递；R4-02 confirm 丢失/重复消息只产生一次有效业务完成；R4-03 Worker 崩溃不放行仍存活进程；R4-04 DLQ/有限重试；R4-05 取消与迟到结果；R4-06 两模式互斥及回退。必须真实 RabbitMQ + MySQL + 短 Worker 测试，单元 mock 不作阶段完成证据。真实 LDD 不必重跑。
+验收 ID：R4-01 事务回滚/停 MQ 后恢复投递；R4-02 confirm 丢失/重复消息/迟到确认；R4-03 Worker 崩溃不放行仍存活进程；R4-04 GPU_BUSY、DB 故障、毒消息的有限重试/DLQ；R4-05 取消与迟到结果（完成后取消保留原终态）；R4-06 两模式互斥、旧消息隔离及回退；R4-07 API 重启不误杀 Worker 任务；R4-08 权限隔离与人工重试。必须真实 RabbitMQ + MySQL + 短 Worker 测试，单元 mock 不作阶段完成证据。真实 LDD 不必重跑。
 
 ## 8. R5：真实观测、Redis 与部署复现
 
@@ -423,12 +440,12 @@ CPU/GPU 利用率采集为可选指标，未启用可显示未知；任务/队�
 6. `AssistantChatService` 使用有界模型线程池（4 线程 + 16 队列）、全局 4 请求并发槽和单用户并发槽（`max-concurrent-per-user`，默认 1，范围 1–4）；模型调用 Future 最长等待剩余预算并在超时后 `cancel(true)`。2026-11-15 起读工具和写预览都通过独立 `toolExecutor`（4 线程 + 16 队列，`DelegatingSecurityContextExecutorService` 包装以传播登录身份）接收剩余预算，`AssistantTool.execute(arguments, timeoutMillis)` 默认委托原方法；超时 `cancel(true)` 并返回 `ASSISTANT_TOOL_TIMEOUT`，主循环映射 `status=timeout`、`modelStatus=tool_timeout`，不再发起后续工具/模型调用。`application.yml` 的有效键为 `mybatis-plus.configuration.default-statement-timeout=5s`，并有 `SqlSessionFactory` 断言；Redis 命令仍有 500ms 约束。写预览在工具返回后、插入确认记录前再次检查 deadline，超时不 insert；`930c934` 后三个 preview 重载加事务，insert 完成后再检查 deadline，若 insert 阻塞跨过 deadline 则抛 `ASSISTANT_TOOL_TIMEOUT` 并回滚。真实 MySQL 触发器 `SLEEP(0.8)` 已验证 100ms 预算下确认表 0 行、审计 1 条 FAILED、任务仍 running；边界是触发器模拟可控阻塞，不是真实行锁/表锁等待，`Future` 取消也不等价于底层 JDBC/Redis 被物理终止。
 7. 模型端口 `AssistantModel` 默认 `provider=disabled`，明确返回 `model_disabled`；本机 `deepseek` profile 已接入真实 `DeepSeekAssistantModel`，但生产默认仍关闭，核心任务/报告/知识接口不受影响。2026-11-15 强化 `AssistantOutboundPrivacyTest`：真实 `AssistantChatService` + 真实适配器 + 本地假 HTTP 连续两次请求，第一次返回工具调用、第二次返回最终回答；断言两次最终 body 都不含 `/datasets/private`、`/训练数据`、`/secret.txt`、`/api/private`、`/custom dir`，且出现 `[已过滤路径]`，API Key 与 `Authorization` 不进入 body。
 8. 新增 `/api/assistant/*` 和 `/assistant` 页面；会话 7 天、可删除，审计只存工具名/operator/target/resultCode/durationMs。
-9. 当前证据（2026-11-15 基于 `930c934` 五项收口，并在 `08f11c0` 后补 P1/P2/R3）：助手核心单测 12 项（含工具线程真实身份、工具预算传播与超时）+ 参数证据 4 项 + 脱敏 7 项 + 预览 deadline 1 项；真实 HTTP + MySQL 助手确认/会话链路 22 项（五类写工具首次/重复/并发、预览零写入、重复返回原结果、跨用户 403、删除会话不可复活、并发会话不丢记录、预览后算法默认值变化 409 且零租约/零派发、导出跨用户下载 403、alice/bob 线程复用身份、有效 MyBatis-Plus 超时=5、insert 阻塞超时、错误 token 篡改、并发身份隔离）；真实命令服务链路 7 项；独立 JVM 崩溃/恢复/竞争 5 项（执行器为短 Python 桩）；最新 `mvn verify -Pmysql-it`（`REDIS_IT=true`）为 **232 项单元测试 + 96 项 MySQL/Redis 集成测试全绿**，日志 `tmp/round3-full-verify-final.log`；JDK17 同计数 `tmp/round3-full-verify-jdk17-final.log`；Python 11/11，前端 `npm run build` 通过。N4/N5 已补真实 Python + 跨 JVM 竞争 + 篡改 token，N6 Ubuntu Java 17 远端 CI 已在收口提交 `bb4a79f` 的 run `43726078023` 全绿，R3/R7 仍不得整体验收。
+9. 当前证据（2026-11-15 基于 `930c934` 五项收口，并在 `08f11c0` 后补 P1/P2/R3）：助手核心单测 12 项（含工具线程真实身份、工具预算传播与超时）+ 参数证据 4 项 + 脱敏 7 项 + 预览 deadline 1 项；真实 HTTP + MySQL 助手确认/会话链路 22 项（五类写工具首次/重复/并发、预览零写入、重复返回原结果、跨用户 403、删除会话不可复活、并发会话不丢记录、预览后算法默认值变化 409 且零租约/零派发、导出跨用户下载 403、alice/bob 线程复用身份、有效 MyBatis-Plus 超时=5、insert 阻塞超时、错误 token 篡改、并发身份隔离）；真实命令服务链路 7 项；独立 JVM 崩溃/恢复/竞争 5 项（执行器为短 Python 桩）；最新 `mvn verify -Pmysql-it`（`REDIS_IT=true`，2026-11-16 R4 实现后）为 **252 项单元测试 + 100 项 MySQL/Redis 集成测试全绿**，日志 `tmp/round5-r4-final-verify5.log`；R4 真实 RabbitMQ 未安装，R4-01..08 未执行；Python 11/11，前端 `npm run build` 30.68s 通过。N4/N5 已补真实 Python + 跨 JVM 竞争 + 篡改 token，N6 Ubuntu Java 17 远端 CI 已在收口提交 `bb4a79f` 的 run `43726078023` 全绿，R3/R7 仍不得整体验收。
 10. 2026-11-15 外发与检索整改：`KnowledgeSanitizer` 新增可含空格的绝对文件路径规则，且不再豁免 `/api/` 等 API 路由前缀；自由文本中的任意绝对多段路径统一替换为 `[已过滤路径]`。`KnowledgeVectorStore` 在 `VADD` 写入 `SETATTR`（visibility/owner/documentId），`VSIM` 用 `FILTER (.visibility == "shared" or .owner == <userId>)` 在候选阶段完成 ACL，管理员跨用户读不加过滤；`KnowledgeIndexService.retire()` 成功后 best-effort 清理向量；`retrievalMode` 仅在本轮向量命令成功时返回 `hybrid`，失败降级为 `lexical`。
 11. 2026-11-15 混合检索评估：`KnowledgeRetrievalService` 先按 `candidateLimit` 生成词法池，词法池为空直接返回空，向量只合并进词法池；`KnowledgeHybridEvaluationTest` 覆盖可答 10 + 未知 5 + 越权/注入 5 共 20 题，`hybrid answerable top5 hits: 10/10`，并验证私有 `task_report:99` 向量不能注入共享语料结果。哈希 embedding 仍只是词法候选重排，不是神经语义召回。
 12. 2026-11-15 `08f11c0` 后 R3 证据补齐：`CrashWindowChildMain` 改为写入真实 `request_json` 与 SHA-256、runtime hash；`independentJvmPendingIntentRunsRealReplayCoordinatorOnce` 用真实 `TaskDispatchCoordinator` + 真实持久意图 + 真实本地接受登记，断言执行器收到一次请求、意图变 `submitted`、任务仍 `running`，第二次恢复不再执行；同时修复 `DefenseTaskRequest`/`DefenseResourceRef` 缺少 Jackson 反序列化构造器导致的 `DISPATCH_SNAPSHOT_INVALID`。**该用例执行器仍是测试替身**，作为构造状态/协调器证据保留，不再代表“生产执行器真实链路”。
 13. 2026-11-15 最新收口（P1/P2/R3）：`R3ProductionExecutorChainIT` 5/5 使用完整 Spring `@Async` 代理、真实 `PythonLddTaskExecutor`、真实事务/Mapper/租约/协调器，覆盖正常、取消、超时、非法结果，以及 `R3ProductionCrashChildMain` 真实派发后崩溃 + `R3RecoveryChildMain` 恢复（孤儿 Python 被杀、租约释放、意图 abandoned、`executions.log` 仅 1 行）；`KnowledgeRetrievalMySqlIT` 6/6 用真实 MySQL+Redis 验证退役清理跨批/失败不阻塞/重启继续/幂等，`KnowledgeVectorCleanupMigrationIT` 1/1 验证升级/回滚重复执行；`KnowledgeSanitizerTest` 9/9 + `AssistantOutboundPrivacyTest` 1/1 覆盖单字符/数字/隐藏/空格目录和两轮最终 body。门禁为 **232 单测 + 96 IT**（JDK20/JDK17 各一次），Python 11/11，前端构建通过；日志 `tmp/round3-*.log`。
-14. 仍未做：真实 LDD、生产库 `eladmin` 建表/迁移、组织级双人审批/分布式锁、真实行锁/表锁等待（R7 触发器是可控阻塞）、多实例网络分区下的恢复、RabbitMQ/独立 Worker（R4 仅设计稿，未实施）。真实执行器链路使用短协议桩，不运行 LDD、不占 GPU；崩溃子 JVM 是测试最小上下文 + 手动异步包装，不是完整 Spring 容器。上述未做项不否定已经通过的隔离测试；按 §6.8 只能写“实现验收通过（隔离）/部署验收未执行”，不得写成生产部署验收通过。
+14. 仍未做：真实 LDD、生产库 `eladmin` 建表/迁移、组织级双人审批/分布式锁、真实行锁/表锁等待（R7 触发器是可控阻塞）、多实例网络分区下的恢复、RabbitMQ/独立 Worker 真实环境验收（R4 已实现并登记阻塞，R4-01..08 未执行）。真实执行器链路使用短协议桩，不运行 LDD、不占 GPU；崩溃子 JVM 是测试最小上下文 + 手动异步包装，不是完整 Spring 容器。上述未做项不否定已经通过的隔离测试；按 §6.8 只能写“实现验收通过（隔离）/部署验收未执行”，不得写成生产部署验收通过。
 
 ## 11. R8：可选多实例学习验收
 

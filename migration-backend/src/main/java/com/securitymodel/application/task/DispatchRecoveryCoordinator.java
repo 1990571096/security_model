@@ -7,6 +7,7 @@ import com.securitymodel.infrastructure.observability.TaskRuntimeMetrics;
 import com.securitymodel.infrastructure.persistence.mapper.PreDefenseTaskMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -33,6 +34,9 @@ public class DispatchRecoveryCoordinator {
     private final TaskDispatchCoordinator dispatchCoordinator;
     private final SchedulingReadinessGate readinessGate;
     private final TaskRuntimeMetrics runtimeMetrics;
+    private final DispatchRuntimePolicy runtimePolicy;
+    private final TaskOutboxService taskOutboxService;
+    private final TaskDispatchConsumptionService consumptionService;
     private final long pendingScanAgeSeconds;
     private final long pendingExpireSeconds;
     private final int scanBatchSize;
@@ -45,6 +49,26 @@ public class DispatchRecoveryCoordinator {
             TaskDispatchCoordinator dispatchCoordinator,
             SchedulingReadinessGate readinessGate,
             TaskRuntimeMetrics runtimeMetrics,
+            long pendingScanAgeSeconds,
+            long pendingExpireSeconds,
+            int scanBatchSize) {
+        this(taskMapper, intentService, processRegistry, gpuLeaseService, dispatchCoordinator,
+                readinessGate, runtimeMetrics, new DispatchRuntimePolicy(), null, null,
+                pendingScanAgeSeconds, pendingExpireSeconds, scanBatchSize);
+    }
+
+    @Autowired
+    public DispatchRecoveryCoordinator(
+            PreDefenseTaskMapper taskMapper,
+            TaskDispatchIntentService intentService,
+            AttemptProcessRegistry processRegistry,
+            GpuLeaseService gpuLeaseService,
+            TaskDispatchCoordinator dispatchCoordinator,
+            SchedulingReadinessGate readinessGate,
+            TaskRuntimeMetrics runtimeMetrics,
+            DispatchRuntimePolicy runtimePolicy,
+            TaskOutboxService taskOutboxService,
+            TaskDispatchConsumptionService consumptionService,
             @Value("${security-model.dispatch.pending-scan-age-seconds:30}") long pendingScanAgeSeconds,
             @Value("${security-model.dispatch.pending-expire-seconds:300}") long pendingExpireSeconds,
             @Value("${security-model.dispatch.scan-batch-size:20}") int scanBatchSize) {
@@ -55,12 +79,24 @@ public class DispatchRecoveryCoordinator {
         this.dispatchCoordinator = dispatchCoordinator;
         this.readinessGate = readinessGate;
         this.runtimeMetrics = runtimeMetrics;
+        this.runtimePolicy = runtimePolicy;
+        this.taskOutboxService = taskOutboxService;
+        this.consumptionService = consumptionService;
         this.pendingScanAgeSeconds = pendingScanAgeSeconds;
         this.pendingExpireSeconds = pendingExpireSeconds;
         this.scanBatchSize = scanBatchSize;
     }
 
     public void recoverAtStartup() {
+        if (!runtimePolicy.runsRecovery()) {
+            // rabbit API must not scan running tasks: a Worker may still own them. It only
+            // opens the readiness gate so command transactions can write Outbox rows.
+            readinessGate.markReady();
+            runtimeMetrics.recordRecovery(true);
+            log.info("当前角色不承担执行恢复: mode={}, role={}",
+                    runtimePolicy.mode(), runtimePolicy.role());
+            return;
+        }
         List<PreDefenseTask> running = taskMapper.selectList(
                 com.baomidou.mybatisplus.core.toolkit.Wrappers.<PreDefenseTask>lambdaQuery()
                         .eq(PreDefenseTask::getStatus, "running"));
@@ -70,6 +106,11 @@ public class DispatchRecoveryCoordinator {
         try {
             for (PreDefenseTask task : running) {
                 try {
+                    if (runtimePolicy.rabbitMode() && hasUnfinishedConsumption(task)) {
+                        log.info("存在未终态消费账本，恢复不接管: taskId={}, runId={}",
+                                task.getTaskId(), task.getCurrentRunId());
+                        continue;
+                    }
                     TaskDispatchIntent intent = intentService.findByRun(
                             task.getTaskId(), task.getCurrentRunId(), task.getCurrentAttempt());
                     if (intent == null) {
@@ -79,12 +120,19 @@ public class DispatchRecoveryCoordinator {
                         continue;
                     }
                     if (TaskDispatchIntent.PENDING.equals(intent.getStatus())) {
-                        // Pending is the persisted proof that the executor was never invoked. Replay
-                        // reacquires a fresh lease and revalidates the request before dispatch.
-                        if (dispatchCoordinator.replayPending(intent, task)) {
-                            replayed++;
-                        } else {
+                        if (runtimePolicy.rabbitMode()) {
+                            // rabbit: a pending intent is not executed by recovery. Only
+                            // ensure the Outbox row exists; the relay/consumer owns delivery.
+                            ensureOutbox(intent, task);
                             recovered++;
+                        } else {
+                            // Pending is the persisted proof that the executor was never invoked.
+                            // Replay reacquires a fresh lease and revalidates the request.
+                            if (dispatchCoordinator.replayPending(intent, task)) {
+                                replayed++;
+                            } else {
+                                recovered++;
+                            }
                         }
                         continue;
                     }
@@ -110,7 +158,7 @@ public class DispatchRecoveryCoordinator {
     @Scheduled(fixedDelayString = "${security-model.dispatch.scan-interval-ms:10000}",
             initialDelayString = "${security-model.dispatch.scan-initial-delay-ms:30000}")
     public void scanPending() {
-        if (!readinessGate.isReady()) {
+        if (!runtimePolicy.runsRecovery() || !readinessGate.isReady()) {
             return;
         }
         try {
@@ -132,6 +180,9 @@ public class DispatchRecoveryCoordinator {
                         "DISPATCH_TASK_NOT_RUNNING", now);
                 continue;
             }
+            if (runtimePolicy.rabbitMode() && hasUnfinishedConsumption(task)) {
+                continue;
+            }
             if (!belongsToCurrentAttempt(task, intent)) {
                 // A stale pending intent must never release the lease of a newer attempt.
                 intentService.abandon(intent.getTaskId(), intent.getRunId(), intent.getAttempt(),
@@ -151,6 +202,12 @@ public class DispatchRecoveryCoordinator {
                         "调度意图等待超过 " + pendingExpireSeconds + " 秒，显式失败并由用户重试");
                 continue;
             }
+            if (runtimePolicy.rabbitMode()) {
+                // Do not start Python from recovery. Rebuild the durable event if an older
+                // intent predates the outbox table; relay will publish it.
+                ensureOutbox(intent, task);
+                continue;
+            }
             dispatchCoordinator.replayPending(intent, task);
         }
     }
@@ -163,6 +220,11 @@ public class DispatchRecoveryCoordinator {
             if (task == null || !"running".equals(task.getStatus())) {
                 intentService.abandon(intent.getTaskId(), intent.getRunId(), intent.getAttempt(),
                         "DISPATCH_TASK_NOT_RUNNING", now);
+                continue;
+            }
+            if (runtimePolicy.rabbitMode() && hasUnfinishedConsumption(task)) {
+                // The message ledger proves a Worker claimed this attempt; recovery must not
+                // fail it while broker redelivery/claim expiry still owns the decision.
                 continue;
             }
             if (!belongsToCurrentAttempt(task, intent)) {
@@ -195,11 +257,26 @@ public class DispatchRecoveryCoordinator {
         }
     }
 
+    private void ensureOutbox(TaskDispatchIntent intent, PreDefenseTask task) {
+        if (taskOutboxService == null) {
+            throw new TaskCommandException("DISPATCH_OUTBOX_UNAVAILABLE: Outbox 持久层未装配");
+        }
+        DefenseTaskRequest request = intentService.readRequest(intent);
+        taskOutboxService.ensurePending(request, intent, LocalDateTime.now(),
+                task.getOwnerUserId());
+    }
+
     private boolean belongsToCurrentAttempt(PreDefenseTask task, TaskDispatchIntent intent) {
         return intent.getRunId() != null
                 && intent.getRunId().equals(task.getCurrentRunId())
                 && intent.getAttempt() != null
                 && intent.getAttempt().equals(task.getCurrentAttempt());
+    }
+
+    private boolean hasUnfinishedConsumption(PreDefenseTask task) {
+        return consumptionService != null
+                && consumptionService.hasUnfinishedOwnership(task.getTaskId(),
+                task.getCurrentRunId(), task.getCurrentAttempt());
     }
 
     private int failLegacy(PreDefenseTask task) {
