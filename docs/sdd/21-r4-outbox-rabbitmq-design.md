@@ -264,7 +264,7 @@ DLQ 重放必须区分执行状态：
 | R4-08 | failed 重放拒绝；test 用户重放；Broker 停止后让 Outbox 自然耗尽为 dead，重启 Broker 后重放；真实 HTTP 并发 replay + cancel | admin 400、test 403；自然 dead 任务 `2122226296115777538`：`c871a5ac...` dead、task running、intent pending，重放为 `a7696410...` 后 success、consumption `terminal`、Python 1 次；并发任务 `2122231820257357826`：`9e8152c4...` 自然 dead，并发后 replay 返回 `f310da09...`、cancel 成功，终态 `canceled`、consumption `terminal`、Python 0 次，审计 CREATE/START/REPLAY_DEAD/CANCEL；`tmp/r4-natural-dead-db1.txt`、`tmp/r4-natural-dead-db2.txt`、`tmp/r4-natural-dead-replay.json`、`tmp/r4-race-results.json`、`tmp/r4-race-db-dead.txt`、`tmp/r4-race-db-after.txt`、`tmp/r4-race-audit.txt` | 部分通过（真实 Broker 故障自然 dead + 成功重放 + 权限 + replay/cancel 并发） | 重放与新 attempt 真实并发竞争未执行；旧 SQL 注入 dead 仅保留为历史 |
 
 
-全量门禁（2026-11-16，追加改动后）：`mvn -B -f migration-backend/pom.xml verify -Pmysql-it`（`MYSQL_IT_PASSWORD`、`REDIS_IT=true`、`RABBIT_IT=true`，Temurin 17.0.21）→ **267 单测 + 103 IT，BUILD SUCCESS**，`tmp/r4-final-verify-new.log`（其中 `RabbitDispatchBrokerIT` 2/2）。**CI 未运行**：`git push origin feature/r3-dispatch-idempotency` 仍无法连接 `github.com:443`；workflow 已新增 RabbitMQ 4.1 service 与 `RABBIT_IT=true` 门禁，但只有新提交成功触发后才算通过，不能引用历史 run。
+全量门禁（2026-11-16，追加改动后）：`mvn -B -f migration-backend/pom.xml verify -Pmysql-it`（`MYSQL_IT_PASSWORD`、`REDIS_IT=true`、`RABBIT_IT=true`，Temurin 17.0.21）→ **267 单测 + 103 IT，BUILD SUCCESS**，`tmp/r4-final-verify-new.log`（其中 `RabbitDispatchBrokerIT` 2/2）。**CI 已运行并全绿**：功能/验收提交 `3d0915c` 的 run `43825661651`、文档提交 `8de6c66` 的 run `43826356193`，两次均 backend/python/frontend success；workflow 已启用 RabbitMQ 4.1 service 与 `RABBIT_IT=true`。CI 中的 `RabbitDispatchBrokerIT` 只覆盖真实 Broker 发布、confirm/return，不代表 R4 双 JVM 全故障矩阵都已自动化。
 
 
 

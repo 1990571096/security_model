@@ -336,7 +336,7 @@ R3-01/02/03/05/06/07/08/09/10 必须含真实 MySQL 证据；R3-04 包含短进�
 
 **R4 当前结论**：真实 RabbitMQ 4.1.8 + Erlang 27.3.4.18 + 隔离 schema/vhost + 双 JVM + 短 Python 桩已执行 R4-01（正常派发、停 Broker 恢复、事务回滚）、R4-02（重复幂等、不可路由、旧 claim token、真实 Broker confirm/return）、R4-03、R4-04（GPU_BUSY、毒消息、DB TCP 中断）、R4-05（执行中取消、完成后取消）、R4-06（启动拒绝、drain 拒绝、v2 旧队列隔离）、R4-07、R4-08（Broker 故障自然 dead、成功重放、权限、replay/cancel 并发）。仍缺 R4-02 confirm 丢失/迟到真实网络注入、R4-04 无人工重启的自动退避收敛、R4-06 运行期热切换、R4-08 重放与新 attempt 真实并发竞争；**不得标记 R4 阶段通过**。最终提交 `3d0915cb0e0a0fecf9aa15240ddf60a0e9c5b92d`（tree `3c1c49cddbbea55a8186caa4b13504a092745c7d`）已推送，run `43825661651` backend/python/frontend 全绿，RabbitMQ service 与 `RabbitDispatchBrokerIT` 已纳入 CI；green CI 不等于 R4 全部故障场景通过。
 
-**未通过 ID**：无。**未执行部署验收**：R3/R6/R7 全部条目；直接原因是生产库 `eladmin` 未迁移、未运行真实 LDD/GPU。组织级双人审批、多实例网络分区属于未来扩展，不是本轮单机部署的必选门槛；R4/R8 也不因它们提前阻塞。
+**未通过 ID**：已执行用例未发现失败；但 R4 尚有 confirm 丢失/迟到、DB 自动退避、运行期热切换、replay 与新 attempt 并发竞争等必选验收未执行，阶段整体未通过。**未执行部署验收**：R3/R6/R7 全部条目；直接原因是生产库 `eladmin` 未迁移、未运行真实 LDD/GPU。组织级双人审批、多实例网络分区属于未来扩展，不是本轮单机部署的必选门槛；R4/R8 也不因它们提前阻塞。
 
 ## 7. R4：单机 API + 独立 Worker + Transactional Outbox + RabbitMQ
 
