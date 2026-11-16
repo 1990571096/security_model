@@ -3,6 +3,7 @@ param(
     [Parameter(Mandatory = $true)][string]$SecretsPath,
     [int]$ApiPort = 18100,
     [int]$WorkerPort = 18101,
+    [int]$DbPort = 3306,
     [string]$JarPath = '',
     [ValidateSet('all', 'api', 'worker')][string]$Role = 'all'
 )
@@ -33,7 +34,7 @@ $env:SECURITY_MODEL_JWT_SECRET = (Get-Content -LiteralPath $jwtPath -Raw).Trim()
 $env:JAVA_HOME = 'F:\Study\postgraduate\毕业论文\security_model\tmp\jdk17\extracted\jdk-17.0.21+9'
 $java = Join-Path $env:JAVA_HOME 'bin\java.exe'
 $env:DB_HOST = '127.0.0.1'
-$env:DB_PORT = '3306'
+$env:DB_PORT = "$DbPort"
 $env:DB_NAME = $SchemaName
 $env:DB_USER = 'root'
 $env:DB_PWD = $secrets.mysqlRootPassword

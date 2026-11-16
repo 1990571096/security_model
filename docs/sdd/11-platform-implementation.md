@@ -35,7 +35,7 @@
 | --- | --- |
 | 前端 | Vue 3、Vite、Element Plus、Pinia、Vue Router 4 |
 | 后端 | Java 17、Spring Boot 3.5、Spring Security 6、JWT、MyBatis-Plus |
-| 数据与状态 | MySQL 作为事实源；Redis 缓存资源目录；R4 RabbitMQ/Outbox 代码已接入但默认关闭，真实 Broker 未验收 |
+| 数据与状态 | MySQL 作为事实源；Redis 缓存资源目录；R4 RabbitMQ/Outbox 代码已接入但默认关闭，2026-11-16 本机真实 Broker 已完成部分场景，整体未通过（详见 `21` §16、`20` §6.8） |
 | 算法运行时 | Python、PyTorch、外部 VaB 算法工程 |
 | 构建工具 | Maven、npm |
 

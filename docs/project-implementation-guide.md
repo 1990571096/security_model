@@ -28,7 +28,7 @@ sql/                      数据库脚本
 | 算法运行时 | Python、PyTorch、外部 VaB 工程及 LDD |
 | 构建 | Maven、npm |
 
-迁移版引入 Spring Data Redis，并通过 `ResourceCatalogCache` 缓存部分数据集、算法和超参数目录查询；MySQL 仍是资源和任务状态的事实数据源，Redis 不可用时缓存访问降级回源 MySQL。Redis 不缓存任务状态，也不是任务队列。默认任务调度仍使用事务提交后的本 JVM 有界 `ThreadPoolTaskExecutor`；R4 RabbitMQ/Outbox/Worker 代码已接入，但默认 `dispatch.mode=db`，真实 RabbitMQ 环境尚未安装，未验收。
+迁移版引入 Spring Data Redis，并通过 `ResourceCatalogCache` 缓存部分数据集、算法和超参数目录查询；MySQL 仍是资源和任务状态的事实数据源，Redis 不可用时缓存访问降级回源 MySQL。Redis 不缓存任务状态，也不是任务队列。默认任务调度仍使用事务提交后的本 JVM 有界 `ThreadPoolTaskExecutor`；R4 RabbitMQ/Outbox/Worker 代码已接入，默认 `dispatch.mode=db`。2026-11-16 本机真实 RabbitMQ + 双 JVM 已完成部分 R4 场景，但整体未通过（confirm 丢失/迟到、DB 自动退避、运行期热切换、重放与新 attempt 并发竞争仍有缺口）。
 
 ## 2. 从 HTTP 请求到任务命令
 

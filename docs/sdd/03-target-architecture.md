@@ -30,7 +30,7 @@ Spring Boot 3.5（migration-backend）
 
 关键边界（已实现的事实）：
 
-- **进程模型**：默认仍为算法在 API 进程的子进程中运行，线程池 `taskAsync` 有界；R4 已实现 Outbox/RabbitMQ/角色化 Worker 代码（`21-r4-outbox-rabbitmq-design.md`、ADR-026），但默认 `dispatch.mode=db`，真实 RabbitMQ 环境未安装、R4-01..08 未验收，不能写成已启用。
+- **进程模型**：默认仍为算法在 API 进程的子进程中运行，线程池 `taskAsync` 有界；R4 已实现 Outbox/RabbitMQ/角色化 Worker 代码（`21-r4-outbox-rabbitmq-design.md`、ADR-026），默认 `dispatch.mode=db`。2026-11-16 已在本机真实 RabbitMQ 4.1.8 + 隔离 schema/vhost + 双 JVM 执行部分 R4 场景（R4-01/02/03/04/05/06/07/08），但 **R4 整体未通过**：confirm 丢失/迟到、DB 自动退避、运行期热切换、replay 与新 attempt 并发竞争仍有缺口（replay/cancel 并发已执行），不能写成已启用或已整体验收。
 - **完成语义**：`result.json` 是唯一完成依据；`progress.json` 只是诊断快照。
 - **幂等与竞争**：任务领取是 `pending → running` 的条件更新；进度/结果/结束回调都要求 `status='running'` 且 `current_run_id` 相同。
 - **启动恢复**：`ApplicationReadyEvent` 时把所有 `running` 收敛为 `failed(EXECUTOR_RESTARTED)`，隐含“单实例”前提；导出任务没有启动恢复。

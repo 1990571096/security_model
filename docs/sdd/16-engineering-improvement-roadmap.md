@@ -52,7 +52,7 @@ mvn -B -f migration-backend/pom.xml verify
 
 - 当前真实执行范围：迁移版后端调用 VaB Python 进程执行 LDD 训练前清洗。
 - 当前异步执行方式：事务提交后提交至有界 JVM 线程池；MySQL 保存任务状态。
-- 当前 Redis 状态：已接入迁移版运行时，仅缓存可重建的资源目录；R4 RabbitMQ/Outbox 代码已接入但默认关闭，真实 Broker 未验收。
+- 当前 Redis 状态：已接入迁移版运行时，仅缓存可重建的资源目录；R4 RabbitMQ/Outbox 代码已接入但默认关闭，2026-11-16 本机真实 Broker 已完成部分场景，整体未通过（详见 `21` §16、`20` §6.8）。
 - 迁移版增加 `AfterCommitTaskDispatcher` 单元测试，覆盖事务提交前不派发、无事务时立即派发、异常处理器和无异常处理器两种失败路径。
 - GitHub Actions 运行迁移版 Maven 验证和 Vue 3 前端生产构建。
 - 本地验收命令：`mvn -B -f migration-backend/pom.xml verify`；前端执行 `npm run build`。

@@ -42,12 +42,30 @@ jobs:
           --health-interval=10s
           --health-timeout=5s
           --health-retries=10
+      rabbitmq:
+        image: rabbitmq:4.1
+        env:
+          RABBITMQ_DEFAULT_USER: migration
+          RABBITMQ_DEFAULT_PASS: migration-test-password
+        ports:
+          - 5672:5672
+        options: >-
+          --health-cmd="rabbitmq-diagnostics -q ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
     env:
       MYSQL_IT_HOST: 127.0.0.1
       MYSQL_IT_PORT: 3306
       MYSQL_IT_USERNAME: root
       MYSQL_IT_PASSWORD: migration-test-password
       REDIS_IT: "true"
+      RABBIT_IT: "true"
+      RABBIT_IT_HOST: 127.0.0.1
+      RABBIT_IT_PORT: 5672
+      RABBIT_IT_USER: migration
+      RABBIT_IT_PASSWORD: migration-test-password
+      RABBIT_IT_VHOST: /
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4

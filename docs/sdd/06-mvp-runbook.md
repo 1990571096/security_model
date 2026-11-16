@@ -232,13 +232,13 @@ mvn -B -f migration-backend/pom.xml verify -Pmysql-it `
   "-Dtest=R3ProductionExecutorChainIT"
 ```
 
-实际结果（2026-11-16 R4 实现后本机）：P1 10 项通过（`tmp/round3-p1.log`）；P2 `KnowledgeRetrievalMySqlIT` 6/6（`tmp/round3-p2.log`）；迁移 1/1（`tmp/round3-p2-migration.log`）；R3 `R3ProductionExecutorChainIT` 5/5（`tmp/round3-r3-prod.log`）；R4 新增 `DispatchRuntimePolicyTest` 4/4、`TaskOutboxServiceTest` 4/4、`TaskDispatchConsumptionServiceTest` 4/4、`DispatchMessageHandlerTest` 5/5、`TaskOutboxRelayTest` 3/3，`MySqlTaskPersistenceIT` 4 项新 IT 通过。全量门禁 Temurin 17.0.21 为 **252 单测 + 100 IT**（`tmp/round5-r4-final-verify5.log`），Python 11/11（`tmp/round5-r4-python-tests2.log`），前端构建 30.68s 通过（`tmp/round5-r4-frontend-build2.log`，仍有 >500 kB chunk 警告）。真实 RabbitMQ 未安装，R4-01..08 未执行。
+实际结果（2026-11-16 R4 追加改动后本机）：P1 10 项通过（`tmp/round3-p1.log`）；P2 `KnowledgeRetrievalMySqlIT` 6/6（`tmp/round3-p2.log`）；迁移 1/1（`tmp/round3-p2-migration.log`）；R3 `R3ProductionExecutorChainIT` 5/5（`tmp/round3-r3-prod.log`）；R4 `TaskOutboxRelayTest` 4/4、`RabbitDispatchTransportTest` 4/4、`RabbitDispatchBrokerIT` 2/2，`MySqlTaskPersistenceIT` 含事务回滚测试；全量门禁 Temurin 17.0.21 为 **267 单测 + 103 IT**（`tmp/r4-final-verify-new.log`），Python 11/11（`tmp/round5-r4-python-tests2.log`），前端构建历史通过（`tmp/round5-r4-frontend-build2.log`，仍有 >500 kB chunk 警告）。真实 RabbitMQ 已在本机执行部分 R4 场景（含自然 dead 重放与 replay/cancel 并发），**整体未通过**：confirm 丢失/迟到、DB 自动退避、运行期热切换、replay 与新 attempt 并发竞争仍有缺口。
 
 边界：R3 的 Python 是短协议桩，不运行 LDD、不占 GPU；崩溃窗口测试的 `R3ProductionCrashChildMain` 是测试最小上下文 + 手动异步包装，不是完整 Spring 容器。以上只证明隔离环境链路，不是生产库迁移或生产部署验收。
 
 ### CI 与 Java 17 证据
 
-- 本机 Temurin JDK 17.0.21 已跑 `mvn verify -Pmysql-it`，2026-11-16 R4 实现后计数为 **252 单测 + 100 IT**；日志 `tmp/round5-r4-final-verify5.log`，此前 232+96 日志 `tmp/round3-full-verify-final.log`。这只证明本机 Java 17 运行，不等于 Ubuntu CI/生产部署已验证；R4 真实 RabbitMQ 未安装，R4-01..08 阻塞。
+- 本机 Temurin JDK 17.0.21 已跑 `mvn verify -Pmysql-it`，2026-11-16 R4 追加改动后计数为 **267 单测 + 103 IT**；日志 `tmp/r4-final-verify-new.log`，此前 263+100 为旧代码日志 `tmp/r4-final-verify.log`，252+100 更早日志 `tmp/round5-r4-final-verify5.log`，232+96 日志 `tmp/round3-full-verify-final.log`。这只证明本机 Java 17 运行，不等于 Ubuntu CI/生产部署已验证；workflow 已加入 RabbitMQ 4.1 service，但本轮新 CI 未运行。
 - 远端 `Migration Quality` 对 `930c934` 曾失败（run `43686578054`）：`python` 与 `frontend` 成功，`backend` 在单测阶段因 `AttemptProcessRegistryTest`/`PythonProcessWaiterTest` 硬编码 Windows `cmd`、`ping -n`，以及 `PythonProcessWaiter` 销毁进程后未等待退出而失败；已改为按 OS 选择 `sh -c 'sleep 20'`/`sh -c 'exit 0'` 或 `cmd /c exit 0`/`ping -n 20`，并在 `destroyProcessTree` 后 `waitFor(2s)`。
 - 跨平台修复推送后，提交 `106e4d3` 的 run `43707281672` 已全部 success（backend/frontend/python）；本机定向日志 `tmp/round2-cross-platform.log`。2026-11-15 收口提交 `bb4a79f` 的 run `43726078023` backend/frontend/python 全绿；此前 `5e4efd4` 的 run `43712479071` 曾因知识评估未知题误命中导致 backend failure，修复记录见 `05` ADR-025 与 `09` §5.15.1。远端 CI 通过仍不等于生产部署验收。
 

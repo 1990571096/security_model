@@ -52,7 +52,7 @@ class TaskOutboxRelayTest {
     }
 
     @Test
-    void exhaustedPublishMarksDead() {
+    void exhaustedPublishMarksDeadButKeepsTaskReplayable() {
         DispatchOutbox outbox = outbox(3);
         when(outboxService.claimBatch(any(), anyString(), anyInt(), anyInt()))
                 .thenReturn(List.of(outbox));
@@ -62,8 +62,8 @@ class TaskOutboxRelayTest {
 
         assertEquals(0, relay.relayOnce());
         verify(outboxService).markDead(eq(outbox), anyString(), any());
-        verify(dispatchCoordinator).failAndAbandon(eq(11L), eq("run-1"), eq(1),
-                eq("DISPATCH_PUBLISH_FAILED"), anyString());
+        verify(dispatchCoordinator, org.mockito.Mockito.never()).failAndAbandon(any(Long.class),
+                anyString(), anyInt(), anyString(), anyString());
     }
 
     @Test

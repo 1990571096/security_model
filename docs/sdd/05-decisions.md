@@ -504,20 +504,20 @@ Agent 采用外部大模型 API，本机不部署大模型。生成模型和 emb
 - 全量：JDK20 `mvn verify -Pmysql-it`（`REDIS_IT=true`）**232 单测 + 96 IT**，`tmp/round3-full-verify-final.log`；Temurin 17.0.21 同计数，`tmp/round3-full-verify-jdk17-final.log`；Python 11/11 `tmp/round3-python-tests-final.log`；前端构建通过 `tmp/round3-frontend-final.log`（仍有 >500 kB chunk 警告）。
 - 远端：`106e4d3` 的 run `43707281672` 全部 success；`5e4efd4` 的 run `43712479071` 暴露 2 项知识评估误命中（backend failure，frontend/python success），已由阈值 `0.30` 和测试竞态修复；收口提交 `bb4a79f` 的 run `43726078023` backend/frontend/python 全绿，`tmp/ci-bb4a79f-backend.log`。
 
-**边界**：单段路径仍是正则形态过滤，不能穷举所有自由文本隐私形态；清理退避是进程内定时任务 + 数据库状态，不是 outbox；崩溃子 JVM 用测试最小上下文与手动异步包装，真实链路四类用例才用完整 Spring 代理；生产库 `eladmin` 未迁移；R4 已实现主体代码（见 ADR-026），真实 RabbitMQ 未安装，R4-01..08 真实验收阻塞。`R3/R6/R7` 按 `20` §6.8 分开写“实现验收通过（隔离）/部署验收未执行”，不再使用无法定位到具体 ID 的“整体验收”表述。
+**边界**：单段路径仍是正则形态过滤，不能穷举所有自由文本隐私形态；清理退避是进程内定时任务 + 数据库状态，不是 outbox；崩溃子 JVM 用测试最小上下文与手动异步包装，真实链路四类用例才用完整 Spring 代理；生产库 `eladmin` 未迁移；R4 已实现主体代码（见 ADR-026），真实 RabbitMQ 双 JVM 已完成部分场景，**整体未通过**：confirm 丢失/迟到、DB 自动退避、运行期热切换、replay 与新 attempt 并发竞争仍未执行（replay/cancel 并发已执行）。`R3/R6/R7` 按 `20` §6.8 分开写“实现验收通过（隔离）/部署验收未执行”，不再使用无法定位到具体 ID 的“整体验收”表述。
 
 **非目标**：不扩展 RabbitMQ/独立 Worker、模型供应商或展示功能；不重跑 LDD 128/5；不写生产库；不把本机门禁替代远端 CI，也不把隔离测试写成生产部署验收。
 
 ## ADR-026：R4 单机 API + 独立 Worker + Transactional Outbox + RabbitMQ（六项可靠性整改已落地，真实 Broker 部分验收）
 
-日期：2026-11-16；状态：**六项评审缺陷代码已整改；真实 RabbitMQ 4.1.8 + Erlang 27.3.4.18、隔离 schema/vhost、双 JVM 已实测 R4-01/02/03/04（GPU_BUSY/毒消息）/05/06（启动拒绝）/07；R4-04 DB 故障、R4-02 confirm 丢失、R4-06 drain 热切换、R4-08 成功重放/越权/竞争仍未执行；默认 db 模式保持 R3，不迁移业务库，不重跑 LDD**。
+日期：2026-11-16；状态：**R4 部分真实场景已通过，整体未通过；必选故障场景和 CI 仍有缺口**。真实 RabbitMQ 4.1.8 + Erlang 27.3.4.18、隔离 schema/vhost、双 JVM 已实测 R4-01（含回滚）、R4-02（幂等/不可路由/旧 claim token/真实 confirm-return）、R4-03、R4-04（GPU_BUSY/毒消息/DB 中断）、R4-05（运行中+完成后取消）、R4-06（启动/drain/v2 旧队列隔离）、R4-07、R4-08（自然 dead+重放+权限+replay/cancel 并发）；仍缺 confirm 丢失/迟到、DB 自动退避、运行期热切换、replay 与新 attempt 并发竞争；默认 db 模式保持 R3，不迁移业务库，不重跑 LDD**。
 
 **背景**：R3 已在 API 进程内完成真实执行器链路、意图状态机、GPU 单槽租约和崩溃恢复，但跨进程派发仍依赖 API 进程内 `@Async`。R4 的目标是把“事务提交”和“执行派发”解耦，同时不引入第二个任务事实源。
 
 **决策**
 1. **事实源不变**：MySQL 仍是任务、意图、租约、终态和权限的唯一权威；RabbitMQ 只承载“已提交意图可处理”的通知。事件 v1 只含 `schemaVersion/messageId/eventType/taskId/runId/attempt/ownerUserId/intentId/requestHash/occurredAt`，不含路径、命令、凭据或参数快照。
 2. **事务内写 Outbox，租约归 Worker**：rabbit 模式 API 在同一事务写任务冻结快照、调度意图和 `sys_dispatch_outbox`，**不领取物理 GPU**；业务回滚不留 Outbox。Worker 消费时用独立短事务完成身份检查、`pending→submitting` 和槽位领取，事务提交后才启动 Python；`GPU_BUSY` 回滚 `submitting→pending`，数据库异常不得误判为 BUSY。Outbox 行以 `(task_id, run_id, attempt, event_type)` 唯一约束防止重复建行；db 模式仍保持 R3 的“任务/租约/意图”同事务。
-3. **发布与确认**：Relay 条件领取 `new/failed` 行并写 `claim_owner/claim_token/claim_until`；每次发布生成独立 `publishId` 并写入 `correlationId`，发布使用同一 Channel 的 `ReturnListener` 与 `confirmSelect/waitForConfirms`，return 按该次 `publishId` 配对，不建立业务 `messageId` 共享 return map，也不依赖固定 sleep；confirm 且该次发布未被 return 后带 `claim_token` 条件置 `published`；nack/confirm 超时/连接断开按 5/30/120 秒退避，最多 3 次后 `dead`；`mandatory` 下的不可路由消息**立即 dead 并收敛 task/intent**，不得记成 `published`；`publishing` 超时按领取期限回收，旧确认不能覆盖新一轮发布。
+3. **发布与确认**：Relay 条件领取 `new/failed` 行并写 `claim_owner/claim_token/claim_until`；每次发布生成独立 `publishId` 并写入 `correlationId`，发布使用同一 Channel 的 `ReturnListener` 与 `confirmSelect/waitForConfirms`，return 按该次 `publishId` 配对，不建立业务 `messageId` 共享 return map，也不依赖固定 sleep；confirm 且该次发布未被 return 后带 `claim_token` 条件置 `published`；nack/confirm 超时/连接断开按 5/30/120 秒退避，最多 3 次后 `dead`，但**普通发布耗尽只标 dead、保留 task running/intent pending 供同 attempt 重放**；`mandatory` 下的不可路由消息**立即 dead 并收敛 task/intent**，不得记成 `published`；`publishing` 超时按领取期限回收，旧确认不能覆盖新一轮发布。
 4. **消费幂等与真实完成信号**：Worker 以 `message_id` 唯一消费记录 + 数据库当前 `runId/attempt` 做幂等；重复终态/过期消息只 ACK 不执行；`processing` 不是完成证据，未过期且未完成时必须发布同业务 `messageId` 的 120 秒延迟副本，确认后才 ACK 旧消息。`PythonLddTaskExecutor` 增加阻塞式 `executeAndWait`，只有 Python 结束、终态落库、消费记录终态后才 ACK；`runPreDefense` 的 `void @Async` 返回不作为完成信号。
 5. **ACK 时机**：只在终态已持久化、消息已受控转入重试/DLQ、或消息被判定重复/过期/非法并写审计后 ACK；DB 故障先转 120 秒延迟队列再 ACK，禁止 `basicNack(requeue=true)` 热循环；禁止 autoAck，禁止启动 Python 前 ACK，禁止把 `IN_PROGRESS` 当作 DUPLICATE 直接 ACK。
 6. **取消与孤儿进程**：取消以 MySQL 条件更新为准；执行中由独立取消巡检杀进程树，未确认退出不释放槽位；取消先成功则拒绝迟到结果，完成先成功则取消返回冲突并保留原终态；Worker 崩溃后的孤儿进程由 `AttemptProcessRegistry`/恢复协调器隔离，心跳超时不能证明进程退出。
@@ -525,6 +525,6 @@ Agent 采用外部大模型 API，本机不部署大模型。生成模型和 emb
 8. **DLQ 重放与权限**：只有确认未接受执行的 `pending` 意图允许保留原 attempt 续传；重放事务按任务→意图→Outbox 顺序加行锁，校验 `runId/attempt` 与任务当前值一致，重算 `payload_hash`，审计记录旧/新 `messageId`；仅任务 owner 或现有管理员可触发。failed/uncertain 必须走既有授权重试创建新 attempt，不默认扩大管理员写权限。
 9. **验收计划**：真实 MySQL + RabbitMQ + 短 Python 协议桩，覆盖 R4-01 事务回滚/停 MQ 恢复、R4-02 confirm 丢失/迟到确认、R4-03 Worker 崩溃、R4-04 GPU_BUSY/DB 故障/毒消息、R4-05 取消与迟到结果（完成后取消保留原终态）、R4-06 模式切换与旧消息隔离、R4-07 API 重启不误杀 Worker 任务、R4-08 权限与人工重试；记录 DB 状态、消息计数、Python 执行次数。单元 Mock 不作阶段完成证据；缺少 RabbitMQ 时明确登记阻塞。
 
-**结果**：详细设计、故障矩阵、实施顺序与未决问题写入 `21-r4-outbox-rabbitmq-design.md`。2026-11-16 本机已用真实 RabbitMQ + MySQL + 双 JVM + 短 Python 桩执行：R4-01 正常/停 Broker 恢复；R4-02 重复消息幂等与不可路由（Outbox dead、task failed、intent abandoned）；R4-03 Worker 强杀后孤儿 PID 4736 被杀、任务 uncertain 收敛、无新 attempt；R4-04 GPU_BUSY 三次退避耗尽与毒消息 DLQ；R4-05 执行中取消；R4-06 `db/worker` 启动拒绝；R4-07 API 重启；R4-08 failed 重放拒绝/admin 查询。R4-04 DB 故障、R4-02 confirm 丢失、R4-06 drain 热切换、R4-08 成功重放/越权/竞争仍未执行，详见 `20` §6.8 与 `21` §16。**仍不代表 R4 阶段整体通过**。
+**结果**：详细设计、故障矩阵、实施顺序与未决问题写入 `21-r4-outbox-rabbitmq-design.md`。2026-11-16 本机已用真实 RabbitMQ + MySQL + 双 JVM + 短 Python 桩执行：R4-01 正常/停 Broker 恢复/事务回滚零残留；R4-02 重复消息幂等、不可路由、旧 claim token、真实 Broker confirm/return；R4-03 Worker 强杀后孤儿 PID 4736 被杀、任务 uncertain 收敛、无新 attempt；R4-04 GPU_BUSY 三次退避耗尽、毒消息 DLQ、DB 中断不误 ACK 且恢复后收敛；R4-05 执行中取消、完成后取消返回冲突且终态保持；R4-06 `db/worker` 启动拒绝、drain 拒绝、v2 旧队列隔离；R4-07 API 重启；R4-08 failed 重放拒绝、非 owner 403、Broker 故障自然 dead 后成功重放。仍缺 confirm 丢失/迟到、DB 自动退避、运行期热切换、重放与取消/新 attempt 并发竞争，详见 `20` §6.8 与 `21` §16。**仍不代表 R4 阶段整体通过**。
 
 **边界**：单机单 GPU 槽、单 API、单 Worker；不做多机/Kubernetes/对象存储/Kafka，不承诺 exactly-once；生产库 `eladmin` 未迁移，真实 LDD/GPU 未运行。

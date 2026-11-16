@@ -1,7 +1,8 @@
 # R4 契约与实现：单机 API + 独立 Worker + Transactional Outbox + RabbitMQ
 
-状态：**六项可靠性整改代码已落地；真实 RabbitMQ 4.1.8 + Erlang 27.3.4.18、隔离 schema/vhost、双 JVM 已实测 R4-01/02/03/04（GPU_BUSY/毒消息）/05/06（db+worker 启动拒绝、drain 脚本拒绝）/07/08（成功重放 + 非 owner 403）；R4-04 DB 故障、R4-02 confirm 丢失、R4-06 旧队列隔离、R4-08 并发竞争仍未执行。默认 `dispatch.mode=db`，不启用 RabbitMQ/Outbox/Worker，不迁移业务库**
+状态：**R4 部分真实场景已通过，整体未通过；必选故障场景和 CI 仍有缺口**。六项可靠性整改代码已落地；真实 RabbitMQ 4.1.8 + Erlang 27.3.4.18、隔离 schema/vhost、双 JVM 已实测 R4-01（含事务回滚）、R4-02（重复幂等/不可路由/旧 claim token/真实 confirm-return）、R4-03、R4-04（GPU_BUSY/毒消息/DB 中断）、R4-05（运行中取消+完成后取消）、R4-06（启动拒绝/drain 拒绝/v2 旧队列隔离）、R4-07、R4-08（Broker 故障自然 dead 后重放+权限+重放/取消真实并发）。仍缺：confirm 丢失/迟到真实网络注入、DB 故障自动退避收敛、R4-06 运行期热切换、R4-08 重放与新 attempt 真实并发竞争、本次提交的远端 CI。默认 `dispatch.mode=db`，不启用 RabbitMQ/Outbox/Worker，不迁移业务库**
 日期：2026-11-16
+事实源：本文件 §16 验收表、`20-stage-execution-and-acceptance.md` §6.8、`09-project-status.md` §5.17 为当前 R4 事实源；其他章节或旧文档中的“RabbitMQ 未安装 / R4-01..08 未执行 / 252+100 为最新”均为历史记录，已被 2026-11-16 验收更新。
 范围：一台机器上的 API 进程 + 一个独立 Worker 进程；复用现有 R3 调度意图、GPU 单槽租约、执行器协议、终态条件更新和恢复组件。
 
 ## 1. 目标与非目标
@@ -153,7 +154,7 @@ DLQ 重放必须区分执行状态：
 - **确认未接受执行**：意图仍为 `pending`，且 `AttemptProcessRegistry`/租约证据证明没有执行进程启动；允许保留原 `taskId/runId/attempt`，生成新的 `messageId` 后重新投递，不创建新 attempt。
 - **执行失败、已废弃或执行状态不确定**：不得复用旧 attempt 重放；必须走既有授权重试接口，创建新 `attempt`、新意图和新 Outbox 行，旧 attempt 保留审计。
 - 重放操作只允许任务 owner 或具备现有管理员权限的用户触发，复用既有权限规则和审计字段；不默认扩大管理员写权限，不因 DLQ 重放绕过租约、owner 或 `runId/attempt` 校验。
-- **当前实现**：`POST /api/observability/dispatch/dead/{messageId}/replay` 在单个事务内按顺序锁任务、锁意图、锁 Outbox；校验 `task.running + currentRunId/currentAttempt == outbox.runId/attempt + intent.pending`；仅任务 owner 或 admin 可触发；生成**新 `messageId`**，同时重算 `payload_hash`，保留原 `taskId/runId/attempt`；审计记录旧 `previousMessageId` 与新 `messageId`。failed/uncertain 返回 `DLQ_REPLAY_REQUIRES_NEW_ATTEMPT`，必须走既有任务重试创建新 attempt。真实 Broker 下的重放与取消/新 attempt 竞争仍待 R4-08 证据。
+- **当前实现**：`POST /api/observability/dispatch/dead/{messageId}/replay` 在单个事务内按顺序锁任务、锁意图、锁 Outbox；校验 `task.running + currentRunId/currentAttempt == outbox.runId/attempt + intent.pending`；仅任务 owner 或 admin 可触发；生成**新 `messageId`**，同时重算 `payload_hash`，保留原 `taskId/runId/attempt`；审计记录旧 `previousMessageId` 与新 `messageId`。failed/uncertain 返回 `DLQ_REPLAY_REQUIRES_NEW_ATTEMPT`，必须走既有任务重试创建新 attempt。2026-11-16 已用真实 HTTP 并发调用 replay 与 cancel：replay 先提交、cancel 随后成功，任务终态 `canceled`、consumption `terminal`、Python 0 次；重放与新 attempt 的真实并发竞争仍待补。
 
 ## 11. 取消与迟到结果
 
@@ -249,20 +250,21 @@ DLQ 重放必须区分执行状态：
 
 验收断言必须包含：任务终态、意图状态、租约 token/隔离状态、进程是否退出、Outbox 状态与 `claim_token`、消费记录、消息 ACK/DLQ、Python 执行计数。单元 Mock 不能作为 R4 阶段完成证据。
 
-**本轮验收对照（代码提交 `03ad448f57bec8d2255f16cfd9748cb9664c3d1c`，tree `ae385f1913b4d40ae33a3121954643bfdc689964`）**：
+**本轮验收对照（代码提交 `03ad448f57bec8d2255f16cfd9748cb9664c3d1c`，tree `ae385f1913b4d40ae33a3121954643bfdc689964`；并在 2026-11-16 追加自然死信重放、事务回滚 IT、真实 Broker IT、DB 中断与旧队列隔离证据，新增改动尚未提交）**：
 
 | 验收 ID | 测试方法 | 关键证据 | 结果 | 未覆盖边界 |
 |---|---|---|---|---|
-| R4-01 | 真实 Broker + MySQL + API/Worker；正常派发；停 Broker 后创建任务再恢复 | 任务 `2122209791151980545` / `2122210212130078722`；`tmp/r4-stack/api.log`、`worker.log` | 通过 | 事务回滚未单独注入 |
-| R4-02 | 管理 API 重发同一 payload；关闭 RabbitAdmin 自动声明并删除 worker queue 后发布 | Python 次数不增；任务 `2122214846991208449` Outbox dead、未 published；`tmp/r4-stack/taskid-unroutable6.txt` | 通过（重复幂等 + 不可路由） | confirm 丢失/迟到确认、网络分区未执行 |
+| R4-01 | 真实 Broker + MySQL + API/Worker；正常派发；停 Broker 后创建任务再恢复；真实 MySQL 事务回滚 | 任务 `2122209791151980545` / `2122210212130078722`；`MySqlTaskPersistenceIT#rabbitDispatchRollbackLeavesNoTaskIntentOrOutbox`；`tmp/r4-rollback-it1.log` | 通过（正常链路 + 回滚零残留） | 跨主机未执行 |
+| R4-02 | 管理 API 重发同一 payload；关闭 RabbitAdmin 自动声明并删除 worker queue 后发布；真实 Broker confirm/return IT；旧 claim token 条件发布 IT | Python 次数不增；任务 `2122214846991208449` Outbox dead、未 published；`RabbitDispatchBrokerIT` 2/2（`tmp/r4-broker-it1.log`）；`expiredPublishingIsReclaimedAndOldConfirmCannotWin` | 部分通过（幂等 + 不可路由 + 旧 token 不覆盖新状态） | confirm 丢失/迟到网络故障未做真实双 JVM 注入 |
 | R4-03 | sleep 300 秒任务启动后强杀 Worker，重启恢复 | 任务 `2122215986243866625`；孤儿 PID 4736 被杀；无新 attempt；`tmp/r4-stack/taskid-orphan.txt` | 通过 | 跨主机未执行 |
-| R4-04 | 人工占用 GPU + 三次退避耗尽；发布 `not-json` 毒消息 | 任务 `2122216323369439234`；DLQ 1→2；`tmp/r4-stack/taskid-gpubusy.txt` | 部分通过 | 停 MySQL 的 DB 故障注入未执行 |
-| R4-05 | 真实任务启动 2 秒后取消 | 任务 `2122210811173199873`；canceled、租约释放、Python 1 次 | 通过 | 完成后取消未单独注入 |
-| R4-06 | `mode=db role=worker` 启动拒绝；30 秒 sleep 任务运行中执行 drain 脚本 | `tmp/r4-mode-reject2.log`；`tmp/r4-drain-refusal2.log`；任务 `2122221325269860354` | 部分通过 | 应用层无运行期热切换入口；旧队列隔离未执行 |
+| R4-04 | 人工占用 GPU + 三次退避耗尽；发布 `not-json` 毒消息；worker 通过 TCP 代理连 MySQL 后切断代理 | 任务 `2122216323369439234`；DLQ 1→2；DB 中断任务 `2122228571957653506`：消息留在 worker 队列、未 ACK，恢复代理并重启 worker 后 success、consumption terminal、Python 1 次；`tmp/r4-db-outage-db.txt`、`tmp/r4-stack/worker.log` | 部分通过（DB 中断不误 ACK + 恢复收敛） | 恢复需重启 consumer；自动退避队列未覆盖租约失联场景 |
+| R4-05 | 真实任务启动 2 秒后取消；任务 success 后再取消 | 任务 `2122210811173199873` canceled、Python 1 次；任务 `2122227016860782594` 完成先返回 `TASK_COMMAND_INVALID`，终态保持 success；`tmp/r4-cancel-after-success.json` | 通过 | 无 |
+| R4-06 | `mode=db role=worker` 启动拒绝；30 秒 sleep 任务运行中执行 drain 脚本；v2 队列启动后向旧队列投递 | `tmp/r4-mode-reject2.log`；`tmp/r4-drain-refusal2.log`；旧队列 `security-model.dispatch.worker` 1 条、0 consumer，新队列 `.v2` 0 条、1 consumer；`tmp/r4-old-queue-isolation.json` | 部分通过（旧队列隔离 + 停机切换拒绝） | 应用层无运行期热切换；切换必须停机 |
 | R4-07 | Worker 执行 sleep 任务时重启 API | 任务 `2122210676426948609`；Worker 不中断、任务 success、Python 1 次 | 通过 | 多 API 实例未执行 |
-| R4-08 | failed 重放拒绝；test 用户重放；Broker 停止后 Outbox failed→SQL 标 dead→重启 Broker 重放 | admin 400、test 403；任务 `2122219894743760898` 旧 `42587bd8...`→新 `1c607941...` 后 success、consumption `TASK_SUCCESS`、Python 1 次 | 通过（成功重放 + 权限） | dead 由 SQL 注入模拟；owner 与取消/新 attempt 真实并发竞争未执行 |
+| R4-08 | failed 重放拒绝；test 用户重放；Broker 停止后让 Outbox 自然耗尽为 dead，重启 Broker 后重放；真实 HTTP 并发 replay + cancel | admin 400、test 403；自然 dead 任务 `2122226296115777538`：`c871a5ac...` dead、task running、intent pending，重放为 `a7696410...` 后 success、consumption `terminal`、Python 1 次；并发任务 `2122231820257357826`：`9e8152c4...` 自然 dead，并发后 replay 返回 `f310da09...`、cancel 成功，终态 `canceled`、consumption `terminal`、Python 0 次，审计 CREATE/START/REPLAY_DEAD/CANCEL；`tmp/r4-natural-dead-db1.txt`、`tmp/r4-natural-dead-db2.txt`、`tmp/r4-natural-dead-replay.json`、`tmp/r4-race-results.json`、`tmp/r4-race-db-dead.txt`、`tmp/r4-race-db-after.txt`、`tmp/r4-race-audit.txt` | 部分通过（真实 Broker 故障自然 dead + 成功重放 + 权限 + replay/cancel 并发） | 重放与新 attempt 真实并发竞争未执行；旧 SQL 注入 dead 仅保留为历史 |
 
-全量门禁：`mvn -B -f migration-backend/pom.xml verify -Pmysql-it`（`MYSQL_IT_PASSWORD`、`REDIS_IT=true`，Temurin 17.0.21）→ **263 单测 + 100 IT，BUILD SUCCESS**，`tmp/r4-final-verify.log`。**CI 未运行**：`git push origin feature/r3-dispatch-idempotency` 在 21 秒内无法连接 `github.com:443`；`.github/workflows/migration-quality.yml` 仍只有 MySQL/Redis，没有 RabbitMQ 门禁。本轮不以本机日志替代 CI 绿灯。
+
+全量门禁（2026-11-16，追加改动后）：`mvn -B -f migration-backend/pom.xml verify -Pmysql-it`（`MYSQL_IT_PASSWORD`、`REDIS_IT=true`、`RABBIT_IT=true`，Temurin 17.0.21）→ **267 单测 + 103 IT，BUILD SUCCESS**，`tmp/r4-final-verify-new.log`（其中 `RabbitDispatchBrokerIT` 2/2）。**CI 未运行**：`git push origin feature/r3-dispatch-idempotency` 仍无法连接 `github.com:443`；workflow 已新增 RabbitMQ 4.1 service 与 `RABBIT_IT=true` 门禁，但只有新提交成功触发后才算通过，不能引用历史 run。
 
 
 
@@ -270,8 +272,8 @@ DLQ 重放必须区分执行状态：
 
 1. 冻结事件 v1、Outbox 表、消费记录表、配置键和模式互斥规则（本设计评审通过后）。**已完成**：`DispatchEvent` v1、`sql/security_model_task_outbox.sql`、`dispatch.mode/role` 配置键。
 2. 先写迁移脚本 + 表约束 + 单测；不接 MQ。**已完成**：`TaskOutboxServiceTest` 4/4、`TaskDispatchConsumptionServiceTest` 4/4、`DispatchRuntimePolicyTest` 4/4、`DispatchMessageHandlerTest` 5/5、`TaskOutboxRelayTest` 3/3；MySQL 四项 IT `outboxClaimAndConditionalPublishAreDurable`、`expiredPublishingIsReclaimedAndOldConfirmCannotWin`、`consumptionLedgerIsIdempotent`、`deadOutboxReplayIsConditionalAndKeepsMessageId` 通过（`tmp/round5-r4-replay-it3.log`）。
-3. 接真实 RabbitMQ，完成 Relay/Consumer/ACK/DLQ。**代码已落地**：`RabbitDispatchConfiguration`、`RabbitDispatchTransport`、`TaskOutboxRelay`、`DispatchMessageHandler`/`DispatchMessageListener`；**真实 Broker 未安装，未执行**。
-4. 完成 R4-01..08 真实环境验收，记录 SHA/tree/run。**阻塞**：本机无 RabbitMQ 服务端、无 Docker、`winget` 无服务端包，不能以 Mock 代替。
+3. 接真实 RabbitMQ，完成 Relay/Consumer/ACK/DLQ。**已完成**：`RabbitDispatchConfiguration`、`RabbitDispatchTransport`、`TaskOutboxRelay`、`DispatchMessageHandler`/`DispatchMessageListener`；本机 RabbitMQ 4.1.8 + Erlang 27.3.4.18 已用于 R4-01..08 真实双 JVM 验收。
+4. 完成 R4-01..08 真实环境验收，记录 SHA/tree/run。**当前状态**：R4 部分真实场景已通过，整体未通过；R4-02 confirm 丢失/迟到、R4-04 自动退避收敛、R4-06 运行期热切换、R4-08 重放与新 attempt 并发竞争仍有缺口；replay/cancel 并发已执行，CI 尚无本次提交的新 run。历史“RabbitMQ 未安装”记录保留在下方，已被 2026-11-16 验收更新。
 5. 回退：`dispatch.mode=db`，停 Consumer，drain/标记 Outbox，确认无活跃 Worker；不删除已发布的审计数据。**操作顺序**：先停 `role=worker` 进程并确认无 `running`/本地接受进程 → API 切 `mode=db, role=api` 重启 → 确认 Outbox 无 `publishing` 后执行 `sql/security_model_task_outbox_rollback.sql`；有活跃任务或未确认进程时不得删表/切模式。回退不删除已发布消息的审计行；Rabbit 队列保留用于事后核对。
 
 ## 17.1 部署与配置键

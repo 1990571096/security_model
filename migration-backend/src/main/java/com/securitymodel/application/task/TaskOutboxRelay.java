@@ -94,15 +94,25 @@ public class TaskOutboxRelay {
                 ? exception.getClass().getSimpleName() : exception.getMessage();
         int attempts = outbox.getPublishAttempts() == null ? 1 : outbox.getPublishAttempts();
         if (reason.startsWith("RABBIT_UNROUTABLE") || attempts >= maxAttempts) {
-            if (outboxService.markDead(outbox, reason, now) && event != null) {
+            boolean unroutable = reason.startsWith("RABBIT_UNROUTABLE");
+            if (outboxService.markDead(outbox, reason, now) && event != null && unroutable) {
                 // A dispatch event that can never reach the worker must not leave a task
                 // running forever with no consumer. Converge task, intent and outbox together
                 // (each write is conditional on its own identity/attempt).
                 dispatchCoordinator.failAndAbandon(event.taskId(), event.runId(), event.attempt(),
                         "DISPATCH_PUBLISH_FAILED", "Outbox 发布超过上限: " + reason);
             }
-            log.error("Outbox 发布超过上限，标记 dead: messageId={}, attempts={}, reason={}",
-                    outbox.getMessageId(), attempts, reason);
+            // Transient publish exhaustion (broker down, confirm timeout) means the message
+            // never reached the worker. Keep task/intent pending so an operator can replay
+            // the dead row for the same attempt after repairing the broker; only unroutable
+            // topology errors are terminal here.
+            if (unroutable) {
+                log.error("Outbox 不可路由，标记 dead: messageId={}, attempts={}, reason={}",
+                        outbox.getMessageId(), attempts, reason);
+            } else {
+                log.error("Outbox 发布超过上限，标记 dead 并等待人工重放: messageId={}, attempts={}, reason={}",
+                        outbox.getMessageId(), attempts, reason);
+            }
             return;
         }
         long delay = retryDelaysMs.get(Math.min(attempts - 1, retryDelaysMs.size() - 1));

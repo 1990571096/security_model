@@ -28,6 +28,8 @@ import java.nio.file.Path;
 import java.lang.reflect.Proxy;
 import java.sql.DriverManager;
 import java.sql.Statement;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Set;
@@ -1220,6 +1222,62 @@ class MySqlTaskPersistenceIT {
                 Integer.class, replayedRow));
         assertFalse(replayedRow.equals(outbox.getMessageId()));
         assertFalse(service.replayDead(outbox.getMessageId(), now) != null);
+    }
+
+    @Test
+    void rabbitDispatchRollbackLeavesNoTaskIntentOrOutbox() throws Exception {
+        long taskId = 803L;
+        String runId = "run-r4-01-rollback";
+        LocalDateTime now = LocalDateTime.now();
+        try (Connection connection = jdbc.getDataSource().getConnection()) {
+            connection.setAutoCommit(false);
+            try (PreparedStatement task = connection.prepareStatement("""
+                    INSERT INTO sys_pre_defense
+                      (task_id, task_name, status, dataset_id, algorithm_id,
+                       current_run_id, current_attempt, create_time, update_time)
+                    VALUES (?, 'r4-rollback', 'running', 6, 14, ?, 1, ?, ?)
+                    """);
+                 PreparedStatement intent = connection.prepareStatement("""
+                    INSERT INTO sys_task_dispatch_intent
+                      (task_id, run_id, attempt, status, schema_version, request_json,
+                       request_hash, created_at, updated_at)
+                    VALUES (?, ?, 1, 'pending', 1, '{}', ?, ?, ?)
+                    """);
+                 PreparedStatement outbox = connection.prepareStatement("""
+                    INSERT INTO sys_dispatch_outbox
+                      (message_id, event_type, task_id, run_id, attempt, intent_id,
+                       payload_hash, payload_json, status, publish_attempts, next_at,
+                       created_at, updated_at)
+                    VALUES (?, 'TASK_DISPATCH', ?, ?, 1, 1, ?, '{}', 'new', 0, ?, ?, ?)
+                    """)) {
+                task.setLong(1, taskId);
+                task.setString(2, runId);
+                task.setObject(3, now);
+                task.setObject(4, now);
+                task.executeUpdate();
+                intent.setLong(1, taskId);
+                intent.setString(2, runId);
+                intent.setString(3, "a".repeat(64));
+                intent.setObject(4, now);
+                intent.setObject(5, now);
+                intent.executeUpdate();
+                outbox.setString(1, "rollback-message");
+                outbox.setLong(2, taskId);
+                outbox.setString(3, runId);
+                outbox.setString(4, "b".repeat(64));
+                outbox.setObject(5, now);
+                outbox.setObject(6, now);
+                outbox.setObject(7, now);
+                outbox.executeUpdate();
+            }
+            connection.rollback();
+        }
+        assertEquals(0, jdbc.queryForObject(
+                "SELECT COUNT(*) FROM sys_pre_defense WHERE task_id = ?", Integer.class, taskId));
+        assertEquals(0, jdbc.queryForObject(
+                "SELECT COUNT(*) FROM sys_task_dispatch_intent WHERE task_id = ?", Integer.class, taskId));
+        assertEquals(0, jdbc.queryForObject(
+                "SELECT COUNT(*) FROM sys_dispatch_outbox WHERE task_id = ?", Integer.class, taskId));
     }
 
     @Test
