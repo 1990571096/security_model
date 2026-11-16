@@ -210,7 +210,7 @@ pwsh -File scripts\run-mysql-it.ps1
 
 R1 的验收证据分级、接口归属审计表与迁移执行记录模板见 `docs/sdd/18-multiuser-ownership-and-resources.md` §8–§10。
 
-当前最新门禁（2026-11-15，`08f11c0` 后 P1/P2/R3 收口；代码/文档已推送，远端 `bb4a79f` 的 run `43726078023` 全绿）：
+当前最新门禁（2026-11-16 验收口径与 CI 覆盖收口；`docs/sdd/**` 已加入 workflow 的 `push`/`pull_request` 路径，文档提交会触发 backend）：
 
 ```powershell
 $env:MYSQL_IT_PASSWORD = '<本机 MySQL 密码>'
@@ -220,7 +220,7 @@ python -m unittest discover -s algorithm-runtime/vab/tests
 npm --prefix migration-frontend run build
 ```
 
-本机 JDK20 与 Temurin 17.0.21 均为 **232 项单元测试 + 96 项 MySQL/Redis 集成测试**全绿；Python 11/11；前端构建通过（仍有 >500 kB chunk 警告）。新增证据：P1 单字符/数字/隐藏/空格目录与两轮最终 body（`tmp/round3-p1.log`）；P2 退役向量跨批/失败不阻塞/重启/幂等（`tmp/round3-p2.log`）与迁移升级/回滚重复执行（`tmp/round3-p2-migration.log`）；R3 完整 Spring 异步执行器正常/取消/超时/非法结果 + 真实派发崩溃窗口 5/5（`tmp/round3-r3-prod.log`）。R3 的 Python 是短协议桩，不运行 LDD/GPU；生产库 `eladmin` 未迁移，R4 未开始。
+本机 JDK20 与 Temurin 17.0.21 均为 **232 项单元测试 + 96 项 MySQL/Redis 集成测试**全绿；Python 11/11；前端构建通过（仍有 >500 kB chunk 警告）。新增证据：P1 单字符/数字/隐藏/空格目录与两轮最终 body（`tmp/round3-p1.log`）；P2 退役向量跨批/失败不阻塞/重启/幂等（`tmp/round3-p2.log`）与迁移升级/回滚重复执行（`tmp/round3-p2-migration.log`）；R3 完整 Spring 异步执行器正常/取消/超时/非法结果 + 真实派发崩溃窗口 5/5（`tmp/round3-r3-prod.log`）。R3 的 Python 是短协议桩，不运行 LDD/GPU；生产库 `eladmin` 未迁移。R3/R6/R7 按 `docs/sdd/20-stage-execution-and-acceptance.md` §6.8 判定为“实现验收通过（隔离）/部署验收未执行”，不再写成“未整体验收”。R4 仅提交 Outbox/RabbitMQ 设计稿（`docs/sdd/21-r4-outbox-rabbitmq-design.md`、ADR-026），未启用任何新基础设施。
 
 GitHub Actions 工作流配置了 MySQL 8.4 服务和该集成测试；远端运行结果需以 Actions 记录为准。历史 `106e4d3` 的 run `43707281672` 已全部 success；2026-11-15 收口提交 `bb4a79f` 的 run `43726078023` backend/frontend/python 全绿。此前 `5e4efd4` 的 run `43712479071` 曾因 R6 未知题误命中失败，修复记录见 `docs/sdd/09-project-status.md` §5.15.1。
 
@@ -250,7 +250,7 @@ mvn -pl eladmin-system -am test "-Denforcer.skip=true" "-Dsecurity-model.skip-te
 - `docs/sdd/12-resume-project-narrative.md`：简历项目描述与面试讲解提纲。
 - `docs/sdd/13-framework-migration-readiness.md`：Spring Boot 3、Java 17、Vue 3 迁移验收记录。
 - `docs/sdd/17-agent-development-guide.md`：后续逐轮迭代的任务范围、依赖与验收条件（规划文档）。
-- `docs/sdd/20-stage-execution-and-acceptance.md`：开发 Agent 的逐阶段执行任务书，包含实施步骤、默认决策、故障验收矩阵和交接模板。
+- `docs/sdd/20-stage-execution-and-acceptance.md`：开发 Agent 的逐阶段执行任务书，包含实施步骤、默认决策、故障验收矩阵和交接模板；§6.8 为 R3/R6/R7 逐 ID 实现/部署验收表。\n- `docs/sdd/21-r4-outbox-rabbitmq-design.md`：R4 单机 API + 独立 Worker + Transactional Outbox + RabbitMQ 设计稿（未实施）。
 - `docs/sdd/18-multiuser-ownership-and-resources.md`：多用户归属、共享资源权限、历史迁移与 GPU 并发（R0 设计契约）。
 - `docs/sdd/19-local-data-layout-and-retention.md`：受控本地目录布局与保留策略（R0 草案）。
 - `docs/project-introduction-and-interview-guide.md`：完整项目介绍、业务流程、当前进度和面试讲解稿。

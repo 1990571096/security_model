@@ -235,14 +235,14 @@ R3-01/02/03/05/06/07/08/09/10 必须含真实 MySQL 证据；R3-04 包含短进�
 |---|---|---|
 | N1 完整冻结执行计划 | 已实现 | `ResourceQueryService.findDatasetAuthoritative/findAlgorithmAuthoritative` 直读 MySQL；`TaskExecutionPlan` 保存 dataset/algorithm/hyper `DefenseResourceRef` 与最终参数；`buildExecutionRequest` 只从计划构造，不再二次查询。`PreDefenseTaskCommandServiceTest.startBuildsRequestOnlyFromOneAuthoritativePlan` 断言权威读取各 1 次、缓存读取 0 次；`approvedPlanKeepsCompleteSnapshotWhenCatalogRowsMutateAfterPlanning` 断言计划生成后修改资源对象不改变快照。规则为“权威读 + 确认指纹二次校验 + 请求只用快照”，不是资源行锁/版本号锁定；并发更新发生在二次校验前返回 409 且零派发，发生在计划读取后则使用该完整快照。 |
 | N2 删除—启动/编辑—启动/双派发竞争 | 已完成 | `TaskCommandServicePipelineIT` 7 项通过（双启动、删除—启动、编辑—启动、取消先于完成、完成先于取消、瞬时成功与取消、服务层事务回滚）；R3-03 另用两个独立 JVM 同时重放同一 pending intent，条件 `pending→submitting` 只有一个成功，见 §6.7。 |
-| N3 真实完成与回滚链路 | 部分完成 | `TaskCommandServicePipelineIT` 按两种确定性顺序验证终态：取消先发生时迟到完成不能再改终态；完成先发生时取消返回业务拒绝且执行器零调用。R3-01 已补真实服务层事务异常回滚：任务/租约/意图/幂等记录无残留，执行器零调用。仍是 Mockito 执行器替身，不是 `PythonLddTaskExecutor` 真实进程。 |
+| N3 真实完成与回滚链路 | 历史证据 + 当前实现验收 | 历史证据：`TaskCommandServicePipelineIT` 按两种确定性顺序验证终态，取消先发生时迟到完成不能改终态，完成先发生时取消返回业务拒绝且执行器零调用；R3-01 已补真实服务层事务异常回滚：任务/租约/意图/幂等记录无残留，执行器零调用。该批用例的执行器是 Mockito 替身，只作为 2026-11-14 的历史证据保留。当前实现验收改由 `R3ProductionExecutorChainIT` 的完整 Spring `@Async` 代理 + 真实 `PythonLddTaskExecutor` 正常/取消/超时/非法结果 4 项，以及 R3-04 真实派发崩溃窗口承接；不得再用 Mockito 描述当前执行器证据。 |
 | N4 真实进程崩溃恢复 | 已完成（测试最小上下文） | R3-02/03/04 用 `R3RecoveryChildMain` 在独立 JVM 中构建真实 MyBatis mapper、真实 `GpuLeaseService`/`TaskDispatchIntentService`/`TaskDispatchCoordinator`/`DispatchRecoveryCoordinator`、真实 MySQL 租约和短 Python 协议桩；R3-02 新 JVM 恢复 pending 并执行一次；R3-03 双 JVM 竞争只有一个派发；R3-04 接受后未记账崩溃扫描为 `UNKNOWN`，`markBlocked + failAndAbandon`，不重放，Python 仍存活。证据写入 `sys_r3_execution_evidence`。 |
 | N5 五类写工具确认矩阵 | 已完成（可控阻塞） | `AssistantConfirmationEndToEndIT` 22 项：create/start/retry/cancel/export 均有首次与重复或并发同凭据证据；cancel 有过期/跨用户；start/create 有资源变化 409 且零租约/零派发；export 有跨用户下载 403；alice/bob 工具线程复用身份与有效 MyBatis-Plus 超时；新增真实 MySQL 触发器 `SLEEP(0.8)` 下 insert 跨 deadline 的 0 行确认、错误 token 篡改 403 + `TOKEN_MISMATCH` 审计、alice/bob 并发 chat 身份隔离。 |
-| N6 质量门禁与文档同步 | 已完成 | 本机 JDK20 与 Temurin 17.0.21 下 `mvn verify -Pmysql-it` 均为 **232 单测 + 96 IT** 全绿（`tmp/round3-full-verify-final.log`、`tmp/round3-full-verify-jdk17-final.log`）；Python 11/11（`tmp/round3-python-tests-final.log`）；前端 `npm run build` 通过（`tmp/round3-frontend-final.log`，仍有 >500 kB chunk 警告）。远端 `930c934` 的 Migration Quality 曾因既有测试硬编码 Windows `cmd`/`ping -n`，且 `PythonProcessWaiter` 销毁后未等待退出而失败（run `43686578054`）；跨平台修复后 `106e4d3` 的 run `43707281672` 全部 success。2026-11-15 收口提交 `bb4a79f` 的 run `43726078023` backend/frontend/python 全绿；此前 `5e4efd4` 的 run `43712479071` 曾因 R6 未知题误命中 backend failure，修复见 `09` §5.15.1。 |
+| N6 质量门禁与文档同步 | 已完成（本机 + 远端 CI） | 本机 JDK20 与 Temurin 17.0.21 下 `mvn verify -Pmysql-it` 均为 **232 单测 + 96 IT** 全绿（`tmp/round3-full-verify-final.log`、`tmp/round3-full-verify-jdk17-final.log`）；Python 11/11（`tmp/round3-python-tests-final.log`）；前端 `npm run build` 通过（`tmp/round3-frontend-final.log`）。远端 `930c934` 的 Migration Quality 曾失败（run `43686578054`）；跨平台修复后 `106e4d3` 的 run `43707281672` success；2026-11-15 收口提交 `bb4a79f` 的 run `43726078023` backend/frontend/python 全绿。2026-11-16 起 workflow `push/pull_request` 增加 `docs/sdd/**`，文档语料变化纳入 CI；修复提交的 SHA/tree/run 见本轮交付记录。 |
 
 **附带修正（2026-11-14，取消通道收口）**：`AfterCommitTaskDispatcher` 恢复为提交后同步执行，不再向 `taskAsync` 二次提交；训练链路的唯一异步边界回到 `PythonLddTaskExecutor.runPreDefense` 的 `@Async("taskAsync")`。取消信号改由独立 `TaskCancellationDispatcher` 在事务提交后提交到专用 `cancelAsync`（core=1、max=1、queue=32），队列满时在提交线程执行，避免与训练/导出/派发共池后被排队或拒绝。`TaskCancellationDispatcherTest` 覆盖队列饱和回退和“提交前不发信号”；`TaskCommandServicePipelineIT` 覆盖取消先/完成先两种顺序，当前 7 项通过。
 
-**结论**：N1/N2 完成，N4/N5 有可核验的真实链路证据但仍属测试最小上下文/可控阻塞，N3 部分完成，N6 仅本机门禁通过。R3/R7 继续保持“部分实现、部分验收”，不得整体标记通过。
+**结论**：N1/N2 完成；N3 历史 Mockito 证据保留，但当前执行器证据已由 `R3ProductionExecutorChainIT` 的真实 Spring 异步代理 + 真实 `PythonLddTaskExecutor` 4 项和 R3-04 崩溃窗口替代；N4/N5 属测试最小上下文/可控阻塞；N6 已完成本机 + 远端 CI。R3/R6/R7 的冻结必选 ID 按 §6.8 判定为“实现验收通过（隔离环境），部署验收未执行”，不再写成“仅本机通过”或“未整体验收”这种无法定位到具体 ID 的结论。
 
 ### 6.7 验收 ID 五列映射（2026-11-15，基于 `930c934` 五项收口，并补 `08f11c0` 后 P1/P2/R3 收口）
 
@@ -277,8 +277,55 @@ R3-01/02/03/05/06/07/08/09/10 必须含真实 MySQL 证据；R3-04 包含短进�
 | R7-06 模型断线/预算超限不影响核心 | 模型线程池有界、总预算/工具预算、超时取消；核心 API 不共享失败 | `AssistantChatServiceTest`、`AssistantConfirmationEndToEndIT` 超时用例 | 单元 + 真实 HTTP + MySQL 触发器阻塞 | `tmp/round2-r7-a.log` | 底层 JDBC 物理终止不保证 |
 | R7-07 审计/请求体无禁发 | 审计只存工具名/operator/target/resultCode/duration；请求体脱敏 | `AssistantOutboundPrivacyTest`、`AssistantConfirmationEndToEndIT` 审计断言 | 真实 HTTP/MySQL/假 HTTP | `tmp/round2-p1-final.log`、`tmp/round2-r7-a.log` | 无 |
 
+## 6.8 R3/R6/R7 冻结必选需求逐项结果（2026-11-16）
 
-仅用户选择后实施；前置 R3 全部通过。范围限一台机器上的 API + 独立 Worker，沿用受控共享目录，不默认引入对象存储/Kubernetes。
+判定口径：**实现验收**只看代码、迁移脚本、隔离测试和可复现实跑证据；**部署验收**要求生产库迁移、真实 GPU/LDD、组织级审批或多实例网络条件下运行。两者分开记录，不把“部署未执行”反向写成“实现失败”，也不把隔离测试写成部署通过。本轮没有必选 ID 判定为实现失败；R6-03 的阈值 `0.30` 属于有限样本校准，后续增加独立保留题集是质量改进，不是新增验收阻塞。
+
+#### R3 调度与恢复
+
+| 需求 ID | 实现方法 | 具体测试 | 实跑证据 | 实现验收 | 部署验收 | 剩余边界 |
+|---|---|---|---|---|---|---|
+| R3-01 | `TaskCommandService` 事务内领取/租约/意图/幂等；异常全回滚 | `TaskCommandServicePipelineIT.launchFailureRollsBackClaimLeaseIntentAndIdempotencyRecord` | `tmp/round2-r3-01.log`、`tmp/round2-r3-pipeline.log` | 通过（隔离） | 未执行 | 连接中断/提交阶段失败未覆盖 |
+| R3-02 | 新 JVM 释放旧租约后重放 pending，短 Python 桩执行并记账 | `MySqlTaskPersistenceIT.newJvmRecoversPendingIntentWithRealLeaseAndPythonStub` | `tmp/round2-r3-02.log` | 通过（隔离） | 未执行 | 最小 Spring 上下文；runtime/资源 Mapper 为测试代理 |
+| R3-03 | 两个 JVM 条件 `pending→submitting`，只有一个成功 | `MySqlTaskPersistenceIT.twoNewJvmsRaceSamePendingIntentOnlyOneDispatches` | `tmp/round2-r3-03.log` | 通过（隔离） | 未执行 | 单机双进程，不是网络分区 |
+| R3-04 | 真实 `PythonLddTaskExecutor` 接受后、`markSubmitted` 前杀子 JVM；恢复识别 `submitting`，杀孤儿、释放租约、task failed/intent abandoned，不重放 | `R3ProductionExecutorChainIT.crashAfterAcceptBeforeBookkeepingRecoversWithoutReplayOrReassigningTheSlot`；构造状态用例保留 | `tmp/round3-r3-prod.log`（5/5） | 通过（隔离） | 未执行 | 崩溃子 JVM 是测试最小上下文；KILL_FAILED 实际失败路径未覆盖 |
+| R3-05 | 完整 Spring `@Async` 代理 + 真实执行器正常/取消/超时/非法结果；取消测试最多等 20 秒确认 pid 消失 | `R3ProductionExecutorChainIT` 四个终态用例；`TaskCommandServicePipelineIT` 取消先/完成先 | `tmp/round3-r3-prod.log`、`tmp/round2-r3-pipeline.log` | 通过（隔离） | 未执行 | 真实链路不跑 LDD/GPU；执行器拒绝码仍以替身/单测为主 |
+| R3-06 | 条件租约、blocked 隔离、身份/指纹/路径校验后再派发 | `GpuLeaseServiceTest`、`TaskDispatchCoordinatorTest`、`TaskCommandServicePipelineIT` | `tmp/round3-full-verify-final.log` | 通过（隔离） | 未执行 | 未接真实 GPU/LDD；GPU_BUSY 由替身/条件更新模拟 |
+| R3-07 | 终态条件更新 + run/attempt 校验，迟到结果不能覆盖新 attempt | `MySqlTaskPersistenceIT` 旧/新 run 条件更新用例 | `tmp/round3-full-verify-final.log` | 通过（隔离） | 未执行 | 未做真实进程长时间迟到回调 |
+| R3-08 | `sys_request_idempotency` owner 作用域、过期、同体复用/异体 409 | `RequestIdempotencyServiceTest`、`MySqlTaskPersistenceIT.idempotencyKeyIsScopedByOwnerAndExpiry` | `tmp/round3-full-verify-final.log` | 通过（隔离） | 未执行 | 无跨实例锁；以数据库唯一键为准 |
+| R3-09 | 有界 pending 扫描、超时显式失败、不重复提交 | `DispatchRecoveryCoordinatorTest`、`IdempotencyRecoveryJobTest`、`TaskCommandServicePipelineIT` | `tmp/round3-full-verify-final.log` | 通过（隔离） | 未执行 | 未做长时挂起/多实例扫描 |
+| R3-10 | 新库/升级/重复执行/停机回滚脚本 | `OwnershipMigrationScriptIT` | `tmp/round3-full-verify-final.log` | 通过（隔离） | 未执行 | 生产库 `eladmin` 未执行迁移 |
+
+#### R6 知识检索与出站
+
+| 需求 ID | 实现方法 | 具体测试 | 实跑证据 | 实现验收 | 部署验收 | 剩余边界 |
+|---|---|---|---|---|---|---|
+| R6-01 | 词法候选 + 向量重排，固定 20 题 | `KnowledgeEvaluationTest`、`KnowledgeHybridEvaluationTest` | `tmp/round4-docs-knowledge-eval.log`（7/7） | 通过（隔离，可答 10/10） | 未执行 | 固定小语料，不是大规模评估 |
+| R6-02 | 引用带 sourceKey/version/章节/行号，回答后校验 | `KnowledgeControllerTest`、`KnowledgeEvaluationTest` | `tmp/round3-full-verify-final.log` | 通过（隔离） | 未执行 | 未接付费模型生产质量评估 |
+| R6-03 | 词法候选为空直接拒答；IDF 覆盖率阈值 `0.30` + 最低分 20 | `KnowledgeEvaluationTest`、`KnowledgeHybridEvaluationTest` | `tmp/round4-docs-knowledge-eval.log`（7/7，未知 0 命中） | 通过（隔离，未知 0 命中） | 未执行 | 有限样本校准；后续加独立保留题集，避免围绕同一组题反复调阈值 |
+| R6-04 | ACL 前置 + `status='active'`；退役立即不可召回；持久清理状态/退避/公平排序 | `KnowledgeRetrievalMySqlIT`、`KnowledgeVectorStoreRedisIT`、`KnowledgeHybridEvaluationTest` | `tmp/round3-p2.log`（6/6） | 通过（隔离） | 未执行 | 向量残留靠对账，不是强一致；失败期间只保证 ACL 不召回 |
+| R6-04a | 基础表四列/索引；增量/回滚脚本动态判断，可重复执行 | `KnowledgeVectorCleanupMigrationIT` | `tmp/round3-p2-migration.log`（1/1） | 通过（隔离） | 未执行 | 仅隔离 schema；生产库未迁移；回滚需停机 |
+| R6-05 | 四层路径规则 + 凭据/PII；所有外发渠道复用 `forModel()` | `KnowledgeSanitizerTest` 9/9、`AssistantOutboundPrivacyTest` 1/1 两轮最终 body | `tmp/round3-p1.log` | 通过（隔离） | 未执行 | 正则形态过滤，不能穷举自由文本隐私形态 |
+| R6-06 | 模型/工具预算、超时、`provider=disabled` 降级 | `AssistantChatServiceTest`、`AssistantPreviewServiceTest`、`KnowledgeControllerTest` | `tmp/round3-full-verify-final.log` | 通过（隔离） | 未执行 | 付费供应商额度未形成生产配置 |
+| R6-07 | system prompt 声明 context 不可信；工具白名单；注入题零私有候选 | `KnowledgeEvaluationTest.unsafeOrUnauthorizedPromptsNeverExposeForeignPrivateData`、`KnowledgeHybridEvaluationTest` | `tmp/round4-docs-knowledge-eval.log`（7/7） | 通过（隔离） | 未执行 | 非对抗性红队覆盖 |
+
+#### R7 受控助手
+
+| 需求 ID | 实现方法 | 具体测试 | 实跑证据 | 实现验收 | 部署验收 | 剩余边界 |
+|---|---|---|---|---|---|---|
+| R7-01 | 只读工具复用 `TaskAccessGuard.requireOwned`；写预览校验 owner | `AssistantConfirmationEndToEndIT` 跨用户 403 | `tmp/round3-full-verify-final.log` | 通过（隔离） | 未执行 | 单进程权限，不是组织级 RBAC/双人审批 |
+| R7-02 | 注册表白名单，模型不能新增工具 | `AssistantToolRegistryTest`、`AssistantChatServiceTest` | `tmp/round3-full-verify-final.log` | 通过（隔离） | 未执行 | 模型仍可能尝试未知工具，被拒绝 |
+| R7-03 | 写工具只返回预览；确认前不写任务/不领租约/不派发 | `AssistantConfirmationEndToEndIT` 预览零写入 | `tmp/round3-full-verify-final.log` | 通过（隔离） | 未执行 | 无 |
+| R7-04 | token 哈希、TTL、条件消费、跨用户校验、篡改审计 | `AssistantConfirmationEndToEndIT` 重复/过期/跨用户/篡改 | `tmp/round2-r7-a.log` | 通过（隔离） | 未执行 | 无数据库泄露后的离线重放防护 |
+| R7-05 | 重校验 task/run/attempt/update_time、参数哈希、资源指纹；变化 409 零派发 | `AssistantConfirmationEndToEndIT` 资源/默认值变化 | `tmp/round3-full-verify-final.log` | 通过（隔离） | 未执行 | 无 |
+| R7-06 | 模型线程池有界、总预算/工具预算、超时取消；核心 API 不共享失败 | `AssistantChatServiceTest`、`AssistantConfirmationEndToEndIT` | `tmp/round2-r7-a.log` | 通过（隔离） | 未执行 | 底层 JDBC 物理终止不保证 |
+| R7-07 | 审计只存工具名/operator/target/resultCode/duration；请求体脱敏 | `AssistantOutboundPrivacyTest`、`AssistantConfirmationEndToEndIT` | `tmp/round2-p1-final.log`、`tmp/round2-r7-a.log` | 通过（隔离） | 未执行 | 无 |
+
+**未通过 ID**：无。**未执行部署验收**：R3/R6/R7 全部条目；原因是生产库 `eladmin` 未迁移、未运行真实 LDD/GPU、未启用组织级双人审批、未搭建多实例网络分区。这些是部署阶段外部条件，不作为本轮实现验收失败；R4/R8 也不因它们提前阻塞。
+
+## 7. R4：单机 API + 独立 Worker + Transactional Outbox + RabbitMQ
+
+仅用户选择后实施；前置 R3 全部通过。范围限一台机器上的 API + 独立 Worker，沿用受控共享目录，不默认引入对象存储/Kubernetes。**2026-11-16 仅提交设计稿**：`21-r4-outbox-rabbitmq-design.md` / ADR-026；不创建 Outbox 表、不启用 RabbitMQ、不启动 Worker，真实 MySQL + RabbitMQ + 短 Python 桩验收未执行。
 
 实施顺序：
 
@@ -381,7 +428,7 @@ CPU/GPU 利用率采集为可选指标，未启用可显示未知；任务/队�
 11. 2026-11-15 混合检索评估：`KnowledgeRetrievalService` 先按 `candidateLimit` 生成词法池，词法池为空直接返回空，向量只合并进词法池；`KnowledgeHybridEvaluationTest` 覆盖可答 10 + 未知 5 + 越权/注入 5 共 20 题，`hybrid answerable top5 hits: 10/10`，并验证私有 `task_report:99` 向量不能注入共享语料结果。哈希 embedding 仍只是词法候选重排，不是神经语义召回。
 12. 2026-11-15 `08f11c0` 后 R3 证据补齐：`CrashWindowChildMain` 改为写入真实 `request_json` 与 SHA-256、runtime hash；`independentJvmPendingIntentRunsRealReplayCoordinatorOnce` 用真实 `TaskDispatchCoordinator` + 真实持久意图 + 真实本地接受登记，断言执行器收到一次请求、意图变 `submitted`、任务仍 `running`，第二次恢复不再执行；同时修复 `DefenseTaskRequest`/`DefenseResourceRef` 缺少 Jackson 反序列化构造器导致的 `DISPATCH_SNAPSHOT_INVALID`。**该用例执行器仍是测试替身**，作为构造状态/协调器证据保留，不再代表“生产执行器真实链路”。
 13. 2026-11-15 最新收口（P1/P2/R3）：`R3ProductionExecutorChainIT` 5/5 使用完整 Spring `@Async` 代理、真实 `PythonLddTaskExecutor`、真实事务/Mapper/租约/协调器，覆盖正常、取消、超时、非法结果，以及 `R3ProductionCrashChildMain` 真实派发后崩溃 + `R3RecoveryChildMain` 恢复（孤儿 Python 被杀、租约释放、意图 abandoned、`executions.log` 仅 1 行）；`KnowledgeRetrievalMySqlIT` 6/6 用真实 MySQL+Redis 验证退役清理跨批/失败不阻塞/重启继续/幂等，`KnowledgeVectorCleanupMigrationIT` 1/1 验证升级/回滚重复执行；`KnowledgeSanitizerTest` 9/9 + `AssistantOutboundPrivacyTest` 1/1 覆盖单字符/数字/隐藏/空格目录和两轮最终 body。门禁为 **232 单测 + 96 IT**（JDK20/JDK17 各一次），Python 11/11，前端构建通过；日志 `tmp/round3-*.log`。
-14. 仍未做：真实 LDD、生产库 `eladmin` 建表/迁移、组织级双人审批/分布式锁、真实行锁/表锁等待（R7 触发器是可控阻塞）、多实例网络分区下的恢复、RabbitMQ/独立 Worker（R4 未开始）。真实执行器链路使用短协议桩，不运行 LDD、不占 GPU；崩溃子 JVM 是测试最小上下文 + 手动异步包装，不是完整 Spring 容器。上述未做项不否定已经通过的隔离测试，但不得写成生产部署验收或 R3/R6/R7 整体验收通过。
+14. 仍未做：真实 LDD、生产库 `eladmin` 建表/迁移、组织级双人审批/分布式锁、真实行锁/表锁等待（R7 触发器是可控阻塞）、多实例网络分区下的恢复、RabbitMQ/独立 Worker（R4 仅设计稿，未实施）。真实执行器链路使用短协议桩，不运行 LDD、不占 GPU；崩溃子 JVM 是测试最小上下文 + 手动异步包装，不是完整 Spring 容器。上述未做项不否定已经通过的隔离测试；按 §6.8 只能写“实现验收通过（隔离）/部署验收未执行”，不得写成生产部署验收通过。
 
 ## 11. R8：可选多实例学习验收
 

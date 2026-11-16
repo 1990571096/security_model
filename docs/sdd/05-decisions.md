@@ -504,6 +504,26 @@ Agent 采用外部大模型 API，本机不部署大模型。生成模型和 emb
 - 全量：JDK20 `mvn verify -Pmysql-it`（`REDIS_IT=true`）**232 单测 + 96 IT**，`tmp/round3-full-verify-final.log`；Temurin 17.0.21 同计数，`tmp/round3-full-verify-jdk17-final.log`；Python 11/11 `tmp/round3-python-tests-final.log`；前端构建通过 `tmp/round3-frontend-final.log`（仍有 >500 kB chunk 警告）。
 - 远端：`106e4d3` 的 run `43707281672` 全部 success；`5e4efd4` 的 run `43712479071` 暴露 2 项知识评估误命中（backend failure，frontend/python success），已由阈值 `0.30` 和测试竞态修复；收口提交 `bb4a79f` 的 run `43726078023` backend/frontend/python 全绿，`tmp/ci-bb4a79f-backend.log`。
 
-**边界**：单段路径仍是正则形态过滤，不能穷举所有自由文本隐私形态；清理退避是进程内定时任务 + 数据库状态，不是 outbox；崩溃子 JVM 用测试最小上下文与手动异步包装，真实链路四类用例才用完整 Spring 代理；生产库 `eladmin` 未迁移，R4 未开始。`R3/R6/R7` 只能写“本轮缺陷已修、隔离证据已补”，不能写整体验收通过。
+**边界**：单段路径仍是正则形态过滤，不能穷举所有自由文本隐私形态；清理退避是进程内定时任务 + 数据库状态，不是 outbox；崩溃子 JVM 用测试最小上下文与手动异步包装，真实链路四类用例才用完整 Spring 代理；生产库 `eladmin` 未迁移；R4 仅完成设计（见 ADR-026），未实施。`R3/R6/R7` 按 `20` §6.8 分开写“实现验收通过（隔离）/部署验收未执行”，不再使用无法定位到具体 ID 的“整体验收”表述。
 
 **非目标**：不扩展 RabbitMQ/独立 Worker、模型供应商或展示功能；不重跑 LDD 128/5；不写生产库；不把本机门禁替代远端 CI，也不把隔离测试写成生产部署验收。
+
+## ADR-026：R4 单机 API + 独立 Worker + Transactional Outbox + RabbitMQ（设计稿）
+
+日期：2026-11-16；状态：**仅设计，未实施；不启用 RabbitMQ/Outbox/Worker，不迁移业务库，不重跑 LDD**。
+
+**背景**：R3 已在 API 进程内完成真实执行器链路、意图状态机、GPU 单槽租约和崩溃恢复，但跨进程派发仍依赖 API 进程内 `@Async`。R4 的目标是把“事务提交”和“执行派发”解耦，同时不引入第二个任务事实源。
+
+**决策**
+1. **事实源不变**：MySQL 仍是任务、意图、租约、终态和权限的唯一权威；RabbitMQ 只承载“已提交意图可处理”的通知。事件 v1 只含 `schemaVersion/messageId/eventType/taskId/runId/attempt/ownerUserId/intentId/requestHash/occurredAt`，不含路径、命令、凭据或参数快照。
+2. **事务内写 Outbox**：任务/租约/意图与 `sys_dispatch_outbox` 同事务插入；业务回滚不留 Outbox。Outbox 行以 `(task_id, run_id, attempt, event_type)` 唯一约束防止重复建行。
+3. **发布与确认**：Relay 条件领取 `new/failed` 行，publisher confirm 成功后置 `published`；nack/confirm 超时/连接断开按 5/30/120 秒退避，最多 3 次后 `dead`。开启 `mandatory`，`basic.return` 的不可路由消息直接进 DLQ，不无限重发。
+4. **消费幂等**：Worker 以 `message_id` 唯一消费记录 + 数据库当前 `runId/attempt` 做幂等；重复/过期消息只 ACK 不执行。同一 `taskId+runId+attempt` 最多一次有效 Python 启动。
+5. **ACK 时机**：只在终态已持久化、消息已受控转入重试/DLQ、或消息被判定重复/过期/非法并写审计后 ACK；禁止 autoAck，禁止启动 Python 前 ACK。
+6. **取消与孤儿进程**：取消以 MySQL 条件更新为准；执行中杀进程树，未确认退出不释放槽位；迟到结果被 run/attempt 条件更新拒绝；Worker 崩溃后的孤儿进程由现有 `AttemptProcessRegistry`/恢复协调器隔离。
+7. **模式互斥**：`dispatch.mode=db|rabbit`；db 模式沿用 `AfterCommitTaskDispatcher` + pending 扫描直接重放，rabbit 模式的恢复扫描只补写/重发 Outbox，不直接派发。切换必须停机 drain，活跃任务/未清空队列/未发布 Outbox 未处理时拒绝热切换。
+8. **验收计划**：真实 MySQL + RabbitMQ + 短 Python 协议桩，覆盖 R4-01 停 MQ 恢复投递、R4-02 confirm 丢失/重复只一次有效完成、R4-03 Worker 崩溃不放行存活进程、R4-04 有限重试/DLQ、R4-05 取消与迟到结果、R4-06 两模式互斥与回退；记录 DB 状态、消息计数、Python 执行次数。单元 Mock 不作阶段完成证据。
+
+**结果**：详细设计、故障矩阵、实施顺序与未决问题写入 `21-r4-outbox-rabbitmq-design.md`；本 ADR 只冻结方向，不代表 R4 已实现或已验收。
+
+**边界**：单机单 GPU 槽、单 API、单 Worker；不做多机/Kubernetes/对象存储/Kafka，不承诺 exactly-once；生产库 `eladmin` 未迁移，真实 LDD/GPU 未运行。

@@ -30,7 +30,7 @@ Spring Boot 3.5（migration-backend）
 
 关键边界（已实现的事实）：
 
-- **进程模型**：算法在 API 进程的子进程中运行，线程池 `taskAsync` 有界；没有独立 Worker，也没有消息队列。
+- **进程模型**：算法在 API 进程的子进程中运行，线程池 `taskAsync` 有界；没有独立 Worker，也没有消息队列。R4 的 Outbox/RabbitMQ/独立 Worker 只有设计稿（`21-r4-outbox-rabbitmq-design.md`），未实施、未启用。
 - **完成语义**：`result.json` 是唯一完成依据；`progress.json` 只是诊断快照。
 - **幂等与竞争**：任务领取是 `pending → running` 的条件更新；进度/结果/结束回调都要求 `status='running'` 且 `current_run_id` 相同。
 - **启动恢复**：`ApplicationReadyEvent` 时把所有 `running` 收敛为 `failed(EXECUTOR_RESTARTED)`，隐含“单实例”前提；导出任务没有启动恢复。
@@ -50,7 +50,7 @@ Spring Boot 3.5（migration-backend）
 - R1（**已完成，2026-11-13**）：任务/报告/日志/产物/导出按 `owner_user_id` 授权；共享资源收敛为管理员维护；数据集增加管理员验证入口。
 - R2：配额与领取同事务；GPU 单槽租约；导出启动恢复；日志与产物限额。
 - R3：`pending` 之前增加数据库调度意图，关闭“提交成功但派发前崩溃”的窗口。
-- R4/R8（可选）：Outbox + RabbitMQ + 独立 Worker / 多实例，只在有真实跨进程测试条件时启用。
+- R4/R8（可选）：Outbox + RabbitMQ + 独立 Worker / 多实例，只在有真实跨进程测试条件时启用。R4 设计见 `21-r4-outbox-rabbitmq-design.md` 与 ADR-026；当前仍是设计，不是已实现能力。
 
 ## 3. 后端包结构（当前真实结构）
 
