@@ -128,7 +128,7 @@ LDD 参数在进入异步执行器前执行 JSON 对象、白名单、必填项�
   和 GPU 资源调度；R4 的 RabbitMQ/独立 Worker 代码已实现，默认 `dispatch.mode=db`。
 - 当前工程验证使用小批次和小轮次配置，不能直接替代论文正式实验结论。
 - 当前主运行版本已迁移至 Spring Boot 3、Java 17、Vue 3 和 Vite；旧 ELADMIN 工程仅作为回归与回滚基线保留。
-- RabbitMQ/Kafka 的 R4 代码已接入但默认 `dispatch.mode=db`；2026-11-16 本机真实 RabbitMQ + 双 JVM 已完成部分 R4 场景，**整体未通过**（confirm 丢失/迟到、DB 自动退避、运行期热切换、replay 与新 attempt 并发竞争仍有缺口；replay/cancel 并发已执行），不能写成已部署或已整体验收；Redis 当前仅用于资源目录缓存，不能表述为任务状态存储或消息队列替代品。
+- RabbitMQ/Kafka 的 R4 代码已接入但默认 `dispatch.mode=db`；2026-11-16 本机真实 RabbitMQ + 双 JVM 已完成 R4-01..08 实现验收（7s 延迟 confirm、db→rabbit→db 双向停机切换、旧 dead 与新 attempt 竞争；287 单测 + 106 IT 全绿），**部署验收未执行**（长期 DB 故障/多任务退避与跨主机仍是压力边界），不能写成已部署或已整体验收；Redis 当前仅用于资源目录缓存，不能表述为任务状态存储或消息队列替代品。
 
 ## 8. 下一阶段优先级
 

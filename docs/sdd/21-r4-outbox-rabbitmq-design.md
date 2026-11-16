@@ -1,6 +1,6 @@
 # R4 契约与实现：单机 API + 独立 Worker + Transactional Outbox + RabbitMQ
 
-状态：**R4 部分真实场景已通过，整体未通过；必选故障场景仍有缺口，本轮 CI 已通过**。六项可靠性整改代码已落地；真实 RabbitMQ 4.1.8 + Erlang 27.3.4.18、隔离 schema/vhost、双 JVM 已实测 R4-01（含事务回滚）、R4-02（重复幂等/不可路由/旧 claim token/真实 confirm-return）、R4-03、R4-04（GPU_BUSY/毒消息/DB 中断）、R4-05（运行中取消+完成后取消）、R4-06（启动拒绝/drain 拒绝/v2 旧队列隔离）、R4-07、R4-08（Broker 故障自然 dead 后重放+权限+replay/cancel 真实并发）。仍缺：confirm 丢失/迟到真实网络注入、DB 故障自动退避收敛、R4-06 运行期热切换、R4-08 重放与新 attempt 真实并发竞争。最终提交 `3d0915c`，远端 run `43825661651` 全绿。默认 `dispatch.mode=db`，不启用 RabbitMQ/Outbox/Worker，不迁移业务库**
+状态：**R4 实现验收通过（隔离环境）；部署验收未执行，不得写成生产部署通过**。四项阻断整改已完成：恢复返回 `RecoveryResult`（未安全分类/本地 accepted 未清零/GPU 隔离槽位不空时 gate 不开放）、执行器 accepted 在进程处置与槽位决策后清零、历史-only 文件退役 active 知识并保留源行号、重复投递只 ACK 不提前终结原账本。真实 RabbitMQ 4.1.8 + Erlang 27.3.4.18、隔离 schema/vhost、双 JVM 已实测 R4-01（含事务回滚）、R4-02（重复幂等/不可路由/旧 claim token/真实 confirm-return/7s 延迟 confirm）、R4-03、R4-04（GPU_BUSY/毒消息/DB 中断/无重启自动恢复消费）、R4-05（运行中取消+完成后取消）、R4-06（启动拒绝/drain 拒绝/v2 旧队列隔离/db→rabbit→db 完整双向停机切换）、R4-07、R4-08（Broker 故障自然 dead 后重放+权限+replay/cancel 真实并发+旧 dead 与新 attempt 真实竞争）。剩余边界仅 R4-04 长期 DB 故障/多任务退避压力与跨主机。本轮改动尚未提交，历史 `3d0915c` 的 run `43825661651` 全绿不能证明未提交代码；本机全量 287 单测 + 106 IT 全绿（`tmp/stage2-full-verify-new.log`）。默认 `dispatch.mode=db`，不启用 RabbitMQ/Outbox/Worker，不迁移业务库**
 日期：2026-11-16
 事实源：本文件 §16 验收表、`20-stage-execution-and-acceptance.md` §6.8、`09-project-status.md` §5.17 为当前 R4 事实源；其他章节或旧文档中的“RabbitMQ 未安装 / R4-01..08 未执行 / 252+100 为最新”均为历史记录，已被 2026-11-16 验收更新。
 范围：一台机器上的 API 进程 + 一个独立 Worker 进程；复用现有 R3 调度意图、GPU 单槽租约、执行器协议、终态条件更新和恢复组件。
@@ -180,10 +180,10 @@ DLQ 重放必须区分执行状态：
 |---|---|---|---|---|
 | db / api | 沿用 R3 全量恢复 | 直接 `replayPending` | 本 JVM `isLocallyAccepted` 保护 | API |
 | rabbit / api | **不扫描、不判 running**，只标记就绪 | 不直接派发 | 不扫描 | 无 |
-| rabbit / worker | **先取得 MySQL Worker 归属锁，再恢复；恢复完成后才启动消费容器** | 只补写/重发 Outbox，不启动 Python | 以 Worker 进程登记和持久执行归属判断 | Worker |
+| rabbit / worker | **先取得 MySQL Worker 归属锁，再恢复；恢复完成且本地已接受执行清零后才启动消费容器** | 只补写/重发 Outbox，不启动 Python | 以 Worker 进程登记和持久执行归属判断 | Worker |
 | rabbit / all | 同上，但仅测试/单进程演练 | 同上 | 同上 | Worker |
 
-**单机归属锁**：Worker 用专用 MySQL 连接执行 `GET_LOCK(security_model_r4_worker_owner, 0)` 并保持连接；第二个 Worker 取得失败则**不运行恢复、也不启动消费容器**。连接断开即锁释放；心跳检测到锁丢失时停止消费并关闭调度门。API 的运维接口通过 `IS_USED_LOCK` 读取共享 Worker 占用，不再用 API 本地 `localAcceptedCount` 代表独立 Worker。
+**单机归属锁与自动重连**：Worker 用专用 MySQL 连接执行 `GET_LOCK(security_model_r4_worker_owner, 0)` 并保持连接；第二个 Worker 取得失败则**不运行恢复、也不启动消费容器**。连接断开即锁释放；心跳检测到锁丢失时先停止消费并关闭调度门，**不在此直接恢复消费**。后续心跳按“重新 `acquire()` → `recoverAtStartup()` → `startAfterRecovery()`”顺序自动重开：`acquire()` 失败继续保持关闭；恢复抛错保持关闭；只有重取归属、恢复扫描完成、且 `AttemptProcessRegistry.localAcceptedCount()==0` 时才 `container.start()`。本地仍有已接受执行时每轮心跳复查，直到执行器清除 accepted 标记后才开消费，避免 DB 重连后旧执行与新投递并行。API 的运维接口通过 `IS_USED_LOCK` 读取共享 Worker 占用，不再用 API 本地 `localAcceptedCount` 代表独立 Worker。
 
 心跳超时只说明“当前没有心跳”，不能证明进程已退出；释放槽位必须依赖进程退出证据或 `KILL_FAILED/UNKNOWN` 隔离。API 重启不得把仍在 Worker 执行的任务判失败。
 
@@ -250,21 +250,31 @@ DLQ 重放必须区分执行状态：
 
 验收断言必须包含：任务终态、意图状态、租约 token/隔离状态、进程是否退出、Outbox 状态与 `claim_token`、消费记录、消息 ACK/DLQ、Python 执行计数。单元 Mock 不能作为 R4 阶段完成证据。
 
-**本轮验收对照（最终提交 `3d0915cb0e0a0fecf9aa15240ddf60a0e9c5b92d`，tree `3c1c49cddbbea55a8186caa4b13504a092745c7d`；代码提交 `b20b1cd`，文档提交 `b3ef0ac`；远端 run `43825661651` backend/python/frontend 全绿；2026-11-16 追加自然死信重放、事务回滚 IT、真实 Broker IT、DB 中断、旧队列隔离与 replay/cancel 并发证据）**：
+**本轮验收对照（2026-11-16 四项阻断修复后；本机 287 单测 + 106 IT 全绿 `tmp/stage2-full-verify-new.log`；真实 RabbitMQ 4.1.8 + 隔离 MySQL + 双 JVM + 短 Python 桩；历史提交 `3d0915c` 的 run `43825661651` 与本轮未提交代码无关）**：
 
 | 验收 ID | 测试方法 | 关键证据 | 结果 | 未覆盖边界 |
 |---|---|---|---|---|
 | R4-01 | 真实 Broker + MySQL + API/Worker；正常派发；停 Broker 后创建任务再恢复；真实 MySQL 事务回滚 | 任务 `2122209791151980545` / `2122210212130078722`；`MySqlTaskPersistenceIT#rabbitDispatchRollbackLeavesNoTaskIntentOrOutbox`；`tmp/r4-rollback-it1.log` | 通过（正常链路 + 回滚零残留） | 跨主机未执行 |
-| R4-02 | 管理 API 重发同一 payload；关闭 RabbitAdmin 自动声明并删除 worker queue 后发布；真实 Broker confirm/return IT；旧 claim token 条件发布 IT | Python 次数不增；任务 `2122214846991208449` Outbox dead、未 published；`RabbitDispatchBrokerIT` 2/2（`tmp/r4-broker-it1.log`）；`expiredPublishingIsReclaimedAndOldConfirmCannotWin` | 部分通过（幂等 + 不可路由 + 旧 token 不覆盖新状态） | confirm 丢失/迟到网络故障未做真实双 JVM 注入 |
+| R4-02 | 管理 API 重发同一 payload；关闭 RabbitAdmin 自动声明并删除 worker queue 后发布；真实 Broker confirm/return IT；旧 claim token 条件发布 IT；AMQP 代理延迟 `Basic.Ack` 7s（应用 confirm 超时 5s） | Python 次数不增；任务 `2122214846991208449` Outbox dead、未 published；`RabbitDispatchBrokerIT` 2/2；`expiredPublishingIsReclaimedAndOldConfirmCannotWin`；任务 `2122269157720920066` 连续 3 次 `RABBIT_PUBLISH_FAILED` 后 dead、task 保持 running，`tmp/r4-confirm-proxy.log` 记 delayed 18:02:52→released 18:02:59 | 通过（幂等 + 不可路由 + 旧 token 不覆盖新状态 + 真实延迟 confirm 不误判成功） | 跨主机/生产网络分区未执行；代理为本地真实 AMQP 帧注入，不改应用与 DB |
 | R4-03 | sleep 300 秒任务启动后强杀 Worker，重启恢复 | 任务 `2122215986243866625`；孤儿 PID 4736 被杀；无新 attempt；`tmp/r4-stack/taskid-orphan.txt` | 通过 | 跨主机未执行 |
-| R4-04 | 人工占用 GPU + 三次退避耗尽；发布 `not-json` 毒消息；worker 通过 TCP 代理连 MySQL 后切断代理 | 任务 `2122216323369439234`；DLQ 1→2；DB 中断任务 `2122228571957653506`：消息留在 worker 队列、未 ACK，恢复代理并重启 worker 后 success、consumption terminal、Python 1 次；`tmp/r4-db-outage-db.txt`、`tmp/r4-stack/worker.log` | 部分通过（DB 中断不误 ACK + 恢复收敛） | 恢复需重启 consumer；自动退避队列未覆盖租约失联场景 |
+| R4-04 | 人工占用 GPU + 三次退避耗尽；发布 `not-json` 毒消息；worker 通过 TCP 代理连 MySQL 后切断代理；恢复代理但不重启 Worker | 任务 `2122216323369439234`；DLQ 1→2；DB 中断任务 `2122228571957653506`：消息留在 worker 队列、未 ACK，恢复代理并重启 worker 后 success、consumption terminal、Python 1 次；补充任务 `2122257618284634114`：`17:17:18` 停止消费，`17:17:25` 恢复代理、`17:17:28` 自动重取归属并重跑恢复，本地 accepted=1 时连续四次拒绝开消费，`17:17:46` accepted 清零后 `17:17:48` 重跑一次恢复并启动容器，任务 success、intent submitted、Outbox published 1、consumption `TASK_SUCCESS`、Python 1 次；`tmp/r4-db-auto-recover3-worker.txt`、`tmp/r4-db-auto-recover3-db.txt`、`tmp/r4-db-outage-db.txt` | 通过（DB 中断不误 ACK + 无重启自动恢复 + 旧执行未结束前不开放消费） | 长期 DB 故障、多任务退避、跨主机未压测 |
 | R4-05 | 真实任务启动 2 秒后取消；任务 success 后再取消 | 任务 `2122210811173199873` canceled、Python 1 次；任务 `2122227016860782594` 完成先返回 `TASK_COMMAND_INVALID`，终态保持 success；`tmp/r4-cancel-after-success.json` | 通过 | 无 |
-| R4-06 | `mode=db role=worker` 启动拒绝；30 秒 sleep 任务运行中执行 drain 脚本；v2 队列启动后向旧队列投递 | `tmp/r4-mode-reject2.log`；`tmp/r4-drain-refusal2.log`；旧队列 `security-model.dispatch.worker` 1 条、0 consumer，新队列 `.v2` 0 条、1 consumer；`tmp/r4-old-queue-isolation.json` | 部分通过（旧队列隔离 + 停机切换拒绝） | 应用层无运行期热切换；切换必须停机 |
+| R4-06 | `mode=db role=worker` 启动拒绝；30 秒 sleep 任务运行中执行 drain 脚本；v2 队列启动后向旧队列投递；完整双向停机切换 | `tmp/r4-mode-reject2.log`；`tmp/r4-drain-refusal2.log`；旧队列 1 条/0 consumer、新 `.v2` 0 条/1 consumer；`db` 任务 `2122266301773209601` success → 停 API、drain → `rabbit` 任务 `2122266483373920257` success → 停 API/drain/停 Worker → 切回 `db`，任务 `2122266707249192962` success；`tmp/r4-06-drain-db.txt`、`tmp/r4-06-drain-rabbit.txt`、`tmp/r4-06-db-task.json`、`tmp/r4-06-rabbit-task.json`、`tmp/r4-06-db-back-task.json`、`tmp/r4-06-db-rows.txt` | 通过（旧队列隔离 + 停机切换拒绝 + 双向切换无丢失/无双派发） | 应用层无运行期热切换入口；跨主机切换未执行 |
 | R4-07 | Worker 执行 sleep 任务时重启 API | 任务 `2122210676426948609`；Worker 不中断、任务 success、Python 1 次 | 通过 | 多 API 实例未执行 |
-| R4-08 | failed 重放拒绝；test 用户重放；Broker 停止后让 Outbox 自然耗尽为 dead，重启 Broker 后重放；真实 HTTP 并发 replay + cancel | admin 400、test 403；自然 dead 任务 `2122226296115777538`：`c871a5ac...` dead、task running、intent pending，重放为 `a7696410...` 后 success、consumption `terminal`、Python 1 次；并发任务 `2122231820257357826`：`9e8152c4...` 自然 dead，并发后 replay 返回 `f310da09...`、cancel 成功，终态 `canceled`、consumption `terminal`、Python 0 次，审计 CREATE/START/REPLAY_DEAD/CANCEL；`tmp/r4-natural-dead-db1.txt`、`tmp/r4-natural-dead-db2.txt`、`tmp/r4-natural-dead-replay.json`、`tmp/r4-race-results.json`、`tmp/r4-race-db-dead.txt`、`tmp/r4-race-db-after.txt`、`tmp/r4-race-audit.txt` | 部分通过（真实 Broker 故障自然 dead + 成功重放 + 权限 + replay/cancel 并发） | 重放与新 attempt 真实并发竞争未执行；旧 SQL 注入 dead 仅保留为历史 |
+| R4-08 | failed 重放拒绝；test 用户重放；Broker 停止后让 Outbox 自然耗尽为 dead，重启 Broker 后重放；真实 HTTP 并发 replay + cancel；旧 dead 与新 attempt 真实竞争 | admin 400、test 403；自然 dead 重放成功；并发 replay/cancel 后终态 canceled、Python 0 次；任务 `2122268541581815809` attempt 1 `RABBIT_UNROUTABLE` dead `74532340-55a4-4114-90b2-a17c57fdcafe`、task failed，重试 attempt 2 运行中 replay 返回 HTTP 400 `DLQ_REPLAY_IDENTITY_MISMATCH`，attempt 2 success、consumption `969a2a34-08e9-4ec2-b622-f9ca1e8604a4`、旧 dead 保持、Python 仅 1 次；`tmp/r4-08-replay-response.json`、`tmp/r4-08-new-attempt-final.json`、`tmp/r4-08-new-attempt-rows.txt` | 通过（自然 dead + 成功重放 + 权限 + replay/cancel 并发 + replay/新 attempt 竞争） | 跨主机/多 Worker 并发未执行；旧 SQL 注入 dead 仅保留历史 |
 
 
-全量门禁（2026-11-16，追加改动后）：`mvn -B -f migration-backend/pom.xml verify -Pmysql-it`（`MYSQL_IT_PASSWORD`、`REDIS_IT=true`、`RABBIT_IT=true`，Temurin 17.0.21）→ **267 单测 + 103 IT，BUILD SUCCESS**，`tmp/r4-final-verify-new.log`（其中 `RabbitDispatchBrokerIT` 2/2）。**CI 已运行并全绿**：功能/验收提交 `3d0915c` 的 run `43825661651`、文档提交 `8de6c66` 的 run `43826356193`，两次均 backend/python/frontend success；workflow 已启用 RabbitMQ 4.1 service 与 `RABBIT_IT=true`。CI 中的 `RabbitDispatchBrokerIT` 只覆盖真实 Broker 发布、confirm/return，不代表 R4 双 JVM 全故障矩阵都已自动化。
+**2026-11-16 阶段 2 追加（代码与测试已落地，真实故障矩阵仍有边界）**：
+
+- `DispatchRecoveryCoordinator.recoverAtStartup()` 返回 `RecoveryResult(safeToConsume, scanned, replayed, converged, deferred, errors, localAccepted, quarantinedSlots, failedTasks)`；单任务异常计入 `errors` 与 `failedTasks`，扫描异常返回 `TASK_SCAN_FAILED`；只有“无单任务错误、本地 accepted=0、GPU 隔离槽位为空”才 `safeToConsume=true`，否则 `markNotReady()`。`WorkerConsumerLifecycle.startAfterRecovery(result)` 先检查该结果，再检查归属、accepted 和容器；归属仍持有与重新取得两分支都检查。
+- `DispatchMessageHandler` 在读 event 后、claim 前检查 `isLocallyAccepted`，命中只 ACK 当前重复投递，不 claim、不写原账本 terminal、不启动 Python；claim 后到 process 前的窄竞态改为 `deferLocalAccepted`（`releaseForRetry` + 120s 延迟重投，不终结账本）；`SUBMITTED`/`ABANDONED` 无本地 accepted 时先 `failAndAbandon(..., DISPATCH_UNCERTAIN_RECOVERY)` 再 `terminalFromTask`，避免 JVM 崩溃后任务长期 running。
+- `KnowledgeIndexService.reindexSdd()` 索引前删除 `<!-- knowledge:historical -->...<!-- /knowledge:historical -->` 块，按块内换行数替换等量换行（单行内联块替换空格），`KnowledgeSanitizer` 前导空行在 sanitize 后补回，保持引用 1-based 行号；历史-only 文件不再跳过，而是 `retireSource` 退役 active 版本并清理向量，失败留 pending 给 `reconcileRetiredVectors` 补偿；`IndexStats` 新增 `retired`。
+- `PythonLddTaskExecutor` finally 改为 `ensureGone` → `finalizeAttempt` → GPU 释放/隔离决策 → `clearAccepted`；清理异常保留 accepted 并记录错误，消费不重开。
+- 测试：`WorkerConsumerLifecycleTest` 8 项；`DispatchMessageHandlerTest` 12 项；`DispatchRecoveryCoordinatorTest` 7 项；`TaskRecoveryRunnerTest` 5 项；`KnowledgeIndexServiceTest` 11 项；`PythonLddTaskExecutorCleanupOrderTest` 3 项；`RabbitDispatchTransportTest` 5 项（含 confirm 超时）。`KnowledgeRetrievalMySqlIT` 8 项含历史-only 退役不可召回与向量清理补偿。定向 `tmp/stage2-fix-targeted2.log` 51/51、`tmp/stage2-fix-knowledge-it.log` 8/8。
+- 真实证据：任务 `2122257618284634114` 在不重启 Worker 的前提下完成 DB 代理断链→恢复→自动重取归属→accepted 清零后重跑恢复并延迟开消费→success。**已补真实故障**：7s 延迟 confirm（`2122269157720920066`）、db→rabbit→db 双向停机切换（`2122266301773209601`/`2122266483373920257`/`2122266707249192962`）、旧 dead 与新 attempt 竞争（`2122268541581815809`）。
+- 残余边界（安全取舍）：①恢复后结果对账/补写重试未实现；DB 中断期间旧执行结果写库失败、accepted 清零后二次恢复可能把 running 收敛 failed，这是“不补成功”的安全取舍。②消费账本与任务终态极窄竞态（执行清 accepted 后、handler 写 terminal 前若有重投 claim 账本）本轮未构造真实竞争证据，需全量/真实链路继续观察。③`Recovery` 只保证不重复启动 Python，不保证失败结果可恢复为成功。
+
+全量门禁（2026-11-16 四项阻断修复后）：`mvn -B -f migration-backend/pom.xml verify -Pmysql-it`（`MYSQL_IT_PASSWORD`、`REDIS_IT=true`、`RABBIT_IT=true`，Temurin 17.0.21）→ **287 单测 + 106 IT，0 失败/0 跳过，BUILD SUCCESS**，`tmp/stage2-full-verify-new.log`（含 `RabbitDispatchBrokerIT` 2/2、`WorkerConsumerLifecycleTest` 8/8、`DispatchMessageHandlerTest` 12/12、`MySqlTaskPersistenceIT` 28/28、`KnowledgeRetrievalMySqlIT` 8/8）。**本轮改动尚未提交，尚无对应远端 CI**；历史 `3d0915c` run `43825661651`、`8de6c66` run `43826356193`、`424a908` run `43829625383` 均 success，但只证明历史提交。CI 中 `RabbitDispatchBrokerIT` 只覆盖真实 Broker 发布、confirm/return，不代表双 JVM 全故障矩阵都已自动化。Maven 包装退出码已用 `scripts/r4/R4.Maven.ps1`（`MAVEN_TERMINATE_CMD=on`）修正为 0。
 
 
 
@@ -273,7 +283,7 @@ DLQ 重放必须区分执行状态：
 1. 冻结事件 v1、Outbox 表、消费记录表、配置键和模式互斥规则（本设计评审通过后）。**已完成**：`DispatchEvent` v1、`sql/security_model_task_outbox.sql`、`dispatch.mode/role` 配置键。
 2. 先写迁移脚本 + 表约束 + 单测；不接 MQ。**已完成**：`TaskOutboxServiceTest` 4/4、`TaskDispatchConsumptionServiceTest` 4/4、`DispatchRuntimePolicyTest` 4/4、`DispatchMessageHandlerTest` 5/5、`TaskOutboxRelayTest` 3/3；MySQL 四项 IT `outboxClaimAndConditionalPublishAreDurable`、`expiredPublishingIsReclaimedAndOldConfirmCannotWin`、`consumptionLedgerIsIdempotent`、`deadOutboxReplayIsConditionalAndKeepsMessageId` 通过（`tmp/round5-r4-replay-it3.log`）。
 3. 接真实 RabbitMQ，完成 Relay/Consumer/ACK/DLQ。**已完成**：`RabbitDispatchConfiguration`、`RabbitDispatchTransport`、`TaskOutboxRelay`、`DispatchMessageHandler`/`DispatchMessageListener`；本机 RabbitMQ 4.1.8 + Erlang 27.3.4.18 已用于 R4-01..08 真实双 JVM 验收。
-4. 完成 R4-01..08 真实环境验收，记录 SHA/tree/run。**当前状态**：R4 部分真实场景已通过，整体未通过；R4-02 confirm 丢失/迟到、R4-04 自动退避收敛、R4-06 运行期热切换、R4-08 重放与新 attempt 并发竞争仍有缺口；replay/cancel 并发已执行。最终提交 `3d0915c`，远端 run `43825661651` backend/python/frontend 全绿。历史“RabbitMQ 未安装”记录保留在下方，已被 2026-11-16 验收更新。
+4. 完成 R4-01..08 真实环境验收，记录 SHA/tree/run。**当前状态**：R4 实现验收通过（隔离），部署验收未执行；R4-02 7s 延迟 confirm、R4-06 db→rabbit→db 双向停机切换、R4-08 旧 dead 与新 attempt 竞争均已实测；R4-04 长期 DB 故障/多任务退避仍待压测；replay/cancel 并发已执行。本轮改动尚未提交，历史 `3d0915c` 的 run `43825661651` 不能证明未提交代码；本机 287 单测 + 106 IT 全绿（`tmp/stage2-full-verify-new.log`）。
 5. 回退：`dispatch.mode=db`，停 Consumer，drain/标记 Outbox，确认无活跃 Worker；不删除已发布的审计数据。**操作顺序**：先停 `role=worker` 进程并确认无 `running`/本地接受进程 → API 切 `mode=db, role=api` 重启 → 确认 Outbox 无 `publishing` 后执行 `sql/security_model_task_outbox_rollback.sql`；有活跃任务或未确认进程时不得删表/切模式。回退不删除已发布消息的审计行；Rabbit 队列保留用于事后核对。
 
 ## 17.1 部署与配置键

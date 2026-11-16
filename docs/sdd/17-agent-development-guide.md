@@ -1,6 +1,6 @@
 # 安全模型训练平台后续迭代开发指导书
 
-版本：2026-11-14 v3；状态：开发指导，非功能交付记录。本文是交给开发 Agent 的总协议；逐阶段实施步骤、默认决策和验收矩阵见 [20-stage-execution-and-acceptance.md](20-stage-execution-and-acceptance.md)。两份文档必须一并阅读；历史数字和“已实现”判断均以对应提交与日期为准，不代表本轮新增能力已验收。
+版本：2026-11-16 v4；状态：开发指导，非功能交付记录。本文是交给开发 Agent 的总协议；逐阶段实施步骤、默认决策和验收矩阵见 [20-stage-execution-and-acceptance.md](20-stage-execution-and-acceptance.md)。两份文档必须一并阅读；历史数字和“已实现”判断均以对应提交与日期为准，不代表本轮新增能力已验收。
 
 **本版使用规则**：用户指定一个阶段后，开发 Agent 应完成该阶段全部必选项、测试、文档和证据再统一送审；可以分多次提交，但不能自行把内部切片当作整个阶段交付。常规技术选择按 20 号文档默认值执行，不逐项要求用户确认。业务数据库迁移、历史数据归属、真实长训练、外部付费服务及可选阶段的启用仍受既有授权边界约束。一次送审是交付目标，不保证免除审查发现后的修正。
 
@@ -13,7 +13,7 @@
 - 保留 Java 17 / Spring Boot 3.5 / MySQL / Vue 3 / Vite / Redis；不为技术栈数量重写现有业务。
 - 交付目标是单机多用户真实运行，开发设备为 RTX 2060 6GB 显存、16GB 内存；分布式仅作可选设计与学习扩展，不是交付门槛。
 - 真实算法仅 LDD；其他训练前、训练中、训练后算法页面是展示资料，不得创建真实运行结果。正式论文实验配置与既有 128 batch / 5 epochs 工程验证配置均不得擅自修改或重跑。
-- MySQL 是任务、审计、报告事实源。Redis 当前缓存资源目录，并用于 Redis 8 `vectorset` 知识向量；RabbitMQ、独立 Worker 均未实现。知识检索（R6）与受控助手（R7）已有代码落点，DeepSeek 适配器只在本机 `deepseek` profile 下启用，不能表述为“Agent/RAG 已生产上线”。
+- MySQL 是任务、审计、报告事实源。Redis 当前缓存资源目录，并用于 Redis 8 `vectorset` 知识向量；R4 的 RabbitMQ 发布、消费账本、独立 Worker、确认/重试/DLQ 与人工重放**实现验收已在隔离真实 Broker 环境通过，部署验收未执行，默认 `dispatch.mode=db`**。知识检索（R6）与受控助手（R7）已有代码落点并在隔离环境通过测试，DeepSeek 适配器只在本机 `deepseek` profile 下启用，不能表述为“Agent/RAG 已生产上线”。
 - Agent 通过外部大模型 API 实现，本机不部署大模型。外发边界（目标约束）：仅限按当前用户权限过滤、经服务端白名单和脱敏的 SDD 文档片段、算法参数说明和实验报告摘要；原始样本、完整日志、本机绝对路径、凭据和用户个人信息不得发送给模型或 embedding 服务。当前实现已把任务失败原因改为错误码映射，对模型证据做字段白名单，并新增通用 Unix/中文绝对路径脱敏；真实 `AssistantChatService → DeepSeekAssistantModel → 本地假 HTTP` 测试已捕获最终请求体，确认禁发路径不在请求体中，但这仍是本机测试证据，不等于生产外发验收。
 - 数据集和产物保持在受控本地目录；多用户隔离必须覆盖实验任务、报告、日志、导出及下载，不得仅靠前端过滤。
 - 现有 `run_id` / `attempt`、原子领取、事务提交后派发、进度文件、前端轮询、失败重试和训练任务启动恢复应复用，不得重新造一套并存状态机。
@@ -24,18 +24,25 @@
 
 | 事实 | 代码或文档入口 | 尚缺的边界 |
 | --- | --- | --- |
-| LDD 任务与执行 | `PreDefenseTaskCommandService`、`PythonLddTaskExecutor`、`algorithm-runtime/vab/algorithm_entry.py` | 本地进程/磁盘，非独立 Worker |
+| LDD 任务与执行 | `PreDefenseTaskCommandService`、`PythonLddTaskExecutor`、`algorithm-runtime/vab/algorithm_entry.py` | 本地进程/磁盘；R4 已实现独立 Worker 消费模式，默认仍为 API 内调度 `dispatch.mode=db`，R4 实现验收通过（隔离）/部署验收未执行 |
 | 进度 | `PythonProcessWaiter`、`TaskCenterView.vue`、`07-executor-contract.md` | 已有阶段、epoch、心跳；需验证陈旧判定、过程可观测性，不能写成从零开发 |
 | 任务竞争 | `PreDefenseTaskMapper`、`MySqlTaskPersistenceIT`、`GpuLeaseService` | 原子领取与 GPU 单槽租约已有实现；设备独占和故障恢复须按 R2 矩阵验证，不能仅凭租约推断 |
-| 启动恢复 | `TaskRecoveryRunner`、`DispatchRecoveryCoordinator`、`GpuLeaseBlockedProbe` | R3 统一恢复协调器已实现；启动测试与真实 MySQL IT 已通过，生产迁移未执行 |
+| 启动恢复 | `TaskRecoveryRunner`、`DispatchRecoveryCoordinator`、`WorkerConsumerLifecycle`、`AttemptProcessRegistry`、`GpuLeaseBlockedProbe` | R3 统一恢复协调器已实现；R4 Worker 在归属连接丢失后停止消费并关闭调度门，数据库恢复后自动重取归属、重跑恢复。`recoverAtStartup()` 返回 `RecoveryResult`：单任务/扫描异常、本地 accepted>0、GPU 隔离槽位非空任一命中即 unsafe，`WorkerConsumerLifecycle.startAfterRecovery` 拒绝开消费；只有安全分类且 accepted 清零后才重跑恢复并启动容器。2026-11-16 已用 Worker 经 13306 TCP 代理连 MySQL、断链后恢复且不重启 Worker 实测任务 `2122257618284634114`；生产迁移未执行 |
 | 导出 | `CleanSubsetExportService`、`CleanSubsetExportExecutor`、`ExportRecoveryRunner` | 已有去重、重启失败收敛与超时逻辑；进程树和文件边界继续回归 |
 | 安全 | `TaskAccessGuard`、`JwtAuthenticationFilter`、`OwnershipEndToEndIT` | 已有 owner 授权、账号状态回查和隔离库 HTTP 测试；业务库迁移与测试证据独立记录 |
 | Redis | `ResourceCatalogCache`、ADR-010 | 资源目录缓存已落地，不是分布式锁或任务状态存储 |
-| 知识检索 R6 | `KnowledgeIndexService`、`KnowledgeRetrievalMySqlIT`、`KnowledgeVectorStoreRedisIT`、`KnowledgeController` | 离线检索、ACL、引用、DeepSeek 回答适配器与 Redis 8 向量 ACL 混合检索已落地；本地 256 维哈希 embedding 只做词法候选重排，不是神经语义召回；向量只合并进词法候选池，业务 `retire()` 成功后清理向量，失败由 `KnowledgeVectorReconcileJob` 有界对账；生产库未建表 |
+| 知识检索 R6 | `KnowledgeIndexService`、`KnowledgeRetrievalMySqlIT`、`KnowledgeVectorStoreRedisIT`、`KnowledgeController` | 离线检索、ACL、引用、DeepSeek 回答适配器与 Redis 8 向量 ACL 混合检索已落地；本地 256 维哈希 embedding 只做词法候选重排，不是神经语义召回；向量只合并进词法候选池，业务 `retire()` 成功后清理向量，失败由 `KnowledgeVectorReconcileJob` 有界对账；SDD 索引只收录当前事实，按 §1 历史标记包住的段落不进入索引；生产库未建表 |
 | 受控助手 R7 | `AssistantChatService`、`AssistantConfirmationService`、`AssistantSessionService`、`AssistantModelEvidence` | 工具白名单、预览确认、配额、审计、有界并发、单用户并发槽、结构化参数证据与资源指纹确认已落地；DeepSeek 适配器本机可启用，`toolExecutor` 用 `DelegatingSecurityContextExecutorService` 传播登录身份，工具剩余预算传 `execute(arguments, timeoutMillis)`；最终外发体由真实 ChatService + 适配器 + 假 HTTP 验证；R3-02/03/04 已用独立 JVM + 真实 MySQL 租约 + 短 Python 桩验证恢复/竞争/隔离；R3ProductionExecutorChainIT 已用完整 Spring `@Async` 代理 + 真实 `PythonLddTaskExecutor` 覆盖正常/取消/超时/非法结果，并补真实派发崩溃窗口；仍不运行 LDD/GPU，生产建表未执行 |
-| 质量门禁 | `.github/workflows/migration-quality.yml` | 配置有 Maven/MySQL/Redis/Vite；进程守卫测试已改为 Windows/Linux 双实现。2026-11-16 起 `push`/`pull_request` 路径均包含 `docs/sdd/**`，因为 `KnowledgeEvaluationTest`/`KnowledgeHybridEvaluationTest` 直接读取该目录，文档语料变化必须触发 backend；测试只直接读取 `docs/sdd`，未发现其他文档目录依赖。远端 `930c934` 的 run `43686578054` 因 Windows-only `cmd`/`ping -n` 与销毁后未等待退出失败，跨平台修复后 `106e4d3` 的 run `43707281672` backend/frontend/python 全部 success；2026-11-15 收口提交 `bb4a79f` 的 run `43726078023` 同样全绿；此前 `5e4efd4` 的 run `43712479071` 曾因 R6 未知题误命中 backend failure，修复见 `09` §5.15.1。2026-11-16 文档收口提交 `3d0915c` 的 run `43825661651` backend/python/frontend 全绿，并已启用 RabbitMQ 4.1 service 与 `RABBIT_IT=true`；green CI 不等于 R4 全部故障场景通过 |
+| 质量门禁 | `.github/workflows/migration-quality.yml` | 配置有 Maven/MySQL/Redis/Vite；进程守卫测试已改为 Windows/Linux 双实现。2026-11-16 起 `push`/`pull_request` 路径均包含 `docs/sdd/**`，因为 `KnowledgeEvaluationTest`/`KnowledgeHybridEvaluationTest` 直接读取该目录，文档语料变化必须触发 backend；测试只直接读取 `docs/sdd`，未发现其他文档目录依赖。2026-11-16 四项阻断修复后本机 `verify -Pmysql-it` 为 **287 单测 + 106 IT** 全绿（`tmp/stage2-full-verify-new.log`）；本轮改动尚未提交，尚无对应远端 run。历史 `3d0915c` run `43825661651`、`8de6c66` run `43826356193`、`424a908` run `43829625383` 均 backend/python/frontend success；green CI 不等于 R4 全部故障场景或生产部署通过 |
 
 所有文件名相对于仓库根 `F:\Study\postgraduate\毕业论文\security_model`。开始每轮前执行 `git status --short`，阅读相关 SDD 与源码，保留其他人已有修改；与表格事实不一致时，先提交事实差异供复核，不得沿用过期结论。
+
+### 知识索引口径：当前事实 vs 历史记录
+
+- **当前事实**：与当前代码、SQL、已执行测试和已提交证据一致的能力/状态。`01`、`09` §5.17、`17` 本表、`20` §6.8、`21` §16 是当前事实入口；未标记的历史叙述不得写成“已实现/未实现”的当前结论。
+- **历史记录**：旧轮次状态、旧数字、已撤销结论或仅用于追溯的验收过程。必须在 Markdown 中用 `<!-- knowledge:historical -->` 与 `<!-- /knowledge:historical -->` 包住；`KnowledgeIndexService.reindexSdd()` 会在分块前删除这些区域，历史内容仍可人工阅读，但不会作为 RAG 当前知识。
+- 只有历史标记、删除后无正文的文件不进入索引；普通正文一律按当前事实处理，因此修正文档时不能把过时能力描述留在标记外。
+- 历史提交、旧 CI run、旧故障证据可以保留在历史块中，但回答“当前是否具备某能力”时必须回到当前事实入口，不能引用历史块作结论。
 
 ## 2. 开发 Agent 的固定工作协议
 
@@ -141,6 +148,8 @@ mvn -B -f migration-backend/pom.xml verify -Pmysql-it
 ## 7. R4：有业务理由时迁移 RabbitMQ
 
 **触发条件**：明确要把 Python/GPU Worker 从 API 进程独立出来，并有两进程以上的实际运行/故障测试条件。否则 R3 的数据库调度已足够，不为了技术名词强加 MQ。
+
+**当前状态（2026-11-16）**：R4 实现验收已在真实 RabbitMQ 4.1.8 + 隔离 MySQL + 双 JVM + 短 Python 桩下通过 R4-01..08，包括 7s 延迟 confirm、db→rabbit→db 完整停机切换、旧 dead 与新 attempt 竞争；本机 287 单测 + 106 IT 全绿（`tmp/stage2-full-verify-new.log`）。默认仍 `dispatch.mode=db`；生产库迁移、真实 LDD/GPU 与长期 DB 故障压测未执行，因此只能写“实现验收通过（隔离）/部署验收未执行”，不能写生产部署通过。本轮改动尚未提交，历史 CI 不能证明。
 
 **事务**：业务状态和 Outbox 事件同一个 MySQL 事务；发布器轮询未发布事件，RabbitMQ publisher confirm 后标记已发布；超时/崩溃可重复发布。Consumer 以 `messageId` 和 `taskId/runId/attempt` 去重，数据库条件领取是执行门槛。不要承诺 exactly-once；语义是至少一次投递 + 业务幂等。
 

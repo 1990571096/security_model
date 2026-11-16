@@ -25,5 +25,5 @@ Java 17、Spring Boot 3、Spring Security 6、JWT、MyBatis-Plus、MySQL、Vue 3
 - 当前真实演示只开放 LDD，VS、训练中防御和训练后防御暂未接入主流程。
 - 当前执行模型是单机本地 Python 进程和 JVM 有界线程池，尚未引入消息队列、分布式 worker 和 GPU 调度。
 - 当前运行过小批次、小轮次工程验证，不能直接替代论文正式实验结论。
-- 迁移版已经采用 Spring Boot 3、Java 17、Vue 3，并使用 Redis 缓存资源目录；R4 RabbitMQ/Outbox/独立 Worker 代码已接入，默认 `dispatch.mode=db`。2026-11-16 本机真实 RabbitMQ + 双 JVM 已完成部分 R4 场景，但整体未通过（confirm 丢失/迟到、DB 自动退避、运行期热切换、重放并发竞争仍有缺口），不应表述为已上线。
+- 迁移版已经采用 Spring Boot 3、Java 17、Vue 3，并使用 Redis 缓存资源目录；R4 RabbitMQ/Outbox/独立 Worker 代码已接入，默认 `dispatch.mode=db`。2026-11-16 本机真实 RabbitMQ + 双 JVM 已完成 R4-01..08 实现验收（7s 延迟 confirm、db→rabbit→db 双向停机切换、旧 dead 与新 attempt 竞争；287 单测 + 106 IT 全绿）；部署验收未执行，不应表述为已上线。
 

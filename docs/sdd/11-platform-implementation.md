@@ -6,6 +6,8 @@
 
 本文档记录“面向数据清洗的安全模型训练系统”当前已落地的平台实现，用于指导后续功能迭代、论文系统说明和答辩演示准备。
 
+> 事实基线：本文正文形成于 2026-10-26，描述 R1/R2 及更早的平台实现。R3 调度意图与启动恢复、R4 Outbox/RabbitMQ/独立 Worker、R6 知识检索、R7 受控助手之后的当前事实，以 `01-system-scope.md`、`09-project-status.md` §5.17、`17-agent-development-guide.md`、`20-stage-execution-and-acceptance.md` §6.8、`21-r4-outbox-rabbitmq-design.md` §16 为准；本文未同步的旧句不得当作当前能力。
+
 本文档描述的是当前工程版本的实际能力，不将规划中的功能、后续拟接入算法或工程验证结果表述为已完成的论文实验结论。
 
 ## 2. 平台定位与范围
@@ -35,7 +37,7 @@
 | --- | --- |
 | 前端 | Vue 3、Vite、Element Plus、Pinia、Vue Router 4 |
 | 后端 | Java 17、Spring Boot 3.5、Spring Security 6、JWT、MyBatis-Plus |
-| 数据与状态 | MySQL 作为事实源；Redis 缓存资源目录；R4 RabbitMQ/Outbox 代码已接入但默认关闭，2026-11-16 本机真实 Broker 已完成部分场景，整体未通过（详见 `21` §16、`20` §6.8） |
+| 数据与状态 | MySQL 作为事实源；Redis 缓存资源目录；R4 RabbitMQ/Outbox 代码已接入但默认关闭，2026-11-16 本机真实 Broker 已完成 R4-01..08 实现验收（隔离），部署验收未执行（详见 `21` §16、`20` §6.8） |
 | 算法运行时 | Python、PyTorch、外部 VaB 算法工程 |
 | 构建工具 | Maven、npm |
 
@@ -318,7 +320,7 @@ PyTorch/NumPy 版本、CUDA 版本、CUDA 可用性、设备数量和 GPU 型号
 - 失败或异常执行的任务专属请求文件、结果文件和 stdout/stderr 日志现场保留。
 - 运行中任务取消、事务提交后进程回收和 `canceled` 终态保护。
 - Python 结果协议必填字段、运行标识和失败字段校验。
-- 导出任务唯一性、失败重试和临时文件保护；导出任务启动恢复尚未实现。
+- 导出任务唯一性、失败重试和临时文件保护；导出任务启动恢复已在 R2 落地（`ExportRecoveryRunner`，见 `09-project-status.md` §5.13）。
 - 任务产物真实路径 containment 校验，覆盖 PNG、日志、索引和 ZIP 文件。
 - 三大防御阶段展示页、阶段切换、算法卡片、输入输出说明和接入状态。
 - 数据集与算法资源新增/编辑表单，包含字段分组、校验和页面交互；资源写入能力以迁移版 API 实际支持范围为准。
