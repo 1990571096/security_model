@@ -1,6 +1,6 @@
 # R4 契约与实现：单机 API + 独立 Worker + Transactional Outbox + RabbitMQ
 
-状态：**R4 实现验收通过（隔离环境）；部署验收未执行，不得写成生产部署通过**。四项阻断整改已完成：恢复返回 `RecoveryResult`（未安全分类/本地 accepted 未清零/GPU 隔离槽位不空时 gate 不开放）、执行器 accepted 在进程处置与槽位决策后清零、历史-only 文件退役 active 知识并保留源行号、重复投递只 ACK 不提前终结原账本。真实 RabbitMQ 4.1.8 + Erlang 27.3.4.18、隔离 schema/vhost、双 JVM 已实测 R4-01（含事务回滚）、R4-02（重复幂等/不可路由/旧 claim token/真实 confirm-return/7s 延迟 confirm）、R4-03、R4-04（GPU_BUSY/毒消息/DB 中断/无重启自动恢复消费）、R4-05（运行中取消+完成后取消）、R4-06（启动拒绝/drain 拒绝/v2 旧队列隔离/db→rabbit→db 完整双向停机切换）、R4-07、R4-08（Broker 故障自然 dead 后重放+权限+replay/cancel 真实并发+旧 dead 与新 attempt 真实竞争）。剩余边界仅 R4-04 长期 DB 故障/多任务退避压力与跨主机。本轮改动尚未提交，历史 `3d0915c` 的 run `43825661651` 全绿不能证明未提交代码；本机全量 287 单测 + 106 IT 全绿（`tmp/stage2-full-verify-new.log`）。默认 `dispatch.mode=db`，不启用 RabbitMQ/Outbox/Worker，不迁移业务库**
+状态：**R4 实现验收通过（隔离环境）；部署验收未执行，不得写成生产部署通过**。四项阻断整改已完成：恢复返回 `RecoveryResult`（未安全分类/本地 accepted 未清零/GPU 隔离槽位不空时 gate 不开放）、执行器 accepted 在进程处置与槽位决策后清零、历史-only 文件退役 active 知识并保留源行号、重复投递只 ACK 不提前终结原账本。真实 RabbitMQ 4.1.8 + Erlang 27.3.4.18、隔离 schema/vhost、双 JVM 已实测 R4-01（含事务回滚）、R4-02（重复幂等/不可路由/旧 claim token/真实 confirm-return/7s 延迟 confirm）、R4-03、R4-04（GPU_BUSY/毒消息/DB 中断/无重启自动恢复消费）、R4-05（运行中取消+完成后取消）、R4-06（启动拒绝/drain 拒绝/v2 旧队列隔离/db→rabbit→db 完整双向停机切换）、R4-07、R4-08（Broker 故障自然 dead 后重放+权限+replay/cancel 真实并发+旧 dead 与新 attempt 真实竞争）。剩余边界仅 R4-04 长期 DB 故障/多任务退避压力与跨主机。提交 `ee10704`/`cd5a6ae`，run `43846823071` backend/python/frontend 全绿；本机全量 287 单测 + 106 IT 全绿（`tmp/stage2-full-verify-new.log`）。默认 `dispatch.mode=db`，不启用 RabbitMQ/Outbox/Worker，不迁移业务库**
 日期：2026-11-16
 事实源：本文件 §16 验收表、`20-stage-execution-and-acceptance.md` §6.8、`09-project-status.md` §5.17 为当前 R4 事实源；其他章节或旧文档中的“RabbitMQ 未安装 / R4-01..08 未执行 / 252+100 为最新”均为历史记录，已被 2026-11-16 验收更新。
 范围：一台机器上的 API 进程 + 一个独立 Worker 进程；复用现有 R3 调度意图、GPU 单槽租约、执行器协议、终态条件更新和恢复组件。
@@ -250,7 +250,7 @@ DLQ 重放必须区分执行状态：
 
 验收断言必须包含：任务终态、意图状态、租约 token/隔离状态、进程是否退出、Outbox 状态与 `claim_token`、消费记录、消息 ACK/DLQ、Python 执行计数。单元 Mock 不能作为 R4 阶段完成证据。
 
-**本轮验收对照（2026-11-16 四项阻断修复后；本机 287 单测 + 106 IT 全绿 `tmp/stage2-full-verify-new.log`；真实 RabbitMQ 4.1.8 + 隔离 MySQL + 双 JVM + 短 Python 桩；历史提交 `3d0915c` 的 run `43825661651` 与本轮未提交代码无关）**：
+**本轮验收对照（2026-11-16 四项阻断修复后；本机 287 单测 + 106 IT 全绿 `tmp/stage2-full-verify-new.log`；真实 RabbitMQ 4.1.8 + 隔离 MySQL + 双 JVM + 短 Python 桩；提交 `ee10704`/`cd5a6ae`，run `43846823071` 全绿）**：
 
 | 验收 ID | 测试方法 | 关键证据 | 结果 | 未覆盖边界 |
 |---|---|---|---|---|
@@ -274,7 +274,7 @@ DLQ 重放必须区分执行状态：
 - 真实证据：任务 `2122257618284634114` 在不重启 Worker 的前提下完成 DB 代理断链→恢复→自动重取归属→accepted 清零后重跑恢复并延迟开消费→success。**已补真实故障**：7s 延迟 confirm（`2122269157720920066`）、db→rabbit→db 双向停机切换（`2122266301773209601`/`2122266483373920257`/`2122266707249192962`）、旧 dead 与新 attempt 竞争（`2122268541581815809`）。
 - 残余边界（安全取舍）：①恢复后结果对账/补写重试未实现；DB 中断期间旧执行结果写库失败、accepted 清零后二次恢复可能把 running 收敛 failed，这是“不补成功”的安全取舍。②消费账本与任务终态极窄竞态（执行清 accepted 后、handler 写 terminal 前若有重投 claim 账本）本轮未构造真实竞争证据，需全量/真实链路继续观察。③`Recovery` 只保证不重复启动 Python，不保证失败结果可恢复为成功。
 
-全量门禁（2026-11-16 四项阻断修复后）：`mvn -B -f migration-backend/pom.xml verify -Pmysql-it`（`MYSQL_IT_PASSWORD`、`REDIS_IT=true`、`RABBIT_IT=true`，Temurin 17.0.21）→ **287 单测 + 106 IT，0 失败/0 跳过，BUILD SUCCESS**，`tmp/stage2-full-verify-new.log`（含 `RabbitDispatchBrokerIT` 2/2、`WorkerConsumerLifecycleTest` 8/8、`DispatchMessageHandlerTest` 12/12、`MySqlTaskPersistenceIT` 28/28、`KnowledgeRetrievalMySqlIT` 8/8）。**本轮改动尚未提交，尚无对应远端 CI**；历史 `3d0915c` run `43825661651`、`8de6c66` run `43826356193`、`424a908` run `43829625383` 均 success，但只证明历史提交。CI 中 `RabbitDispatchBrokerIT` 只覆盖真实 Broker 发布、confirm/return，不代表双 JVM 全故障矩阵都已自动化。Maven 包装退出码已用 `scripts/r4/R4.Maven.ps1`（`MAVEN_TERMINATE_CMD=on`）修正为 0。
+全量门禁（2026-11-16 四项阻断修复后）：`mvn -B -f migration-backend/pom.xml verify -Pmysql-it`（`MYSQL_IT_PASSWORD`、`REDIS_IT=true`、`RABBIT_IT=true`，Temurin 17.0.21）→ **287 单测 + 106 IT，0 失败/0 跳过，BUILD SUCCESS**，`tmp/stage2-full-verify-new.log`（含 `RabbitDispatchBrokerIT` 2/2、`WorkerConsumerLifecycleTest` 8/8、`DispatchMessageHandlerTest` 12/12、`MySqlTaskPersistenceIT` 28/28、`KnowledgeRetrievalMySqlIT` 8/8）。**远端 CI 全绿**：提交 `ee10704`/`cd5a6ae` 的 run `43846823071` backend/python/frontend success。CI 中 `RabbitDispatchBrokerIT` 只覆盖真实 Broker 发布、confirm/return，不代表双 JVM 全故障矩阵都已自动化。Maven 包装退出码已用 `scripts/r4/R4.Maven.ps1`（`MAVEN_TERMINATE_CMD=on`）修正为 0。
 
 
 
@@ -283,7 +283,7 @@ DLQ 重放必须区分执行状态：
 1. 冻结事件 v1、Outbox 表、消费记录表、配置键和模式互斥规则（本设计评审通过后）。**已完成**：`DispatchEvent` v1、`sql/security_model_task_outbox.sql`、`dispatch.mode/role` 配置键。
 2. 先写迁移脚本 + 表约束 + 单测；不接 MQ。**已完成**：`TaskOutboxServiceTest` 4/4、`TaskDispatchConsumptionServiceTest` 4/4、`DispatchRuntimePolicyTest` 4/4、`DispatchMessageHandlerTest` 5/5、`TaskOutboxRelayTest` 3/3；MySQL 四项 IT `outboxClaimAndConditionalPublishAreDurable`、`expiredPublishingIsReclaimedAndOldConfirmCannotWin`、`consumptionLedgerIsIdempotent`、`deadOutboxReplayIsConditionalAndKeepsMessageId` 通过（`tmp/round5-r4-replay-it3.log`）。
 3. 接真实 RabbitMQ，完成 Relay/Consumer/ACK/DLQ。**已完成**：`RabbitDispatchConfiguration`、`RabbitDispatchTransport`、`TaskOutboxRelay`、`DispatchMessageHandler`/`DispatchMessageListener`；本机 RabbitMQ 4.1.8 + Erlang 27.3.4.18 已用于 R4-01..08 真实双 JVM 验收。
-4. 完成 R4-01..08 真实环境验收，记录 SHA/tree/run。**当前状态**：R4 实现验收通过（隔离），部署验收未执行；R4-02 7s 延迟 confirm、R4-06 db→rabbit→db 双向停机切换、R4-08 旧 dead 与新 attempt 竞争均已实测；R4-04 长期 DB 故障/多任务退避仍待压测；replay/cancel 并发已执行。本轮改动尚未提交，历史 `3d0915c` 的 run `43825661651` 不能证明未提交代码；本机 287 单测 + 106 IT 全绿（`tmp/stage2-full-verify-new.log`）。
+4. 完成 R4-01..08 真实环境验收，记录 SHA/tree/run。**当前状态**：R4 实现验收通过（隔离），部署验收未执行；R4-02 7s 延迟 confirm、R4-06 db→rabbit→db 双向停机切换、R4-08 旧 dead 与新 attempt 竞争均已实测；R4-04 长期 DB 故障/多任务退避仍待压测；replay/cancel 并发已执行。提交 `ee10704`/`cd5a6ae`，run `43846823071` backend/python/frontend 全绿；本机 287 单测 + 106 IT 全绿（`tmp/stage2-full-verify-new.log`）。
 5. 回退：`dispatch.mode=db`，停 Consumer，drain/标记 Outbox，确认无活跃 Worker；不删除已发布的审计数据。**操作顺序**：先停 `role=worker` 进程并确认无 `running`/本地接受进程 → API 切 `mode=db, role=api` 重启 → 确认 Outbox 无 `publishing` 后执行 `sql/security_model_task_outbox_rollback.sql`；有活跃任务或未确认进程时不得删表/切模式。回退不删除已发布消息的审计行；Rabbit 队列保留用于事后核对。
 
 ## 17.1 部署与配置键

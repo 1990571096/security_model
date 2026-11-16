@@ -33,7 +33,7 @@
 | Redis | `ResourceCatalogCache`、ADR-010 | 资源目录缓存已落地，不是分布式锁或任务状态存储 |
 | 知识检索 R6 | `KnowledgeIndexService`、`KnowledgeRetrievalMySqlIT`、`KnowledgeVectorStoreRedisIT`、`KnowledgeController` | 离线检索、ACL、引用、DeepSeek 回答适配器与 Redis 8 向量 ACL 混合检索已落地；本地 256 维哈希 embedding 只做词法候选重排，不是神经语义召回；向量只合并进词法候选池，业务 `retire()` 成功后清理向量，失败由 `KnowledgeVectorReconcileJob` 有界对账；SDD 索引只收录当前事实，按 §1 历史标记包住的段落不进入索引；生产库未建表 |
 | 受控助手 R7 | `AssistantChatService`、`AssistantConfirmationService`、`AssistantSessionService`、`AssistantModelEvidence` | 工具白名单、预览确认、配额、审计、有界并发、单用户并发槽、结构化参数证据与资源指纹确认已落地；DeepSeek 适配器本机可启用，`toolExecutor` 用 `DelegatingSecurityContextExecutorService` 传播登录身份，工具剩余预算传 `execute(arguments, timeoutMillis)`；最终外发体由真实 ChatService + 适配器 + 假 HTTP 验证；R3-02/03/04 已用独立 JVM + 真实 MySQL 租约 + 短 Python 桩验证恢复/竞争/隔离；R3ProductionExecutorChainIT 已用完整 Spring `@Async` 代理 + 真实 `PythonLddTaskExecutor` 覆盖正常/取消/超时/非法结果，并补真实派发崩溃窗口；仍不运行 LDD/GPU，生产建表未执行 |
-| 质量门禁 | `.github/workflows/migration-quality.yml` | 配置有 Maven/MySQL/Redis/Vite；进程守卫测试已改为 Windows/Linux 双实现。2026-11-16 起 `push`/`pull_request` 路径均包含 `docs/sdd/**`，因为 `KnowledgeEvaluationTest`/`KnowledgeHybridEvaluationTest` 直接读取该目录，文档语料变化必须触发 backend；测试只直接读取 `docs/sdd`，未发现其他文档目录依赖。2026-11-16 四项阻断修复后本机 `verify -Pmysql-it` 为 **287 单测 + 106 IT** 全绿（`tmp/stage2-full-verify-new.log`）；本轮改动尚未提交，尚无对应远端 run。历史 `3d0915c` run `43825661651`、`8de6c66` run `43826356193`、`424a908` run `43829625383` 均 backend/python/frontend success；green CI 不等于 R4 全部故障场景或生产部署通过 |
+| 质量门禁 | `.github/workflows/migration-quality.yml` | 配置有 Maven/MySQL/Redis/Vite；进程守卫测试已改为 Windows/Linux 双实现。2026-11-16 起 `push`/`pull_request` 路径均包含 `docs/sdd/**`，因为 `KnowledgeEvaluationTest`/`KnowledgeHybridEvaluationTest` 直接读取该目录；本次文档改动后这两个评估测试重跑 7/7（`tmp/stage2-doc-eval.log`）。2026-11-16 四项阻断修复后本机 `verify -Pmysql-it` 为 **287 单测 + 106 IT** 全绿（`tmp/stage2-full-verify-new.log`）；本轮提交 `ee10704`/`cd5a6ae` 的远端 run `43846823071` backend/python/frontend 全绿。green CI 不等于 R4 全部故障场景或生产部署通过 |
 
 所有文件名相对于仓库根 `F:\Study\postgraduate\毕业论文\security_model`。开始每轮前执行 `git status --short`，阅读相关 SDD 与源码，保留其他人已有修改；与表格事实不一致时，先提交事实差异供复核，不得沿用过期结论。
 
@@ -149,7 +149,7 @@ mvn -B -f migration-backend/pom.xml verify -Pmysql-it
 
 **触发条件**：明确要把 Python/GPU Worker 从 API 进程独立出来，并有两进程以上的实际运行/故障测试条件。否则 R3 的数据库调度已足够，不为了技术名词强加 MQ。
 
-**当前状态（2026-11-16）**：R4 实现验收已在真实 RabbitMQ 4.1.8 + 隔离 MySQL + 双 JVM + 短 Python 桩下通过 R4-01..08，包括 7s 延迟 confirm、db→rabbit→db 完整停机切换、旧 dead 与新 attempt 竞争；本机 287 单测 + 106 IT 全绿（`tmp/stage2-full-verify-new.log`）。默认仍 `dispatch.mode=db`；生产库迁移、真实 LDD/GPU 与长期 DB 故障压测未执行，因此只能写“实现验收通过（隔离）/部署验收未执行”，不能写生产部署通过。本轮改动尚未提交，历史 CI 不能证明。
+**当前状态（2026-11-16）**：R4 实现验收已在真实 RabbitMQ 4.1.8 + 隔离 MySQL + 双 JVM + 短 Python 桩下通过 R4-01..08，包括 7s 延迟 confirm、db→rabbit→db 完整停机切换、旧 dead 与新 attempt 竞争；本机 287 单测 + 106 IT 全绿（`tmp/stage2-full-verify-new.log`）。默认仍 `dispatch.mode=db`；生产库迁移、真实 LDD/GPU 与长期 DB 故障压测未执行，因此只能写“实现验收通过（隔离）/部署验收未执行”，不能写生产部署通过。提交 `ee10704`/`cd5a6ae`，run `43846823071` 全绿。
 
 **事务**：业务状态和 Outbox 事件同一个 MySQL 事务；发布器轮询未发布事件，RabbitMQ publisher confirm 后标记已发布；超时/崩溃可重复发布。Consumer 以 `messageId` 和 `taskId/runId/attempt` 去重，数据库条件领取是执行门槛。不要承诺 exactly-once；语义是至少一次投递 + 业务幂等。
 
