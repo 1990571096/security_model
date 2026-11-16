@@ -42,11 +42,15 @@ public class TaskRecoveryRunner {
             log.error("Worker 归属租约未取得，恢复与消费均不启动");
             return;
         }
-        coordinator.recoverAtStartup();
+        DispatchRecoveryCoordinator.RecoveryResult result = coordinator.recoverAtStartup();
+        if (!result.safeToConsume()) {
+            log.error("启动恢复未完成安全分类，消费不开放: errors={}, localAccepted={}, quarantined={}",
+                    result.errors(), result.localAccepted(), result.quarantinedSlots());
+        }
         WorkerConsumerLifecycle lifecycle = consumerLifecycle == null
                 ? null : consumerLifecycle.getIfAvailable();
         if (lifecycle != null) {
-            lifecycle.startAfterRecovery();
+            lifecycle.startAfterRecovery(result);
         }
     }
 }

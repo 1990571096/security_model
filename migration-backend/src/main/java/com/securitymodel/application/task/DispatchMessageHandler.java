@@ -82,6 +82,14 @@ public class DispatchMessageHandler {
             log.warn("拒绝非法调度事件: {}", exception.getMessage());
             return Action.REJECT;
         }
+        if (processRegistry.isLocallyAccepted(event.taskId(), event.runId(), event.attempt())) {
+            // The same JVM already owns a live execution for this attempt. ACK only this
+            // duplicate delivery: do not claim, do not write the original ledger terminal,
+            // and do not start a second Python. The original delivery still owns completion.
+            log.info("本地执行仍持有 attempt，重复投递直接 ACK: messageId={}, taskId={}, runId={}, attempt={}",
+                    event.messageId(), event.taskId(), event.runId(), event.attempt());
+            return Action.ACK;
+        }
         TaskDispatchConsumptionService.Claim claim;
         try {
             claim = consumptionService.claim(event, workerId, claimSeconds, LocalDateTime.now());
@@ -131,6 +139,12 @@ public class DispatchMessageHandler {
             return terminal(event, claimToken, DispatchConsumption.OUTCOME_STALE,
                     "DISPATCH_STALE_IDENTITY");
         }
+        if (processRegistry.isLocallyAccepted(event.taskId(), event.runId(), event.attempt())) {
+            // Narrow race: the executor started between the pre-claim check and the claim.
+            // Never terminate the shared ledger here. Release this claim and let a delayed
+            // redelivery observe the accepted marker; the original execution keeps ownership.
+            return deferLocalAccepted(event, payloadJson, retryCount, claimToken);
+        }
         TaskDispatchIntent intent = intentService.findByRun(event.taskId(), event.runId(),
                 event.attempt());
         if (intent == null) {
@@ -139,13 +153,17 @@ public class DispatchMessageHandler {
         }
         if (TaskDispatchIntent.SUBMITTED.equals(intent.getStatus())
                 || TaskDispatchIntent.ABANDONED.equals(intent.getStatus())) {
-            return terminal(event, claimToken, DispatchConsumption.OUTCOME_DUPLICATE,
-                    "DISPATCH_ALREADY_" + intent.getStatus().toUpperCase());
+            // No local executor owns this attempt and the dispatch is already past PENDING.
+            // A redelivery cannot prove the Python result, so converge the task explicitly
+            // instead of leaving it running forever behind a duplicate ledger row.
+            dispatchCoordinator.failAndAbandon(event.taskId(), event.runId(), event.attempt(),
+                    "DISPATCH_UNCERTAIN_RECOVERY",
+                    "消费重投时无本地执行归属，无法确认执行结果，按失败收敛并请用户重试");
+            return terminalFromTask(event, claimToken);
         }
         if (TaskDispatchIntent.SUBMITTING.equals(intent.getStatus())) {
             if (processRegistry.isLocallyAccepted(event.taskId(), event.runId(), event.attempt())) {
-                return terminal(event, claimToken, DispatchConsumption.OUTCOME_DUPLICATE,
-                        "DISPATCH_ALREADY_RUNNING");
+                return deferLocalAccepted(event, payloadJson, retryCount, claimToken);
             }
             return terminal(event, claimToken, DispatchConsumption.OUTCOME_UNCERTAIN,
                     "DISPATCH_UNCERTAIN_RECOVERY");
@@ -193,6 +211,28 @@ public class DispatchMessageHandler {
             return Action.NO_ACK;
         }
         return Action.ACK;
+    }
+
+    private Action deferLocalAccepted(DispatchEvent event, String payloadJson, int retryCount,
+                                      String claimToken) {
+        boolean released;
+        try {
+            released = consumptionService.releaseForRetry(event.messageId(), claimToken,
+                    "DISPATCH_ALREADY_RUNNING_LOCAL", LocalDateTime.now());
+        } catch (DataAccessException exception) {
+            return retryBrokerOnly(event, payloadJson, retryCount, "WORKER_DB_ERROR");
+        }
+        if (!released) {
+            return Action.ACK;
+        }
+        try {
+            transport.publishRetryAfter(event, payloadJson, retryCount, 120);
+            return Action.ACK;
+        } catch (RuntimeException exception) {
+            log.warn("本地执行中消息延迟重投失败，保留原消息: messageId={}, reason={}",
+                    event.messageId(), exception.getMessage());
+            return Action.NO_ACK;
+        }
     }
 
     private Action retry(DispatchEvent event, String payloadJson, int retryCount,

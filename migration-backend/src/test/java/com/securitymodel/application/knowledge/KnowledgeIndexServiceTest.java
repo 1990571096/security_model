@@ -108,6 +108,96 @@ class KnowledgeIndexServiceTest {
                 eq(null), anyString(), anyList(), any());
     }
 
+    @SuppressWarnings("unchecked")
+    @Test
+    void historicalBlocksAreNotIndexedAsCurrentKnowledge() throws Exception {
+        Files.writeString(tempDir.resolve("09-project-status.md"), """
+                # 项目状态
+
+                当前事实：R4 主体实现但整体未验收通过。
+
+                <!-- knowledge:historical -->
+                ## 历史记录：旧口径
+                R4 尚未开始，RabbitMQ 与独立 Worker 均未实现。
+                <!-- /knowledge:historical -->
+
+                当前事实：默认 dispatch.mode=db。
+                """, StandardCharsets.UTF_8);
+        when(writer.saveVersion(any(), anyString(), anyString(), anyString(), any(), anyString(),
+                anyList(), any())).thenReturn(document(12L));
+
+        KnowledgeIndexService.IndexStats stats = service(800).reindexSdd();
+
+        assertEquals(1, stats.changed());
+        ArgumentCaptor<List<MarkdownKnowledgeChunker.Draft>> drafts =
+                ArgumentCaptor.forClass(List.class);
+        verify(writer).saveVersion(any(), anyString(), anyString(), anyString(), any(),
+                anyString(), drafts.capture(), any());
+        String indexed = drafts.getValue().stream()
+                .map(MarkdownKnowledgeChunker.Draft::content)
+                .collect(java.util.stream.Collectors.joining("\n"));
+        assertTrue(indexed.contains("R4 主体实现但整体未验收通过"));
+        assertTrue(indexed.contains("默认 dispatch.mode=db"));
+        assertTrue(!indexed.contains("尚未开始"));
+        assertTrue(!indexed.contains("RabbitMQ 与独立 Worker 均未实现"));
+    }
+
+    @Test
+    void historicalOnlyFileRetiresItsExistingActiveVersion() throws Exception {
+        Files.writeString(tempDir.resolve("09-project-status.md"), """
+                <!-- knowledge:historical -->
+                R4 尚未开始，RabbitMQ 与独立 Worker 均未实现。
+                <!-- /knowledge:historical -->
+                """, StandardCharsets.UTF_8);
+        KnowledgeDocument active = document(20L);
+        when(documentMapper.findActiveBySourceKey("sdd:09-project-status.md")).thenReturn(active);
+        when(writer.retire(eq(20L), any())).thenReturn(true);
+
+        KnowledgeIndexService.IndexStats stats = service(800).reindexSdd();
+
+        assertEquals(1, stats.scanned());
+        assertEquals(0, stats.changed());
+        assertEquals(1, stats.retired());
+        assertEquals(0, stats.skipped());
+        verify(writer).retire(eq(20L), any());
+    }
+
+    @SuppressWarnings("unchecked")
+    @Test
+    void historicalBlockPreservesLineNumbersForFollowingCitations() throws Exception {
+        String markdown = """
+                # 当前文档
+
+                ## 历史
+
+                <!-- knowledge:historical -->
+                旧口径
+                <!-- /knowledge:historical -->
+
+                ## 当前能力
+
+                默认 db。
+                """;
+        Files.writeString(tempDir.resolve("09.md"), markdown, StandardCharsets.UTF_8);
+        when(writer.saveVersion(any(), anyString(), anyString(), anyString(), any(), anyString(),
+                anyList(), any())).thenReturn(document(21L));
+
+        service(800).reindexSdd();
+
+        ArgumentCaptor<List<MarkdownKnowledgeChunker.Draft>> drafts =
+                ArgumentCaptor.forClass(List.class);
+        verify(writer).saveVersion(any(), anyString(), anyString(), anyString(), any(),
+                anyString(), drafts.capture(), any());
+        MarkdownKnowledgeChunker.Draft current = drafts.getValue().stream()
+                .filter(draft -> draft.content().contains("默认 db。"))
+                .findFirst()
+                .orElseThrow();
+        assertEquals(11, current.startLine());
+        assertEquals(11, current.endLine());
+        String stripped = KnowledgeIndexService.stripHistoricalBlocks(markdown);
+        assertEquals(markdown.split("\n", -1).length, stripped.split("\n", -1).length);
+    }
+
     @Test
     void algorithmsImportOnlyEnabledRowsAndBuildDeterministicMarkdown() {
         Algorithm enabled = new Algorithm();

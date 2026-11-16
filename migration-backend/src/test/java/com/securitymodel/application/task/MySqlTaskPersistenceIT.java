@@ -1,6 +1,9 @@
 package com.securitymodel.application.task;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.securitymodel.application.audit.AuthenticatedUser;
+import com.securitymodel.application.audit.CurrentUserService;
+import com.securitymodel.application.audit.OperationAuditService;
 import com.securitymodel.domain.task.PreDefenseTask;
 import com.securitymodel.domain.task.TaskDispatchIntent;
 import com.securitymodel.infrastructure.persistence.mapper.PreDefenseTaskMapper;
@@ -46,6 +49,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
@@ -1222,6 +1226,41 @@ class MySqlTaskPersistenceIT {
                 Integer.class, replayedRow));
         assertFalse(replayedRow.equals(outbox.getMessageId()));
         assertFalse(service.replayDead(outbox.getMessageId(), now) != null);
+    }
+
+    @Test
+    void replayOfOldAttemptIsRejectedAfterRetryCreatesNewAttempt() {
+        long taskId = insertTask("running", "run-new", 1L, "admin", null);
+        jdbc.update("UPDATE sys_pre_defense SET current_attempt = 2 WHERE task_id = ?", taskId);
+        LocalDateTime now = LocalDateTime.now();
+        jdbc.update("""
+                        INSERT INTO sys_dispatch_outbox
+                          (message_id, event_type, task_id, run_id, attempt, intent_id,
+                           payload_hash, payload_json, status, publish_attempts, next_at,
+                           created_at, updated_at)
+                        VALUES (?, 'TASK_DISPATCH', ?, 'run-old', 1, 1, ?, '{}', 'dead', 3, ?, ?, ?)
+                        """,
+                "old-attempt-message", taskId, "a".repeat(64), now, now, now);
+        TaskOutboxService outboxService = new TaskOutboxService(outboxMapper, outboxObjectMapper());
+        CurrentUserService currentUser = mock(CurrentUserService.class);
+        when(currentUser.requireStableIdentity())
+                .thenReturn(new AuthenticatedUser(1L, "admin", true));
+        DispatchOperationsService operations = new DispatchOperationsService(
+                currentUser, new DispatchRuntimePolicy("rabbit", "api"), outboxService,
+                mock(TaskDispatchConsumptionService.class),
+                mock(com.securitymodel.infrastructure.executor.AttemptProcessRegistry.class),
+                taskMapper, mock(TaskDispatchIntentService.class),
+                mock(OperationAuditService.class), mock(WorkerOwnershipProbe.class));
+
+        TaskCommandException error = assertThrows(TaskCommandException.class,
+                () -> operations.replayDead("old-attempt-message"));
+        assertTrue(error.getMessage().contains("DLQ_REPLAY_IDENTITY_MISMATCH"));
+        assertEquals(1, jdbc.queryForObject(
+                "SELECT COUNT(*) FROM sys_dispatch_outbox WHERE task_id = ? AND status = 'dead'",
+                Integer.class, taskId));
+        assertEquals("run-old", jdbc.queryForObject(
+                "SELECT run_id FROM sys_dispatch_outbox WHERE message_id = 'old-attempt-message'",
+                String.class));
     }
 
     @Test

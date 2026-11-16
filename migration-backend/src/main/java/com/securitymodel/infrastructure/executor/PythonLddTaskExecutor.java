@@ -126,23 +126,37 @@ public class PythonLddTaskExecutor implements DefenseTaskExecutor {
             MDC.remove("taskId");
             MDC.remove("runId");
             MDC.remove("attempt");
-            processRegistry.clearAccepted(request.getTaskId(), request.getRunId(), request.getAttempt());
             runtimeMetrics.recordExecution(metricOutcome, System.nanoTime() - metricsStarted);
             canceledRuns.remove(request.getRunId());
             Process process = activeProcesses.remove(request.getRunId());
             Path taskDir = context == null ? null : context.taskDir();
-            // Never release the slot while any known executor process may still be alive.
-            boolean treeGone = processGuard.ensureGone(process, taskDir, 3000, true);
-            if (context != null) {
-                artifactPolicy.finalizeAttempt(context.taskDir());
-            }
-            if (treeGone) {
-                gpuLeaseService.releaseQuietly(request.getGpuLeaseToken());
-            } else {
-                gpuLeaseService.markBlocked(request.getTaskId(), request.getRunId(),
-                        "EXECUTOR_TREE_ALIVE");
-                log.error("执行进程树未确认退出，GPU 槽位已隔离: taskId={}, runId={}",
-                        request.getTaskId(), request.getRunId());
+            boolean cleanupDecisionComplete = false;
+            try {
+                // Never release the slot while any known executor process may still be alive.
+                boolean treeGone = processGuard.ensureGone(process, taskDir, 3000, true);
+                if (context != null) {
+                    artifactPolicy.finalizeAttempt(context.taskDir());
+                }
+                if (treeGone) {
+                    gpuLeaseService.releaseQuietly(request.getGpuLeaseToken());
+                } else {
+                    gpuLeaseService.markBlocked(request.getTaskId(), request.getRunId(),
+                            "EXECUTOR_TREE_ALIVE");
+                    log.error("执行进程树未确认退出，GPU 槽位已隔离: taskId={}, runId={}",
+                            request.getTaskId(), request.getRunId());
+                }
+                cleanupDecisionComplete = true;
+            } finally {
+                // The accepted marker is the consumer's barrier: it may be cleared only after
+                // process-tree, artifact and GPU-slot decisions have completed. If any of them
+                // throws, keep the marker so intake cannot reopen and a later recovery retries.
+                if (cleanupDecisionComplete) {
+                    processRegistry.clearAccepted(request.getTaskId(), request.getRunId(),
+                            request.getAttempt());
+                } else {
+                    log.error("执行清理未完成，保留 accepted 标记阻止消费重开: taskId={}, runId={}",
+                            request.getTaskId(), request.getRunId());
+                }
             }
         }
         return metricOutcome;

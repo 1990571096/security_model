@@ -63,6 +63,29 @@ class DispatchRecoveryCoordinatorTest {
         verify(gpuLeaseService, never()).releaseByRun(1L, "run-1");
         verify(dispatchCoordinator).failAndAbandon(eq(1L), eq("run-1"), eq(1),
                 eq("DISPATCH_UNCERTAIN"), any());
+        org.junit.jupiter.api.Assertions.assertFalse(gate.isReady());
+    }
+
+    @Test
+    void oneTaskClassificationFailureKeepsGateClosedAndReportsUnsafe() {
+        PreDefenseTask failing = runningTask(1L, "run-1", 1);
+        PreDefenseTask pending = runningTask(2L, "run-2", 1);
+        TaskDispatchIntent intent = intent(2L, "run-2", 1, TaskDispatchIntent.PENDING,
+                LocalDateTime.now().minusSeconds(10));
+        when(taskMapper.selectList(any())).thenReturn(List.of(failing, pending));
+        when(intentService.findByRun(1L, "run-1", 1))
+                .thenThrow(new IllegalStateException("intent row unreadable"));
+        when(intentService.findByRun(2L, "run-2", 1)).thenReturn(intent);
+        when(dispatchCoordinator.replayPending(intent, pending)).thenReturn(true);
+
+        DispatchRecoveryCoordinator.RecoveryResult result = coordinator.recoverAtStartup();
+
+        org.junit.jupiter.api.Assertions.assertFalse(result.safeToConsume());
+        org.junit.jupiter.api.Assertions.assertEquals(1, result.errors());
+        org.junit.jupiter.api.Assertions.assertTrue(result.failedTasks().contains("1:run-1"));
+        org.junit.jupiter.api.Assertions.assertFalse(gate.isReady());
+        verify(runtimeMetrics).recordRecovery(false);
+        verify(dispatchCoordinator).replayPending(intent, pending);
     }
 
     @Test

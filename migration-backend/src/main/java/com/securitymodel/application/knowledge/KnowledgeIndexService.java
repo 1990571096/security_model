@@ -29,6 +29,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 /**
@@ -41,6 +42,8 @@ public class KnowledgeIndexService {
     private static final Logger log = LoggerFactory.getLogger(KnowledgeIndexService.class);
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final String DEMO_ORIGIN = "demo";
+    private static final Pattern HISTORICAL_BLOCK = Pattern.compile(
+            "(?is)<!--\\s*knowledge:historical\\s*-->.*?<!--\\s*/knowledge:historical\\s*-->");
 
     private final KnowledgeDocumentMapper documentMapper;
     private final KnowledgeDocumentWriter writer;
@@ -91,9 +94,11 @@ public class KnowledgeIndexService {
         int scanned = 0;
         int changed = 0;
         int skipped = 0;
+        int retired = 0;
         int failed = 0;
         int chunks = 0;
         List<String> failures = new ArrayList<>();
+        LocalDateTime now = LocalDateTime.now();
         try (Stream<Path> files = Files.list(root)) {
             List<Path> ordered = files
                     .filter(path -> Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS))
@@ -112,10 +117,28 @@ public class KnowledgeIndexService {
                     if (raw.startsWith("\uFEFF")) {
                         raw = raw.substring(1);
                     }
-                    String sanitized = KnowledgeSanitizer.sanitize(raw);
+                    String currentFacts = stripHistoricalBlocks(raw);
                     String fileName = file.getFileName().toString();
-                    String title = fileName.substring(0, fileName.length() - 3);
                     String sourceKey = "sdd:" + fileName;
+                    if (currentFacts.isBlank()) {
+                        // A file made only of historical markers is no longer a current-fact
+                        // source. Retire its existing active version; otherwise old chunks
+                        // would remain searchable after the rewrite.
+                        if (retireSource(sourceKey, now)) {
+                            retired++;
+                        } else {
+                            skipped++;
+                        }
+                        continue;
+                    }
+                    String sanitized = KnowledgeSanitizer.sanitize(currentFacts);
+                    int leadingBreaks = leadingLineBreaks(currentFacts);
+                    if (leadingBreaks > 0) {
+                        // KnowledgeSanitizer trims leading whitespace; restore the original
+                        // blank-line prefix so chunk line numbers still match the file.
+                        sanitized = "\n".repeat(leadingBreaks) + sanitized;
+                    }
+                    String title = fileName.substring(0, fileName.length() - 3);
                     UpsertResult result = upsert(KnowledgeDocument.SOURCE_SDD, sourceKey, title,
                             KnowledgeDocument.VISIBILITY_SHARED, null, sanitized);
                     if (result.changed()) {
@@ -133,7 +156,7 @@ public class KnowledgeIndexService {
         } catch (IOException exception) {
             throw new IllegalArgumentException("SDD 文档目录读取失败");
         }
-        return new IndexStats(scanned, changed, skipped, failed, chunks, List.copyOf(failures));
+        return new IndexStats(scanned, changed, skipped, retired, failed, chunks, List.copyOf(failures));
     }
 
     public synchronized IndexStats reindexAlgorithms() {
@@ -169,7 +192,7 @@ public class KnowledgeIndexService {
                         algorithm.getAlgorithmId(), exception.getMessage());
             }
         }
-        return new IndexStats(scanned, changed, skipped, failed, chunks, List.copyOf(failures));
+        return new IndexStats(scanned, changed, skipped, 0, failed, chunks, List.copyOf(failures));
     }
 
     /** Private, owner-only report summary. Raw logs and artifact paths are never indexed. */
@@ -206,6 +229,22 @@ public class KnowledgeIndexService {
             }
         }
         return retired;
+    }
+
+    private boolean retireSource(String sourceKey, LocalDateTime now) {
+        KnowledgeDocument active = documentMapper.findActiveBySourceKey(sourceKey);
+        if (active == null) {
+            return false;
+        }
+        if (!writer.retire(active.getDocumentId(), now)) {
+            return false;
+        }
+        if (removeVectorsQuietly(active.getDocumentId())) {
+            documentMapper.markVectorCleanupClean(active.getDocumentId(), now);
+        }
+        log.info("历史-only 文档已退役: sourceKey={}, documentId={}", sourceKey,
+                active.getDocumentId());
+        return true;
     }
 
     /**
@@ -391,6 +430,49 @@ public class KnowledgeIndexService {
         return sanitized.length() <= max ? sanitized : sanitized.substring(0, max);
     }
 
+    /**
+     * SDD pages keep current facts next to historical acceptance records. Only the current
+     * fact body may become searchable knowledge. Historical regions must be explicitly
+     * wrapped by the HTML markers below; unmarked prose is treated as current and therefore
+     * must not contain an obsolete capability claim.
+     */
+    static String stripHistoricalBlocks(String markdown) {
+        if (markdown == null || markdown.isBlank()) {
+            return "";
+        }
+        java.util.regex.Matcher matcher = HISTORICAL_BLOCK.matcher(markdown);
+        StringBuilder result = new StringBuilder(markdown.length());
+        int lastEnd = 0;
+        while (matcher.find()) {
+            result.append(markdown, lastEnd, matcher.start());
+            // Keep the original line count so citations after a historical block still point
+            // at the real Markdown line. A single-line inline block is replaced by a space.
+            int lineBreaks = (int) matcher.group().chars().filter(ch -> ch == '\n').count();
+            result.append(lineBreaks == 0 ? " " : "\n".repeat(lineBreaks));
+            lastEnd = matcher.end();
+        }
+        result.append(markdown, lastEnd, markdown.length());
+        return result.toString();
+    }
+
+    private static int leadingLineBreaks(String text) {
+        int count = 0;
+        for (int index = 0; index < text.length(); index++) {
+            char value = text.charAt(index);
+            if (value == '\n') {
+                count++;
+            } else if (value == '\r') {
+                count++;
+                if (index + 1 < text.length() && text.charAt(index + 1) == '\n') {
+                    index++;
+                }
+            } else if (!Character.isWhitespace(value)) {
+                break;
+            }
+        }
+        return count;
+    }
+
     private String sha256(String value) {
         try {
             byte[] digest = MessageDigest.getInstance("SHA-256")
@@ -405,7 +487,7 @@ public class KnowledgeIndexService {
         }
     }
 
-    public record IndexStats(int scanned, int changed, int skipped, int failed, int chunks,
+    public record IndexStats(int scanned, int changed, int skipped, int retired, int failed, int chunks,
                              List<String> failures) {
     }
 

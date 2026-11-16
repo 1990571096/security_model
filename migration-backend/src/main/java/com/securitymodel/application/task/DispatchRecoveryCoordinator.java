@@ -1,5 +1,6 @@
 package com.securitymodel.application.task;
 
+import com.securitymodel.domain.lease.GpuLease;
 import com.securitymodel.domain.task.PreDefenseTask;
 import com.securitymodel.domain.task.TaskDispatchIntent;
 import com.securitymodel.infrastructure.executor.AttemptProcessRegistry;
@@ -13,6 +14,8 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Set;
 
@@ -87,7 +90,7 @@ public class DispatchRecoveryCoordinator {
         this.scanBatchSize = scanBatchSize;
     }
 
-    public void recoverAtStartup() {
+    public RecoveryResult recoverAtStartup() {
         if (!runtimePolicy.runsRecovery()) {
             // rabbit API must not scan running tasks: a Worker may still own them. It only
             // opens the readiness gate so command transactions can write Outbox rows.
@@ -95,20 +98,35 @@ public class DispatchRecoveryCoordinator {
             runtimeMetrics.recordRecovery(true);
             log.info("当前角色不承担执行恢复: mode={}, role={}",
                     runtimePolicy.mode(), runtimePolicy.role());
-            return;
+            return new RecoveryResult(true, 0, 0, 0, 0, 0, 0,
+                    List.of(), List.of());
         }
-        List<PreDefenseTask> running = taskMapper.selectList(
-                com.baomidou.mybatisplus.core.toolkit.Wrappers.<PreDefenseTask>lambdaQuery()
-                        .eq(PreDefenseTask::getStatus, "running"));
-        int recovered = 0;
+        List<PreDefenseTask> running;
+        try {
+            running = taskMapper.selectList(
+                    com.baomidou.mybatisplus.core.toolkit.Wrappers.<PreDefenseTask>lambdaQuery()
+                            .eq(PreDefenseTask::getStatus, "running"));
+        } catch (RuntimeException exception) {
+            readinessGate.markNotReady();
+            runtimeMetrics.recordRecovery(false);
+            log.error("运行任务扫描失败，调度门保持关闭: {}", exception.getMessage());
+            return new RecoveryResult(false, 0, 0, 0, 0, 1, 0,
+                    List.of(), List.of("TASK_SCAN_FAILED"));
+        }
         int replayed = 0;
-        boolean hadError = false;
+        int converged = 0;
+        int deferred = 0;
+        int errors = 0;
+        List<String> failedTasks = new ArrayList<>();
+        List<String> quarantinedSlots = new ArrayList<>();
+        boolean safeToConsume = false;
         try {
             for (PreDefenseTask task : running) {
                 try {
                     if (runtimePolicy.rabbitMode() && hasUnfinishedConsumption(task)) {
                         log.info("存在未终态消费账本，恢复不接管: taskId={}, runId={}",
                                 task.getTaskId(), task.getCurrentRunId());
+                        deferred++;
                         continue;
                     }
                     TaskDispatchIntent intent = intentService.findByRun(
@@ -116,7 +134,10 @@ public class DispatchRecoveryCoordinator {
                     if (intent == null) {
                         // Legacy task from before dispatch intents existed: no way to prove it was
                         // never submitted, so converge it and preserve the R2 process evidence rule.
-                        recovered += failLegacy(task);
+                        Classification classification = failLegacy(task);
+                        converged += classification.updated();
+                        deferred += classification.deferred() ? 1 : 0;
+                        addQuarantine(quarantinedSlots, classification);
                         continue;
                     }
                     if (TaskDispatchIntent.PENDING.equals(intent.getStatus())) {
@@ -124,34 +145,81 @@ public class DispatchRecoveryCoordinator {
                             // rabbit: a pending intent is not executed by recovery. Only
                             // ensure the Outbox row exists; the relay/consumer owns delivery.
                             ensureOutbox(intent, task);
-                            recovered++;
+                            converged++;
                         } else {
                             // Pending is the persisted proof that the executor was never invoked.
                             // Replay reacquires a fresh lease and revalidates the request.
                             if (dispatchCoordinator.replayPending(intent, task)) {
                                 replayed++;
                             } else {
-                                recovered++;
+                                converged++;
                             }
                         }
                         continue;
                     }
-                    recovered += convergeUncertain(task, intent);
+                    Classification classification = convergeUncertain(task, intent);
+                    converged += classification.updated();
+                    deferred += classification.deferred() ? 1 : 0;
+                    addQuarantine(quarantinedSlots, classification);
                 } catch (Exception exception) {
-                    // One task's recovery failure must not leave the whole scheduler gated forever.
-                    hadError = true;
-                    log.error("启动恢复单任务失败: taskId={}, runId={}, reason={}",
+                    // The failed task remains unclassified. Keep the gate closed and the
+                    // consumer stopped; the next heartbeat retries recovery for this task.
+                    errors++;
+                    failedTasks.add(task.getTaskId() + ":" + task.getCurrentRunId());
+                    log.error("启动恢复单任务失败，调度门保持关闭: taskId={}, runId={}, reason={}",
                             task.getTaskId(), task.getCurrentRunId(), exception.getMessage());
-                    recovered++;
                 }
             }
-        } finally {
-            if (!running.isEmpty()) {
-                log.info("启动调度恢复完成: scanned={}, replayed={}, converged={}",
-                        running.size(), replayed, recovered);
+            int localAccepted = localAcceptedCount();
+            List<String> blocked = blockedSlots();
+            quarantinedSlots.addAll(blocked);
+            safeToConsume = errors == 0 && localAccepted == 0 && quarantinedSlots.isEmpty();
+            if (safeToConsume) {
+                readinessGate.markReady();
+            } else {
+                readinessGate.markNotReady();
             }
-            readinessGate.markReady();
-            runtimeMetrics.recordRecovery(!hadError);
+            runtimeMetrics.recordRecovery(safeToConsume);
+            return new RecoveryResult(safeToConsume, running.size(), replayed, converged,
+                    deferred, errors, localAccepted, List.copyOf(quarantinedSlots),
+                    List.copyOf(failedTasks));
+        } finally {
+            log.info("启动调度恢复完成: scanned={}, replayed={}, converged={}, deferred={}, "
+                            + "errors={}, safeToConsume={}, quarantined={}, failedTasks={}",
+                    running.size(), replayed, converged, deferred, errors, safeToConsume,
+                    quarantinedSlots.size(), failedTasks);
+        }
+    }
+
+    private void addQuarantine(List<String> quarantinedSlots, Classification classification) {
+        if (classification.quarantinedSlot() != null) {
+            quarantinedSlots.add(classification.quarantinedSlot());
+        }
+    }
+
+    private int localAcceptedCount() {
+        try {
+            return processRegistry.localAcceptedCount();
+        } catch (RuntimeException exception) {
+            log.error("本地 accepted 执行计数不可读，保持调度门关闭: {}", exception.getMessage());
+            return 1;
+        }
+    }
+
+    private List<String> blockedSlots() {
+        if (gpuLeaseService == null) {
+            return List.of();
+        }
+        try {
+            return gpuLeaseService.findBlocked().stream()
+                    .sorted(Comparator.comparing(lease -> lease.getTaskId() == null
+                            ? "" : lease.getTaskId().toString()))
+                    .map(lease -> lease.getTaskId() + ":" + lease.getRunId())
+                    .toList();
+        } catch (RuntimeException exception) {
+            log.error("GPU 隔离槽位不可读，保持调度门关闭: {}", exception.getMessage());
+            // A non-empty marker keeps safeToConsume false without claiming a specific slot.
+            return List.of("UNKNOWN_GPU_LEASE_STATE");
         }
     }
 
@@ -279,7 +347,7 @@ public class DispatchRecoveryCoordinator {
                 task.getCurrentRunId(), task.getCurrentAttempt());
     }
 
-    private int failLegacy(PreDefenseTask task) {
+    private Classification failLegacy(PreDefenseTask task) {
         AttemptProcessRegistry.ReapOutcome outcome;
         try {
             outcome = processRegistry.reapIfOrphaned(task.getTaskId(), task.getCurrentAttempt());
@@ -292,19 +360,19 @@ public class DispatchRecoveryCoordinator {
                 LocalDateTime.now());
         if (processGone) {
             gpuLeaseService.releaseByRun(task.getTaskId(), task.getCurrentRunId());
-        } else {
-            gpuLeaseService.markBlocked(task.getTaskId(), task.getCurrentRunId(),
-                    "ORPHANED_PROCESS_" + outcomeName(outcome));
-            log.error("遗留执行进程状态未确认，GPU 槽位已隔离: taskId={}, runId={}, outcome={}",
-                    task.getTaskId(), task.getCurrentRunId(), outcomeName(outcome));
+            return new Classification(updated, false, null);
         }
-        return updated;
+        gpuLeaseService.markBlocked(task.getTaskId(), task.getCurrentRunId(),
+                "ORPHANED_PROCESS_" + outcomeName(outcome));
+        log.error("遗留执行进程状态未确认，GPU 槽位已隔离: taskId={}, runId={}, outcome={}",
+                task.getTaskId(), task.getCurrentRunId(), outcomeName(outcome));
+        return new Classification(updated, false, task.getTaskId() + ":" + task.getCurrentRunId());
     }
 
-    private int convergeUncertain(PreDefenseTask task, TaskDispatchIntent intent) {
+    private Classification convergeUncertain(PreDefenseTask task, TaskDispatchIntent intent) {
         if (processRegistry.isLocallyAccepted(task.getTaskId(), task.getCurrentRunId(),
                 task.getCurrentAttempt())) {
-            return 0;
+            return new Classification(0, true, null);
         }
         AttemptProcessRegistry.ReapOutcome outcome;
         try {
@@ -322,7 +390,8 @@ public class DispatchRecoveryCoordinator {
         dispatchCoordinator.failAndAbandon(task.getTaskId(), task.getCurrentRunId(),
                 task.getCurrentAttempt(), "DISPATCH_UNCERTAIN",
                 "上次 JVM 在派发过程中退出，无法确认执行是否开始；设备未确认空闲时保持隔离");
-        return 1;
+        return new Classification(1, false,
+                processGone ? null : task.getTaskId() + ":" + task.getCurrentRunId());
     }
 
     private boolean isGone(AttemptProcessRegistry.ReapOutcome outcome) {
@@ -343,5 +412,17 @@ public class DispatchRecoveryCoordinator {
 
     public Set<String> recoverableStatuses() {
         return Set.of(TaskDispatchIntent.PENDING, TaskDispatchIntent.SUBMITTING);
+    }
+
+    /**
+     * Explicit recovery contract. {@code safeToConsume} is true only when every running task
+     * was classified, no local executor is still accepted, and no GPU slot is quarantined.
+     */
+    public record RecoveryResult(boolean safeToConsume, int scanned, int replayed, int converged,
+                                 int deferred, int errors, int localAccepted,
+                                 List<String> quarantinedSlots, List<String> failedTasks) {
+    }
+
+    private record Classification(int updated, boolean deferred, String quarantinedSlot) {
     }
 }

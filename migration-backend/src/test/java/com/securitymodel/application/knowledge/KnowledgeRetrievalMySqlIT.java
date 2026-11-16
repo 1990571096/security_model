@@ -8,6 +8,7 @@ import com.securitymodel.infrastructure.persistence.mapper.KnowledgeDocumentMapp
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.mybatis.spring.annotation.MapperScan;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.ImportAutoConfiguration;
@@ -24,6 +25,9 @@ import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactor
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.junit.jupiter.api.Assumptions;
 
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.sql.DriverManager;
 import java.sql.Statement;
 import java.time.LocalDateTime;
@@ -34,6 +38,7 @@ import java.util.Set;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -283,6 +288,88 @@ class KnowledgeRetrievalMySqlIT {
                     .noneMatch(hit -> hit.chunkId() == chunkIdOf(ids.get(0))));
         } finally {
             template.delete(key);
+            factory.destroy();
+        }
+    }
+
+    @Test
+    void historicalOnlyRewriteRetiresActiveSourceAndCannotBeRecallable(@TempDir Path directory)
+            throws Exception {
+        KnowledgeIndexService index = new KnowledgeIndexService(
+                documentMapper, writer, null, null, null, directory.toString(), 800);
+        Path file = directory.resolve("historical-only.md");
+        Files.writeString(file, "# 当前能力\n\nR4 已实现。\n", StandardCharsets.UTF_8);
+
+        assertEquals(1, index.reindexSdd().changed());
+        KnowledgeDocument active = documentMapper.findActiveBySourceKey("sdd:historical-only.md");
+        assertEquals(1L, documentMapper.countActive());
+        assertTrue(documentMapper.findSearchableForUser(9L, 100).stream()
+                .anyMatch(row -> row.getContent().contains("R4 已实现")));
+
+        Files.writeString(file, "<!-- knowledge:historical -->\n旧口径：R4 未实现。\n"
+                + "<!-- /knowledge:historical -->\n", StandardCharsets.UTF_8);
+        KnowledgeIndexService.IndexStats stats = index.reindexSdd();
+
+        assertEquals(1, stats.retired());
+        assertEquals(0, stats.changed());
+        assertNull(documentMapper.findActiveBySourceKey("sdd:historical-only.md"));
+        assertEquals(0L, documentMapper.countActive());
+        assertTrue(documentMapper.findSearchableForUser(9L, 100).isEmpty());
+        assertEquals("retired", jdbc.queryForObject(
+                "SELECT status FROM sys_knowledge_document WHERE document_id = ?",
+                String.class, active.getDocumentId()));
+
+        // Reindexing a file that stays historical-only is idempotent and does not retire
+        // a second, already-retired row.
+        KnowledgeIndexService.IndexStats repeated = index.reindexSdd();
+        assertEquals(0, repeated.retired());
+        assertEquals(1, repeated.skipped());
+        assertEquals(0L, documentMapper.countActive());
+    }
+
+    @Test
+    void historicalOnlyRewriteCompensatesVectorCleanupFailure(@TempDir Path directory)
+            throws Exception {
+        Assumptions.assumeTrue("true".equals(System.getenv("REDIS_IT")),
+                "real Redis is required for retirement compensation");
+        LettuceConnectionFactory factory = new LettuceConnectionFactory("127.0.0.1", 6379);
+        factory.afterPropertiesSet();
+        StringRedisTemplate redis = new StringRedisTemplate(factory);
+        redis.afterPropertiesSet();
+        String key = "security-model:it:vectors:" + UUID.randomUUID();
+        try {
+            KnowledgeVectorStore realStore = new KnowledgeVectorStore(
+                    redis, chunkMapper, new LocalEmbeddingModel(true), true, key, 40);
+            FlakyVectorStore flaky = new FlakyVectorStore(realStore, redis, chunkMapper, key);
+            KnowledgeIndexService index = new KnowledgeIndexService(
+                    documentMapper, writer, null, null, null, directory.toString(), 800, flaky);
+            Path file = directory.resolve("historical-vector.md");
+            String current = "# 当前能力\n\n向量退役补偿内容甲乙丙。\n";
+            Files.writeString(file, current, StandardCharsets.UTF_8);
+            assertEquals(1, index.reindexSdd().changed());
+            Long oldId = documentMapper.findActiveBySourceKey("sdd:historical-vector.md")
+                    .getDocumentId();
+            assertTrue(realStore.search("向量退役补偿内容甲乙丙", 5, 1L, false).hits().stream()
+                    .anyMatch(hit -> hit.chunkId() == chunkIdOf(oldId)));
+
+            Files.writeString(file, "<!-- knowledge:historical -->\n旧口径\n"
+                    + "<!-- /knowledge:historical -->\n", StandardCharsets.UTF_8);
+            flaky.failNextRemove = true;
+            KnowledgeIndexService.IndexStats stats = index.reindexSdd();
+
+            assertEquals(1, stats.retired());
+            assertNull(documentMapper.findActiveBySourceKey("sdd:historical-vector.md"));
+            assertEquals("pending", cleanupStatus(oldId));
+            assertTrue(realStore.search("向量退役补偿内容甲乙丙", 5, 1L, false).hits().stream()
+                    .anyMatch(hit -> hit.chunkId() == chunkIdOf(oldId)),
+                    "a simulated Redis outage must leave the residual vector");
+
+            assertEquals(1, index.reconcileRetiredVectors(10));
+            assertEquals("clean", cleanupStatus(oldId));
+            assertTrue(realStore.search("向量退役补偿内容甲乙丙", 5, 1L, false).hits().stream()
+                    .noneMatch(hit -> hit.chunkId() == chunkIdOf(oldId)));
+        } finally {
+            redis.delete(key);
             factory.destroy();
         }
     }

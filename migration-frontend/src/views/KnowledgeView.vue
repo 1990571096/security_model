@@ -207,7 +207,7 @@ async function runReindex(kind) {
   try {
     const response = kind === 'sdd' ? await reindexKnowledge() : await reindexKnowledgeAlgorithms()
     const data = response.data || {}
-    maintenanceMessage.value = `扫描 ${data.scanned ?? 0}，更新 ${data.changed ?? 0}，跳过 ${data.skipped ?? 0}，失败 ${data.failed ?? 0}，新增分块 ${data.chunks ?? 0}`
+    maintenanceMessage.value = `扫描 ${data.scanned ?? 0}，更新 ${data.changed ?? 0}，退役 ${data.retired ?? 0}，跳过 ${data.skipped ?? 0}，失败 ${data.failed ?? 0}，新增分块 ${data.chunks ?? 0}`
     maintenanceType.value = Number(data.failed || 0) > 0 ? 'warning' : 'success'
     await loadStatus()
   } catch (error) {

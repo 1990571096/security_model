@@ -71,6 +71,22 @@ class RabbitDispatchTransportTest {
     }
 
     @Test
+    void confirmTimeoutIsReportedAsPublishFailureNotSuccess() throws Exception {
+        wireChannel();
+        when(channel.waitForConfirms(anyLong()))
+                .thenThrow(new java.util.concurrent.TimeoutException("confirm lost"));
+
+        IllegalStateException error = assertThrows(IllegalStateException.class,
+                () -> transport().publish(event(), "{}"));
+        assertTrue(error.getMessage().startsWith("RABBIT_PUBLISH_FAILED"));
+        Throwable cause = error.getCause();
+        while (cause != null && !(cause instanceof java.util.concurrent.TimeoutException)) {
+            cause = cause.getCause();
+        }
+        assertTrue(cause instanceof java.util.concurrent.TimeoutException);
+    }
+
+    @Test
     void mandatoryReturnIsReportedAsUnroutable() throws Exception {
         wireChannel();
         when(channel.waitForConfirms(anyLong())).thenAnswer(invocation -> {

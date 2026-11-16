@@ -67,6 +67,31 @@ class TaskOutboxRelayTest {
     }
 
     @Test
+    void lostConfirmKeepsOutboxRetryableUntilAttemptsAreExhausted() {
+        DispatchOutbox first = outbox(1);
+        when(outboxService.claimBatch(any(), anyString(), anyInt(), anyInt()))
+                .thenReturn(List.of(first));
+        when(outboxService.readEvent("{}")).thenReturn(event());
+        doThrow(new IllegalStateException("RABBIT_PUBLISH_FAILED: 发布确认超时"))
+                .when(transport).publish(any(), eq("{}"));
+        when(outboxService.markRetry(eq(first), anyString(), any(), any())).thenReturn(true);
+
+        assertEquals(0, relay.relayOnce());
+        verify(outboxService).markRetry(eq(first), anyString(), any(), any());
+        verify(outboxService, org.mockito.Mockito.never()).markPublished(any(), any());
+
+        DispatchOutbox exhausted = outbox(3);
+        when(outboxService.claimBatch(any(), anyString(), anyInt(), anyInt()))
+                .thenReturn(List.of(exhausted));
+        when(outboxService.markDead(eq(exhausted), anyString(), any())).thenReturn(true);
+
+        assertEquals(0, relay.relayOnce());
+        verify(outboxService).markDead(eq(exhausted), anyString(), any());
+        verify(dispatchCoordinator, org.mockito.Mockito.never()).failAndAbandon(any(Long.class),
+                anyString(), anyInt(), anyString(), anyString());
+    }
+
+    @Test
     void unroutablePublishIsDeadImmediatelyAndConvergesTask() {
         DispatchOutbox outbox = outbox(1);
         when(outboxService.claimBatch(any(), anyString(), anyInt(), anyInt()))

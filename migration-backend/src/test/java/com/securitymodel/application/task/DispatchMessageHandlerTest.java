@@ -153,6 +153,56 @@ class DispatchMessageHandlerTest {
         ordered.verify(transport).publishDead(any(), eq("{}"), eq("GPU_BUSY"));
     }
 
+    @Test
+    void redeliveryAfterJvmCrashConvergesSubmittedAttemptInsteadOfLeavingItRunning() {
+        when(outboxService.readEvent(anyString())).thenReturn(event());
+        when(consumptionService.claim(any(), anyString(), anyInt(), any()))
+                .thenReturn(new TaskDispatchConsumptionService.Claim(
+                        TaskDispatchConsumptionService.ClaimState.CLAIMED, "token", null));
+        when(taskMapper.selectById(11L)).thenReturn(running(), failed());
+        when(processRegistry.isLocallyAccepted(11L, "run-1", 1)).thenReturn(false);
+        when(intentService.findByRun(11L, "run-1", 1)).thenReturn(submittedIntent());
+        when(consumptionService.markTerminal(eq("m-1"), eq("token"), eq("failed"), anyString(), any()))
+                .thenReturn(true);
+
+        assertEquals(DispatchMessageHandler.Action.ACK, handler.handle("{}", 0));
+
+        var ordered = inOrder(coordinator, consumptionService);
+        ordered.verify(coordinator).failAndAbandon(eq(11L), eq("run-1"), eq(1),
+                eq("DISPATCH_UNCERTAIN_RECOVERY"), anyString());
+        ordered.verify(consumptionService).markTerminal(eq("m-1"), eq("token"), eq("failed"),
+                anyString(), any());
+        verify(coordinator, never()).consume(any(), any());
+    }
+
+    @Test
+    void locallyAcceptedAttemptIsAcknowledgedWithoutClaimingOrClosingTheOriginalLedger() {
+        when(outboxService.readEvent(anyString())).thenReturn(event());
+        when(processRegistry.isLocallyAccepted(11L, "run-1", 1)).thenReturn(true);
+
+        assertEquals(DispatchMessageHandler.Action.ACK, handler.handle("{}", 0));
+        verify(consumptionService, never()).claim(any(), anyString(), anyInt(), any());
+        verify(consumptionService, never()).markTerminal(anyString(), any(), any(), anyString(), any());
+        verify(coordinator, never()).consume(any(), any());
+        verify(intentService, never()).findByRun(any(), anyString(), anyInt());
+    }
+
+    @Test
+    void postClaimLocalAcceptanceReleasesClaimAndDefersWithoutTerminalLedger() {
+        when(outboxService.readEvent(anyString())).thenReturn(event());
+        when(consumptionService.claim(any(), anyString(), anyInt(), any()))
+                .thenReturn(new TaskDispatchConsumptionService.Claim(
+                        TaskDispatchConsumptionService.ClaimState.CLAIMED, "token", null));
+        when(taskMapper.selectById(11L)).thenReturn(running());
+        when(processRegistry.isLocallyAccepted(11L, "run-1", 1)).thenReturn(false, true);
+        when(consumptionService.releaseForRetry(eq("m-1"), eq("token"),
+                eq("DISPATCH_ALREADY_RUNNING_LOCAL"), any())).thenReturn(true);
+
+        assertEquals(DispatchMessageHandler.Action.ACK, handler.handle("{}", 3));
+        verify(consumptionService, never()).markTerminal(anyString(), any(), any(), anyString(), any());
+        verify(transport).publishRetryAfter(any(), eq("{}"), eq(3), eq(120));
+    }
+
     private DispatchEvent event() {
         return new DispatchEvent(DispatchEvent.SCHEMA_VERSION, "m-1", DispatchEvent.EVENT_TASK_DISPATCH,
                 11L, "run-1", 1, null, 7L, "hash", LocalDateTime.now());
@@ -174,6 +224,18 @@ class DispatchMessageHandlerTest {
         task.setCurrentRunId("run-1");
         task.setCurrentAttempt(1);
         task.setStatus("running");
+        return task;
+    }
+
+    private TaskDispatchIntent submittedIntent() {
+        TaskDispatchIntent intent = pendingIntent();
+        intent.setStatus(TaskDispatchIntent.SUBMITTED);
+        return intent;
+    }
+
+    private PreDefenseTask failed() {
+        PreDefenseTask task = running();
+        task.setStatus("failed");
         return task;
     }
 

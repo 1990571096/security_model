@@ -4,14 +4,19 @@ param(
     [int]$ApiPort = 18100,
     [int]$WorkerPort = 18101,
     [int]$DbPort = 3306,
+    [int]$RabbitPort = 5673,
     [string]$JarPath = '',
-    [ValidateSet('all', 'api', 'worker')][string]$Role = 'all'
+    [ValidateSet('all', 'api', 'worker')][string]$Role = 'all',
+    [ValidateSet('rabbit', 'db')][string]$Mode = 'rabbit'
 )
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'R4.Common.ps1')
 $secrets = Get-R4Secret $SecretsPath
 Assert-R4SchemaName $SchemaName
+if ($Mode -eq 'db' -and $Role -ne 'api') {
+    throw 'db 模式仅允许 Role=api；独立 Worker 只能使用 rabbit 模式'
+}
 
 if ([string]::IsNullOrWhiteSpace($JarPath)) {
     $JarPath = Join-Path $script:R4RepoRoot 'migration-backend\target\security-model-backend-0.1.0-SNAPSHOT.jar'
@@ -39,11 +44,11 @@ $env:DB_NAME = $SchemaName
 $env:DB_USER = 'root'
 $env:DB_PWD = $secrets.mysqlRootPassword
 $env:RABBITMQ_HOST = '127.0.0.1'
-$env:RABBITMQ_PORT = '5673'
+$env:RABBITMQ_PORT = "$RabbitPort"
 $env:RABBITMQ_USERNAME = $secrets.rabbitUser
 $env:RABBITMQ_PASSWORD = $secrets.rabbitPassword
 $env:RABBITMQ_VHOST = $secrets.vhost
-$env:SECURITY_MODEL_DISPATCH_MODE = 'rabbit'
+$env:SECURITY_MODEL_DISPATCH_MODE = $Mode
 $env:SECURITY_MODEL_DISPATCH_ROLE = 'api'
 $env:SECURITY_MODEL_DISPATCH_OUTBOX_RELAY_INTERVAL_MS = '1000'
 $env:SECURITY_MODEL_DISPATCH_OUTBOX_CONFIRM_TIMEOUT_MS = '5000'
@@ -61,7 +66,7 @@ $env:MANAGEMENT_HEALTH_RABBIT_ENABLED = 'false'
 $commonArgs = @(
     '-jar', $JarPath,
     "--server.port=$ApiPort",
-    "--security-model.dispatch.mode=rabbit",
+    "--security-model.dispatch.mode=$Mode",
     "--security-model.executor.python.script=$pythonScript",
     "--security-model.executor.workspace=$workspace"
 )
@@ -78,7 +83,7 @@ if ($Role -in @('all', 'api')) {
 $workerArgs = @(
     '-jar', $JarPath,
     "--server.port=$WorkerPort",
-    "--security-model.dispatch.mode=rabbit",
+    "--security-model.dispatch.mode=$Mode",
     "--security-model.executor.python.script=$pythonScript",
     "--security-model.executor.workspace=$workspace"
 )
