@@ -238,7 +238,7 @@ mvn -B -f migration-backend/pom.xml verify -Pmysql-it `
 
 ### CI 与 Java 17 证据
 
-- 本机 Temurin JDK 17.0.21 已跑 `mvn verify -Pmysql-it`，2026-11-16 R4 追加改动后计数为 **267 单测 + 103 IT**；日志 `tmp/r4-final-verify-new.log`，此前 263+100 为旧代码日志 `tmp/r4-final-verify.log`，252+100 更早日志 `tmp/round5-r4-final-verify5.log`，232+96 日志 `tmp/round3-full-verify-final.log`。这只证明本机 Java 17 运行，不等于 Ubuntu CI/生产部署已验证；workflow 已加入 RabbitMQ 4.1 service，但本轮新 CI 未运行。
+- 本机 Temurin JDK 17.0.21 已跑 `mvn verify -Pmysql-it`，2026-11-16 R4 追加改动后计数为 **267 单测 + 103 IT**；日志 `tmp/r4-final-verify-new.log`，此前 263+100 为旧代码日志 `tmp/r4-final-verify.log`，252+100 更早日志 `tmp/round5-r4-final-verify5.log`，232+96 日志 `tmp/round3-full-verify-final.log`。这只证明本机 Java 17 运行；最终提交 `3d0915c` 的 run `43825661651` backend/python/frontend 全绿，workflow 已加入 RabbitMQ 4.1 service 与 `RABBIT_IT=true`，但 green CI 仍不等于生产部署或 R4 全部故障场景通过。
 - 远端 `Migration Quality` 对 `930c934` 曾失败（run `43686578054`）：`python` 与 `frontend` 成功，`backend` 在单测阶段因 `AttemptProcessRegistryTest`/`PythonProcessWaiterTest` 硬编码 Windows `cmd`、`ping -n`，以及 `PythonProcessWaiter` 销毁进程后未等待退出而失败；已改为按 OS 选择 `sh -c 'sleep 20'`/`sh -c 'exit 0'` 或 `cmd /c exit 0`/`ping -n 20`，并在 `destroyProcessTree` 后 `waitFor(2s)`。
 - 跨平台修复推送后，提交 `106e4d3` 的 run `43707281672` 已全部 success（backend/frontend/python）；本机定向日志 `tmp/round2-cross-platform.log`。2026-11-15 收口提交 `bb4a79f` 的 run `43726078023` backend/frontend/python 全绿；此前 `5e4efd4` 的 run `43712479071` 曾因知识评估未知题误命中导致 backend failure，修复记录见 `05` ADR-025 与 `09` §5.15.1。远端 CI 通过仍不等于生产部署验收。
 

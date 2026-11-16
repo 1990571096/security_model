@@ -1,6 +1,6 @@
 # R4 契约与实现：单机 API + 独立 Worker + Transactional Outbox + RabbitMQ
 
-状态：**R4 部分真实场景已通过，整体未通过；必选故障场景和 CI 仍有缺口**。六项可靠性整改代码已落地；真实 RabbitMQ 4.1.8 + Erlang 27.3.4.18、隔离 schema/vhost、双 JVM 已实测 R4-01（含事务回滚）、R4-02（重复幂等/不可路由/旧 claim token/真实 confirm-return）、R4-03、R4-04（GPU_BUSY/毒消息/DB 中断）、R4-05（运行中取消+完成后取消）、R4-06（启动拒绝/drain 拒绝/v2 旧队列隔离）、R4-07、R4-08（Broker 故障自然 dead 后重放+权限+重放/取消真实并发）。仍缺：confirm 丢失/迟到真实网络注入、DB 故障自动退避收敛、R4-06 运行期热切换、R4-08 重放与新 attempt 真实并发竞争、本次提交的远端 CI。默认 `dispatch.mode=db`，不启用 RabbitMQ/Outbox/Worker，不迁移业务库**
+状态：**R4 部分真实场景已通过，整体未通过；必选故障场景仍有缺口，本轮 CI 已通过**。六项可靠性整改代码已落地；真实 RabbitMQ 4.1.8 + Erlang 27.3.4.18、隔离 schema/vhost、双 JVM 已实测 R4-01（含事务回滚）、R4-02（重复幂等/不可路由/旧 claim token/真实 confirm-return）、R4-03、R4-04（GPU_BUSY/毒消息/DB 中断）、R4-05（运行中取消+完成后取消）、R4-06（启动拒绝/drain 拒绝/v2 旧队列隔离）、R4-07、R4-08（Broker 故障自然 dead 后重放+权限+replay/cancel 真实并发）。仍缺：confirm 丢失/迟到真实网络注入、DB 故障自动退避收敛、R4-06 运行期热切换、R4-08 重放与新 attempt 真实并发竞争。最终提交 `3d0915c`，远端 run `43825661651` 全绿。默认 `dispatch.mode=db`，不启用 RabbitMQ/Outbox/Worker，不迁移业务库**
 日期：2026-11-16
 事实源：本文件 §16 验收表、`20-stage-execution-and-acceptance.md` §6.8、`09-project-status.md` §5.17 为当前 R4 事实源；其他章节或旧文档中的“RabbitMQ 未安装 / R4-01..08 未执行 / 252+100 为最新”均为历史记录，已被 2026-11-16 验收更新。
 范围：一台机器上的 API 进程 + 一个独立 Worker 进程；复用现有 R3 调度意图、GPU 单槽租约、执行器协议、终态条件更新和恢复组件。
@@ -250,7 +250,7 @@ DLQ 重放必须区分执行状态：
 
 验收断言必须包含：任务终态、意图状态、租约 token/隔离状态、进程是否退出、Outbox 状态与 `claim_token`、消费记录、消息 ACK/DLQ、Python 执行计数。单元 Mock 不能作为 R4 阶段完成证据。
 
-**本轮验收对照（代码提交 `03ad448f57bec8d2255f16cfd9748cb9664c3d1c`，tree `ae385f1913b4d40ae33a3121954643bfdc689964`；并在 2026-11-16 追加自然死信重放、事务回滚 IT、真实 Broker IT、DB 中断与旧队列隔离证据，新增改动尚未提交）**：
+**本轮验收对照（最终提交 `3d0915cb0e0a0fecf9aa15240ddf60a0e9c5b92d`，tree `3c1c49cddbbea55a8186caa4b13504a092745c7d`；代码提交 `b20b1cd`，文档提交 `b3ef0ac`；远端 run `43825661651` backend/python/frontend 全绿；2026-11-16 追加自然死信重放、事务回滚 IT、真实 Broker IT、DB 中断、旧队列隔离与 replay/cancel 并发证据）**：
 
 | 验收 ID | 测试方法 | 关键证据 | 结果 | 未覆盖边界 |
 |---|---|---|---|---|
@@ -273,7 +273,7 @@ DLQ 重放必须区分执行状态：
 1. 冻结事件 v1、Outbox 表、消费记录表、配置键和模式互斥规则（本设计评审通过后）。**已完成**：`DispatchEvent` v1、`sql/security_model_task_outbox.sql`、`dispatch.mode/role` 配置键。
 2. 先写迁移脚本 + 表约束 + 单测；不接 MQ。**已完成**：`TaskOutboxServiceTest` 4/4、`TaskDispatchConsumptionServiceTest` 4/4、`DispatchRuntimePolicyTest` 4/4、`DispatchMessageHandlerTest` 5/5、`TaskOutboxRelayTest` 3/3；MySQL 四项 IT `outboxClaimAndConditionalPublishAreDurable`、`expiredPublishingIsReclaimedAndOldConfirmCannotWin`、`consumptionLedgerIsIdempotent`、`deadOutboxReplayIsConditionalAndKeepsMessageId` 通过（`tmp/round5-r4-replay-it3.log`）。
 3. 接真实 RabbitMQ，完成 Relay/Consumer/ACK/DLQ。**已完成**：`RabbitDispatchConfiguration`、`RabbitDispatchTransport`、`TaskOutboxRelay`、`DispatchMessageHandler`/`DispatchMessageListener`；本机 RabbitMQ 4.1.8 + Erlang 27.3.4.18 已用于 R4-01..08 真实双 JVM 验收。
-4. 完成 R4-01..08 真实环境验收，记录 SHA/tree/run。**当前状态**：R4 部分真实场景已通过，整体未通过；R4-02 confirm 丢失/迟到、R4-04 自动退避收敛、R4-06 运行期热切换、R4-08 重放与新 attempt 并发竞争仍有缺口；replay/cancel 并发已执行，CI 尚无本次提交的新 run。历史“RabbitMQ 未安装”记录保留在下方，已被 2026-11-16 验收更新。
+4. 完成 R4-01..08 真实环境验收，记录 SHA/tree/run。**当前状态**：R4 部分真实场景已通过，整体未通过；R4-02 confirm 丢失/迟到、R4-04 自动退避收敛、R4-06 运行期热切换、R4-08 重放与新 attempt 并发竞争仍有缺口；replay/cancel 并发已执行。最终提交 `3d0915c`，远端 run `43825661651` backend/python/frontend 全绿。历史“RabbitMQ 未安装”记录保留在下方，已被 2026-11-16 验收更新。
 5. 回退：`dispatch.mode=db`，停 Consumer，drain/标记 Outbox，确认无活跃 Worker；不删除已发布的审计数据。**操作顺序**：先停 `role=worker` 进程并确认无 `running`/本地接受进程 → API 切 `mode=db, role=api` 重启 → 确认 Outbox 无 `publishing` 后执行 `sql/security_model_task_outbox_rollback.sql`；有活跃任务或未确认进程时不得删表/切模式。回退不删除已发布消息的审计行；Rabbit 队列保留用于事后核对。
 
 ## 17.1 部署与配置键
