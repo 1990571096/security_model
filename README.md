@@ -250,7 +250,8 @@ mvn -pl eladmin-system -am test "-Denforcer.skip=true" "-Dsecurity-model.skip-te
 - `docs/sdd/12-resume-project-narrative.md`：简历项目描述与面试讲解提纲。
 - `docs/sdd/13-framework-migration-readiness.md`：Spring Boot 3、Java 17、Vue 3 迁移验收记录。
 - `docs/sdd/17-agent-development-guide.md`：后续逐轮迭代的任务范围、依赖与验收条件（规划文档）。
-- `docs/sdd/20-stage-execution-and-acceptance.md`：开发 Agent 的逐阶段执行任务书，包含实施步骤、默认决策、故障验收矩阵和交接模板；§6.8 为 R3/R6/R7 逐 ID 实现/部署验收表。\n- `docs/sdd/21-r4-outbox-rabbitmq-design.md`：R4 单机 API + 独立 Worker + Transactional Outbox + RabbitMQ 设计稿（未实施）。
+- `docs/sdd/20-stage-execution-and-acceptance.md`：开发 Agent 的逐阶段执行任务书，包含实施步骤、默认决策、故障验收矩阵和交接模板；§6.8 为 R3/R6/R7 逐 ID 实现/部署验收表。
+- `docs/sdd/21-r4-outbox-rabbitmq-design.md`：R4 单机 API + 独立 Worker + Transactional Outbox + RabbitMQ 设计稿（未实施）。
 - `docs/sdd/18-multiuser-ownership-and-resources.md`：多用户归属、共享资源权限、历史迁移与 GPU 并发（R0 设计契约）。
 - `docs/sdd/19-local-data-layout-and-retention.md`：受控本地目录布局与保留策略（R0 草案）。
 - `docs/project-introduction-and-interview-guide.md`：完整项目介绍、业务流程、当前进度和面试讲解稿。
