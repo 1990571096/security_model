@@ -249,7 +249,22 @@ DLQ 重放必须区分执行状态：
 
 验收断言必须包含：任务终态、意图状态、租约 token/隔离状态、进程是否退出、Outbox 状态与 `claim_token`、消费记录、消息 ACK/DLQ、Python 执行计数。单元 Mock 不能作为 R4 阶段完成证据。
 
-**当前本机证据（2026-11-16）**：六项整改后全量 `mvn -B -f migration-backend/pom.xml verify -Pmysql-it`（`MYSQL_IT_PASSWORD=123456`、`REDIS_IT=true`，Temurin 17.0.21）为 **263 单测 + 100 IT，0 失败/0 跳过，BUILD SUCCESS**（`tmp/r4-final-verify.log`）；其中 `DispatchMessageHandlerTest` 9/9、`TaskOutboxRelayTest` 4/4。真实 RabbitMQ 4.1.8 + Erlang 27.3.4.18、隔离 schema/vhost `security_model_r4_20261116a`、API `18100`/Worker `18101` 双 JVM 与短 Python 桩已执行：R4-01 正常任务 `2122209791151980545`、停 Broker 恢复任务 `2122210212130078722`；R4-02 重复消息幂等与不可路由任务 `2122214846991208449`（Outbox dead、task failed、intent abandoned，未进入 published）；R4-03 Worker 强杀任务 `2122215986243866625`（孤儿 PID 4736 被杀、无新 attempt）；R4-04 GPU_BUSY 任务 `2122216323369439234`（三次退避耗尽、DLQ 1）与毒消息 DLQ 2；R4-05 取消任务 `2122210811173199873`；R4-06 `db/worker` 启动拒绝与 `running=1` 时 drain 脚本退出码 1；R4-07 API 重启任务 `2122210676426948609`；R4-08 failed 重放拒绝、非 owner 403、任务 `2122219894743760898` 的 dead→replay（旧 `42587bd8...`→新 `1c607941...`）最终 success、intent submitted、consumption terminal `TASK_SUCCESS`、Python 1 次。**未执行**：R4-04 停 MySQL 的 DB 故障注入、R4-02 confirm 丢失/迟到确认、R4-06 旧队列隔离、R4-08 owner 与取消/新 attempt 真实并发竞争、事务回滚故障注入、默认 db 模式真实回归与远端 Rabbit CI 门禁；R4-08 的 dead 状态由 SQL 注入模拟 Broker 停止后的待处理死信，已在 `20` §6.8 注明。
+**本轮验收对照（代码提交 `03ad448f57bec8d2255f16cfd9748cb9664c3d1c`，tree `ae385f1913b4d40ae33a3121954643bfdc689964`）**：
+
+| 验收 ID | 测试方法 | 关键证据 | 结果 | 未覆盖边界 |
+|---|---|---|---|---|
+| R4-01 | 真实 Broker + MySQL + API/Worker；正常派发；停 Broker 后创建任务再恢复 | 任务 `2122209791151980545` / `2122210212130078722`；`tmp/r4-stack/api.log`、`worker.log` | 通过 | 事务回滚未单独注入 |
+| R4-02 | 管理 API 重发同一 payload；关闭 RabbitAdmin 自动声明并删除 worker queue 后发布 | Python 次数不增；任务 `2122214846991208449` Outbox dead、未 published；`tmp/r4-stack/taskid-unroutable6.txt` | 通过（重复幂等 + 不可路由） | confirm 丢失/迟到确认、网络分区未执行 |
+| R4-03 | sleep 300 秒任务启动后强杀 Worker，重启恢复 | 任务 `2122215986243866625`；孤儿 PID 4736 被杀；无新 attempt；`tmp/r4-stack/taskid-orphan.txt` | 通过 | 跨主机未执行 |
+| R4-04 | 人工占用 GPU + 三次退避耗尽；发布 `not-json` 毒消息 | 任务 `2122216323369439234`；DLQ 1→2；`tmp/r4-stack/taskid-gpubusy.txt` | 部分通过 | 停 MySQL 的 DB 故障注入未执行 |
+| R4-05 | 真实任务启动 2 秒后取消 | 任务 `2122210811173199873`；canceled、租约释放、Python 1 次 | 通过 | 完成后取消未单独注入 |
+| R4-06 | `mode=db role=worker` 启动拒绝；30 秒 sleep 任务运行中执行 drain 脚本 | `tmp/r4-mode-reject2.log`；`tmp/r4-drain-refusal2.log`；任务 `2122221325269860354` | 部分通过 | 应用层无运行期热切换入口；旧队列隔离未执行 |
+| R4-07 | Worker 执行 sleep 任务时重启 API | 任务 `2122210676426948609`；Worker 不中断、任务 success、Python 1 次 | 通过 | 多 API 实例未执行 |
+| R4-08 | failed 重放拒绝；test 用户重放；Broker 停止后 Outbox failed→SQL 标 dead→重启 Broker 重放 | admin 400、test 403；任务 `2122219894743760898` 旧 `42587bd8...`→新 `1c607941...` 后 success、consumption `TASK_SUCCESS`、Python 1 次 | 通过（成功重放 + 权限） | dead 由 SQL 注入模拟；owner 与取消/新 attempt 真实并发竞争未执行 |
+
+全量门禁：`mvn -B -f migration-backend/pom.xml verify -Pmysql-it`（`MYSQL_IT_PASSWORD`、`REDIS_IT=true`，Temurin 17.0.21）→ **263 单测 + 100 IT，BUILD SUCCESS**，`tmp/r4-final-verify.log`。**CI 未运行**：`git push origin feature/r3-dispatch-idempotency` 在 21 秒内无法连接 `github.com:443`；`.github/workflows/migration-quality.yml` 仍只有 MySQL/Redis，没有 RabbitMQ 门禁。本轮不以本机日志替代 CI 绿灯。
+
+
 
 ## 17. 实施顺序与回退
 
