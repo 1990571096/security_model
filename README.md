@@ -218,7 +218,7 @@ npm --prefix migration-frontend run build
 
 本机 Temurin 17.0.21 在 2026-11-17 三场景执行契约与真实 Broker 边界收口后 **322 项单元测试 + 117 项 MySQL/Redis/RabbitMQ 集成测试**全绿（`tmp/stage7-full-verify.log`，0 失败/0 跳过，`RABBIT_IT=true`、`REDIS_IT=true`，BUILD SUCCESS，2:05）；`WorkerConsumerLifecycleTest` 8/8、`KnowledgeIndexServiceTest` 11/11、`DispatchMessageHandlerTest` 12/12、`MySqlTaskPersistenceIT` 28/28、`KnowledgeRetrievalMySqlIT` 10/10、`DispatchConfigBoundaryRabbitIT` 1/1。Python 11/11；前端构建历史通过。R4 已在真实 RabbitMQ 4.1.8 + 隔离 MySQL + 双 JVM + 短 Python 桩下完成 R4-01..08 实现验收（含 7s 延迟 confirm、db→rabbit→db 双向停机切换、旧 dead 与新 attempt 竞争）；R4-04 长期 DB 故障/多任务退避仍是压力边界，生产库未迁移、真实 LDD/GPU 未执行，因此结论是“实现验收通过（隔离）/部署验收未执行”，默认仍是 `db` 模式。
 
-GitHub Actions 工作流配置了 MySQL 8.4、Redis 8.0 和 RabbitMQ 4.1 service；提交 `cd5a6ae` 的 run `43846823071` 与 `a677933` 的 run `43848567392` backend/python/frontend 全绿，backend 启用 `RABBIT_IT=true`，`RabbitDispatchBrokerIT` 纳入门禁。green CI 不等于生产部署或真实 LDD/GPU 验收通过。
+GitHub Actions 工作流配置了 MySQL 8.4、Redis 8.0 和 RabbitMQ 4.1 service；本轮 `612685e` 的 run `44053148789` backend/frontend/python/init-scripts 四个 job 全部 success，backend 启用 `RABBIT_IT=true`，真实 Broker 配置缺失用例纳入门禁。green CI 不等于生产部署或真实 LDD/GPU 验收通过。
 
 旧版 ELADMIN 工程源码已归档到 Tag `migration-r4-verified` 与 `legacy` 分支；归档提交 `7e31b3f` 已在当前开发分支删除 `eladmin/`、`eladmin-web/`，本地 `main` 尚未合入，不再提供旧后端/旧前端构建命令。历史旧前端使用 Vue CLI/Webpack，在 Node 17+ 下曾需要 `--openssl-legacy-provider`；该提示只属于已归档的旧工程，不适用于迁移版 Vite 构建。归档前的旧定向测试历史记录为 42 项通过；该记录只属于旧工程基线，不能代表迁移版测试数量或覆盖率。迁移版门禁统一使用 `migration-backend` 与 `migration-frontend` 的命令。
 

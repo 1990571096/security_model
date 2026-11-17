@@ -477,8 +477,9 @@ mvn -B -f migration-backend/pom.xml verify -Pmysql-it
 | 配置缺失（服务层） | `DispatchConfigBoundaryIT` 仍为服务层集成：真实 Spring 上下文/MySQL/恢复协调器/消费账本，`mock transport` 直接调用 handler；不能证明真实 Broker 投递/ACK | `tmp/stage6-dispatch-boundary.log`；`DispatchConfigBoundaryIT` 2/2 |
 | 真实 Broker 配置缺失 | 新增 `DispatchConfigBoundaryRabbitIT`（`RABBIT_IT=true`）：随机 durable exchange/queue、真实 Spring listener、真实 RabbitTemplate 投递同一 `messageId` 两次；空白执行器脚本下断言任务 failed + `EXECUTOR_NOT_CONFIGURED`、intent abandoned、账本 1 行 `terminal/failed`、队列收敛、无本地 accepted、租约 token/`blocked_at` 为空。真实用例先暴露 `retry.5s` 队列跨运行复用导致的 406，修复为每次运行独立的 retry 前缀；又暴露并修复了 `TaskDispatchCoordinator.consume` 配置缺失分支只失败不释放租约的问题；`DispatchConfigBoundaryIT` 同步补上真实持有租约的前置，避免空断言 | `DispatchConfigBoundaryRabbitIT`；`tmp/stage7-dispatch-rabbit-it.log` |
 | 全量门禁 | 2026-11-17 `mvn -B -f migration-backend/pom.xml verify -Pmysql-it`（`RABBIT_IT=true`、`RABBIT_IT_PORT=5673`、`REDIS_IT=true`）：**322 单测 + 117 IT，0 失败/0 跳过，BUILD SUCCESS，2:05** | `tmp/stage7-full-verify.log` |
+| 远端 CI | 提交 `d71558b` 的 run `44050966075` 中 backend 失败，原因仅为新 `DispatchConfigBoundaryRabbitIT` 写死 `5673/guest`，而 CI 服务是 `5672/migration`；改为读取 `RABBIT_IT_*` 后在 `612685e` 重跑 run `44053148789`，backend/frontend/python/init-scripts **四个 job 全部 success** | GitHub Actions run `44053148789`；`tmp/stage7-push2.log` |
 
-**边界**：本轮未执行真实 LDD/GPU、未迁移生产库 `eladmin`、未推送、未取得远端 CI。模型桩验证的是服务端拒绝与结构化边界，不是真实 DeepSeek 的自然语言注入防御；真实 Broker 用例使用本机隔离 Broker 与短协议执行器，不等于生产部署验收。
+**边界**：本轮未执行真实 LDD/GPU、未迁移生产库 `eladmin`。模型桩验证的是服务端拒绝与结构化边界，不是真实 DeepSeek 的自然语言注入防御；真实 Broker 用例使用本机/CI 隔离 Broker 与短协议执行器，不等于生产部署验收。
 
 ### 5.16 2026-11-16 验收口径与 CI 覆盖收口
 
