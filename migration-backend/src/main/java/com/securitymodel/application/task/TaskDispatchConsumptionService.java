@@ -67,6 +67,14 @@ public class TaskDispatchConsumptionService {
         return mapper.countExpiredProcessing(now);
     }
 
+    public long countByStatus(String status) {
+        return mapper.countByStatus(status);
+    }
+
+    public LocalDateTime oldestProcessingAt() {
+        return mapper.oldestProcessingAt();
+    }
+
     /** A non-terminal ledger row means a Worker has at least claimed this attempt. */
     public boolean hasUnfinishedOwnership(Long taskId, String runId, Integer attempt) {
         return mapper.findUnfinishedByRun(taskId, runId, attempt) != null;

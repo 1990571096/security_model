@@ -18,6 +18,10 @@ export function getObservabilitySummary() {
   return http.get('/api/observability/summary')
 }
 
+export function getDispatchObservability() {
+  return http.get('/api/observability/dispatch')
+}
+
 export function getExecutorStatus() {
   return http.get('/api/task-progress/executor-status')
 }

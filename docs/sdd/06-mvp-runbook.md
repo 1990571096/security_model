@@ -141,7 +141,7 @@ CREATE DATABASE IF NOT EXISTS security_model
   CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
 ```
 
-只在新开发库执行数据库初始化顺序；生产库 `eladmin` 的迁移仍需要单独授权、执行窗口、备份路径、执行人与回滚方案。当前尚未创建 `security_model`，也未对 `eladmin` 执行任何建表或回填。
+只在新开发库执行数据库初始化顺序；生产库 `eladmin` 的迁移仍需要单独授权、执行窗口、备份路径、执行人与回滚方案。2026-11-17 已在本机创建并初始化 `security_model`（48 张表），未对 `eladmin` 执行任何建表或回填。
 
 ### 数据库初始化顺序
 
@@ -162,7 +162,34 @@ SOURCE sql/security_model_knowledge_vector_reconcile.sql;
 SOURCE sql/security_model_assistant.sql;
 ```
 
-所有脚本均使用 `CREATE TABLE IF NOT EXISTS`，可重复执行；回滚脚本只删除本阶段新增表，不删除业务任务。R3 两张表没有外键到任务表，回滚不会级联删除任务。知识库退役向量清理的增量脚本 `security_model_knowledge_vector_reconcile.sql` 也必须执行，否则 `vector_cleanup_status` 等列缺失，退役对账会失败；回滚先执行 `sql/security_model_knowledge_vector_reconcile_rollback.sql`，要求停止调度且无活跃任务，脚本只删除索引和四个清理列，不删业务行。
+除 `sql/eladmin.sql` 外，增量脚本按 `CREATE TABLE IF NOT EXISTS` / 条件 `ALTER` 编写，正常可重复执行；`sql/eladmin.sql` 开头是 `DROP TABLE IF EXISTS` 后重建，**不是幂等建表脚本**，重复执行会清空业务表，不能对已有数据的库直接执行。开发库统一用 `scripts/dev/InitializeSecurityModelDatabase.ps1`，脚本只允许 `security_model`，并用 `sys_dev_init_marker` 区分“基础 schema 已应用”和“从未初始化”：无 marker 且已存在 `sys_pre_defense` 时直接拒绝，避免误删。回滚脚本只删除本阶段新增表，不删除业务任务。R3 两张表没有外键到任务表，回滚不会级联删除任务。知识库退役向量清理的增量脚本 `security_model_knowledge_vector_reconcile.sql` 也必须执行，否则 `vector_cleanup_status` 等列缺失，退役对账会失败；回滚先执行 `sql/security_model_knowledge_vector_reconcile_rollback.sql`，要求停止调度且无活跃任务，脚本只删除索引和四个清理列，不删业务行。
+
+### 干净库启动手册（2026-11-17）
+
+目标：从空库到可登录、可调度、可检索，全程不改 `eladmin`。
+
+1. 准备 MySQL 8 与空库 `security_model`；脚本自己会 `CREATE DATABASE IF NOT EXISTS`。
+2. 用环境变量提供本机 root 密码（不要写入仓库）：
+   ```powershell
+   $env:MYSQL_IT_PASSWORD = '<本机 root 密码>'
+   .\scripts\dev\InitializeSecurityModelDatabase.ps1
+   ```
+   成功输出应包含 `security_model initialized: tables=48`，并列出 `sys_user` 的 admin/test 等种子账号。脚本顺序：`sql/eladmin.sql` → 执行快照 → run context → 子集导出 → 审计 → 归属 → GPU 租约 → 派发意图 → Outbox → 幂等 → 知识库 → 向量对账 → Assistant → MVP seed；新库已含 `blocked_at`，所以 `security_model_gpu_lease_block.sql` 会被条件跳过。
+3. 设置启动环境变量（示例，值按本机替换）：
+   ```powershell
+   $env:DB_NAME='security_model'; $env:DB_USER='root'; $env:DB_PWD='<密码>'
+   $env:SECURITY_MODEL_JWT_SECRET='<至少 32 字节>'
+   $env:SECURITY_MODEL_DISPATCH_MODE='db'; $env:SECURITY_MODEL_DISPATCH_ROLE='api'
+   $env:SECURITY_MODEL_KNOWLEDGE_SDD_ROOT='<repo>\docs\sdd'
+   ```
+4. 启动后端 jar 或 `spring-boot:run`，确认日志有 `Tomcat started on port 8100` 与 `Started SecurityModelApplication`。
+5. 健康检查 `GET /actuator/health` 为 `UP`；管理员登录后依次验证：
+   - `GET /api/task-progress/executor-status`：执行池计数与 GPU `default-gpu-0` 状态；
+   - `GET /api/observability/dispatch`（admin）：返回 `mode/role/outbox*/consumption*/worker*/gpuSlot` 五组字段；db 模式下 `workerConsumerExpected=false`，消费账本仍应可读；
+   - `POST /api/knowledge/reindex` 后再查 `GET /api/knowledge/status`，`activeDocuments` 应大于 0；
+   - `POST /api/knowledge/query` 返回引用，`retrieval_only` 表示外部模型未启用，不是故障。
+6. 验收口径：空库任务页 `total=0` 是正常的，因为 MVP seed 的 4 条任务 `owner_user_id` 为 NULL，被 R1 归属规则过滤；不要为了“看起来有数据”直接把 owner 改成当前管理员。需要历史任务时走 API 新建或单独做可审计的归属回填。
+7. 未执行项要如实标注：`security_model_vab_seed.sql` 依赖本机 VaB 数据集绝对路径，属部署相关种子，默认不执行；导出恢复的 pending/running 重启收敛需要先造出对应行才能实测，不能凭代码存在写成已验收。
 
 ### 启动与停止
 
@@ -178,6 +205,8 @@ SOURCE sql/security_model_assistant.sql;
 - `GET /actuator/health`：匿名可读，`show-details=never`。
 - `GET /actuator/metrics`、`GET /actuator/info`：仅管理员 JWT；匿名返回 401。
 - `GET /api/observability/summary`：仅管理员；返回任务状态计数、执行池、GPU 槽位和缓存计数，不返回 taskId/userId/路径。
+- `GET /api/observability/dispatch`：仅管理员；返回阶段 3 五组运行事实：`mode/role/sampledAt`、API 线程池以外的 Outbox 计数与最久等待、Worker 消费者/归属/本进程 accepted、消费账本 `processing/retry/terminal` 与过期 claim、GPU 租约 `state/taskId/runId/attempt/expiresAt/blockedReason`。该接口是运维明细，允许 taskId/runId；`/summary` 保持聚合不含身份。`dispatchReady` 为 false 时表示启动恢复未完成，不应把任务启动失败当成普通 500。
+- 不可用态必须和 0 分开：`outboxAvailable=false`（R4 表未迁移）、`gpuSlot.available=false`（租约表不可读）、`workerConsumerExpected=false`（db 模式无独立 Worker）分别显示为“不可用/不适用”，不能显示成 0 个积压或 0 个消费者。
 - 指标名：`security_model_task_count`、`security_model_stale_running_tasks`、`security_model_executor_tasks`、`security_model_gpu_slot`、`security_model_recovery_total`、`security_model_task_execution_duration`、`security_model_cache_requests`、`security_model_cache_stale_fill_skipped_total`。
 - 指标标签只有 status/state/result/outcome 等低基数枚举；taskId、runId、userId 不得作为标签。
 - 日志格式包含 `requestId`、`taskId`、`runId`、`attempt`；请求头 `X-Request-Id` 只接受 8–64 位安全字符，否则生成 UUID。日志不记录 token、数据库密码、完整数据集路径。

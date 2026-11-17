@@ -2,7 +2,7 @@
 
 更新时间：2026-11-17
 
-状态：**计划文档，未执行**。截至本文件创建时，未创建 `security_model` 数据库、未迁移旧 `eladmin`、未给仓库打 Tag、未创建 `legacy` 分支、未移动或删除 `eladmin/` 与 `eladmin-web/`。本文只冻结边界、顺序和验收条件，执行前仍需按第 8 节逐项留下证据。
+状态：**部分执行（2026-11-17）**。已创建并从空库初始化 `security_model`（48 表），已用该库启动后端并验证登录、执行池、知识索引与检索；未迁移旧 `eladmin`、未给仓库打 Tag、未创建 `legacy` 分支、未移动或删除 `eladmin/` 与 `eladmin-web/`。阶段 3 五组监控的后端字段与前端页面已实现，尚待全量测试与 CI。
 
 ## 1. “生产库迁移”的含义
 
@@ -42,14 +42,16 @@ CREATE DATABASE IF NOT EXISTS security_model
   CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
 ```
 
-2. 执行基础 schema 与种子数据：
+2. 执行基础 schema 与种子数据。开发库不要手工逐条 `SOURCE`，统一用 `scripts/dev/InitializeSecurityModelDatabase.ps1`：
 
-```sql
-SOURCE sql/eladmin.sql;
-SOURCE sql/security_model_mvp_seed.sql;
+```powershell
+$env:MYSQL_IT_PASSWORD = '<本机 root 密码>'
+.\scripts\dev\InitializeSecurityModelDatabase.ps1
 ```
 
-3. 按阶段执行增量脚本，顺序以 `06-mvp-runbook.md` 的“数据库初始化顺序”为准，至少包括：
+脚本只允许初始化 `security_model`，顺序为 `sql/eladmin.sql` → 执行快照 → run context → 子集导出 → 审计 → 归属 → GPU 租约 → 调度意图 → Outbox → 幂等 → 知识库 → 向量对账 → Assistant → MVP seed。基础 schema 成功后立即写入 `sys_dev_init_marker`；无 marker 且已有 `sys_pre_defense` 时拒绝执行，因为 `sql/eladmin.sql` 是 `DROP TABLE IF EXISTS` 后重建，不是幂等脚本。
+
+3. 增量脚本顺序以脚本内清单和 `06-mvp-runbook.md` 的“数据库初始化顺序”为准，至少包括：
 
 ```text
 security_model_execution_snapshot.sql
@@ -58,12 +60,14 @@ security_model_clean_subset_export.sql
 security_model_operation_audit.sql
 security_model_ownership.sql
 security_model_gpu_lease.sql
-security_model_gpu_lease_block.sql
+security_model_gpu_lease_block.sql（仅老库缺 blocked 列时执行）
 security_model_task_dispatch.sql
+security_model_task_outbox.sql
 security_model_request_idempotency.sql
 security_model_knowledge.sql
 security_model_knowledge_vector_reconcile.sql
 security_model_assistant.sql
+security_model_mvp_seed.sql
 ```
 
 4. 启动前设置：
@@ -134,11 +138,19 @@ SECURITY_MODEL_JWT_SECRET=<至少 32 字节>
 - 指标标签不含 taskId、userId 等高基数标识；
 - 数据库或 Broker 不可用时显示“数据不可用/上次刷新时间”，不能显示 0 冒充正常。
 
+实现状态（2026-11-17）：
+
+- 后端 `GET /api/observability/dispatch`（仅管理员）已返回 `mode/role/sampledAt`、Outbox 计数与最久等待、消费账本 `processing/retry/terminal`、过期 claim、Worker 消费者/恢复/归属/本进程 accepted、GPU 租约 `state/taskId/runId/attempt/expiresAt/blockedReason/fencingToken`；`dispatchReady` 来自 `SchedulingReadinessGate`。
+- `GET /api/observability/summary` 仍保持聚合，不含 taskId/userId；GPU 明细只放 admin-only `/dispatch`，避免把高基数身份写进指标或普通用户页面。
+- 前端 `RuntimeMonitorView.vue` 已改为五组卡片；db 模式显示 Worker“不适用”，Outbox 表不可读显示“不可用”，GPU 表不可读显示“unknown/不可用”，不用 0 冒充。
+- 消费积压当前读消费账本，不伪造 RabbitMQ `ready/unacked`；Broker 队列深度尚未接管理接口，页面明确写“Broker 未启用时仍展示表内积压”。
+- 单测 `DispatchOperationsServiceTest` 覆盖 db 模式五组字段与 blocked GPU 槽位；尚未跑全量测试与 CI。
+
 ## 7. 干净数据库启动手册的验收
 
 手册必须能从空库复现，而不是依赖某台机器的历史状态。验收项：
 
-1. 新建空库并执行第 3 节全部脚本，重复执行一次仍成功（`CREATE TABLE IF NOT EXISTS` 幂等）。
+1. 新建空库并执行第 3 节全部脚本，重复执行一次仍成功。**注意**：`sql/eladmin.sql` 是 DROP 重建，只有 `sys_dev_init_marker` 存在时才跳过它；幂等性由 marker + 增量脚本共同保证，不是“所有脚本都 IF NOT EXISTS”。
 2. 后端以 `DB_NAME=security_model` 启动，无缺表/缺列错误。
 3. 匿名健康检查、管理员登录、任务创建、取消、报告读取、导出、知识库和 Assistant 预览确认各走一遍。
 4. GPU 租约表存在，任务启动前能领取槽位，结束后释放。
@@ -149,13 +161,14 @@ SECURITY_MODEL_JWT_SECRET=<至少 32 字节>
 
 | 项 | 状态 | 证据/说明 |
 | --- | --- | --- |
-| 新库 `security_model` | 未执行 | 尚未创建，未执行任何脚本 |
+| 新库 `security_model` | 已完成（2026-11-17） | 从空库初始化 48 表；日志 `tmp/security-model-init2.log`、幂等复跑 `tmp/security-model-init-rerun.log` |
+| 新库启动验证 | 部分完成 | `DB_NAME=security_model` 在 18102 启动，健康检查 UP、管理员登录成功、执行池与 GPU 读取正常；知识索引 23 文档 / 574 chunks，检索返回 5 条引用。导出恢复重启收敛未实测 |
 | 旧 `eladmin` 迁移 | 未执行 | 未改表、未回填、未备份 |
 | `application.yml` 默认库 | 未改 | 仍为 `DB_NAME=eladmin` |
 | Tag `migration-r4-verified` | 未执行 | 尚未创建 |
 | `legacy` 分支/归档仓库 | 未执行 | 旧目录仍在主分支 |
-| 阶段 3 监控页面 | 未开始 | 只有指标接口基础，未做分组页面 |
-| 干净库启动手册 | 未验证 | 本文只给清单，未实跑 |
+| 阶段 3 监控页面 | 实现完成，待全量验证 | 后端五组字段 + 前端五组卡片；单测 2/2，前端 `vite build` 通过；未跑全量测试与 CI |
+| 干净库启动手册 | 已形成，部分验收 | `06-mvp-runbook.md` 已补“干净库启动手册”；第 7 节第 3、5 项尚未逐项执行 |
 
 执行后应在 `09-project-status.md` 和本表同步写入真实命令、日志路径、库名、Tag、分支和 run 记录；未执行项不得改成“通过”。
 

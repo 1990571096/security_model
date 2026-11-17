@@ -52,6 +52,14 @@ public class WorkerConsumerLifecycle {
         this.containerProvider = containerProvider;
     }
 
+    public boolean isConsumerStarted() {
+        return consumerStarted.get();
+    }
+
+    public boolean isRecovering() {
+        return recovering.get();
+    }
+
     public boolean startAfterRecovery(DispatchRecoveryCoordinator.RecoveryResult result) {
         if (!runtimePolicy.runsConsumer()) {
             return false;

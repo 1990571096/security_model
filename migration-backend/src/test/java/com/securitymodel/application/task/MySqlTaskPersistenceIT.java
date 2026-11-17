@@ -1250,7 +1250,9 @@ class MySqlTaskPersistenceIT {
                 mock(TaskDispatchConsumptionService.class),
                 mock(com.securitymodel.infrastructure.executor.AttemptProcessRegistry.class),
                 taskMapper, mock(TaskDispatchIntentService.class),
-                mock(OperationAuditService.class), mock(WorkerOwnershipProbe.class));
+                mock(OperationAuditService.class), mock(WorkerOwnershipProbe.class),
+                mock(GpuLeaseService.class), new SchedulingReadinessGate(),
+                mock(org.springframework.beans.factory.ObjectProvider.class));
 
         TaskCommandException error = assertThrows(TaskCommandException.class,
                 () -> operations.replayDead("old-attempt-message"));

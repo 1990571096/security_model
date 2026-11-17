@@ -2,11 +2,13 @@ package com.securitymodel.application.task;
 
 import com.securitymodel.application.audit.CurrentUserService;
 import com.securitymodel.application.audit.OperationAuditService;
+import com.securitymodel.domain.lease.GpuLease;
 import com.securitymodel.domain.task.DispatchOutbox;
 import com.securitymodel.domain.task.PreDefenseTask;
 import com.securitymodel.domain.task.TaskDispatchIntent;
 import com.securitymodel.infrastructure.executor.AttemptProcessRegistry;
 import com.securitymodel.infrastructure.persistence.mapper.PreDefenseTaskMapper;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.dao.DataAccessException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -30,6 +32,9 @@ public class DispatchOperationsService {
     private final TaskDispatchIntentService intentService;
     private final OperationAuditService auditService;
     private final WorkerOwnershipProbe ownershipProbe;
+    private final GpuLeaseService gpuLeaseService;
+    private final SchedulingReadinessGate readinessGate;
+    private final ObjectProvider<WorkerConsumerLifecycle> consumerLifecycleProvider;
 
     public DispatchOperationsService(
             CurrentUserService currentUserService,
@@ -40,7 +45,10 @@ public class DispatchOperationsService {
             PreDefenseTaskMapper taskMapper,
             TaskDispatchIntentService intentService,
             OperationAuditService auditService,
-            WorkerOwnershipProbe ownershipProbe) {
+            WorkerOwnershipProbe ownershipProbe,
+            GpuLeaseService gpuLeaseService,
+            SchedulingReadinessGate readinessGate,
+            ObjectProvider<WorkerConsumerLifecycle> consumerLifecycleProvider) {
         this.currentUserService = currentUserService;
         this.runtimePolicy = runtimePolicy;
         this.outboxService = outboxService;
@@ -50,6 +58,9 @@ public class DispatchOperationsService {
         this.intentService = intentService;
         this.auditService = auditService;
         this.ownershipProbe = ownershipProbe;
+        this.gpuLeaseService = gpuLeaseService;
+        this.readinessGate = readinessGate;
+        this.consumerLifecycleProvider = consumerLifecycleProvider;
     }
 
     public Map<String, Object> summary() {
@@ -58,6 +69,7 @@ public class DispatchOperationsService {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("mode", runtimePolicy.mode().name().toLowerCase());
         result.put("role", runtimePolicy.role().name().toLowerCase());
+        result.put("sampledAt", now.toString());
         try {
             result.put("outboxNew", outboxService.countByStatus(DispatchOutbox.NEW));
             result.put("outboxPublishing", outboxService.countByStatus(DispatchOutbox.PUBLISHING));
@@ -70,6 +82,13 @@ public class DispatchOperationsService {
             result.put("oldestWaitSeconds", oldest == null ? 0
                     : Math.max(0, Duration.between(oldest, now).getSeconds()));
             result.put("expiredConsumptionClaims", consumptionService.countExpiredProcessing(now));
+            result.put("consumptionProcessing", consumptionService.countByStatus("processing"));
+            result.put("consumptionRetry", consumptionService.countByStatus("retry"));
+            result.put("consumptionTerminal", consumptionService.countByStatus("terminal"));
+            LocalDateTime oldestProcessing = consumptionService.oldestProcessingAt();
+            result.put("oldestProcessingAt", oldestProcessing == null ? null : oldestProcessing.toString());
+            result.put("oldestProcessingSeconds", oldestProcessing == null ? 0
+                    : Math.max(0, Duration.between(oldestProcessing, now).getSeconds()));
             result.put("outboxAvailable", true);
         } catch (DataAccessException exception) {
             // The default db profile may not have migrated the R4 tables yet. Report the
@@ -78,10 +97,60 @@ public class DispatchOperationsService {
             result.put("outboxError", "OUTBOX_TABLE_UNAVAILABLE");
         }
         result.put("workerLocalAccepted", processRegistry.localAcceptedCount());
+        result.put("dispatchReady", readinessGate.isReady());
+        result.put("workerConsumerExpected", runtimePolicy.runsConsumer());
+        WorkerConsumerLifecycle lifecycle = consumerLifecycleProvider.getIfAvailable();
+        result.put("workerConsumerStarted", lifecycle != null && lifecycle.isConsumerStarted());
+        result.put("workerRecovering", lifecycle != null && lifecycle.isRecovering());
         Long ownerConnectionId = ownershipProbe.ownerConnectionId();
         result.put("workerOwned", ownerConnectionId != null);
         result.put("workerOwnerConnectionId", ownerConnectionId);
+        result.put("gpuSlot", gpuSlot());
         return result;
+    }
+
+    /** Admin-only slot detail; the /summary endpoint keeps aggregate-only fields. */
+    private Map<String, Object> gpuSlot() {
+        Map<String, Object> slot = new LinkedHashMap<>();
+        slot.put("available", true);
+        slot.put("slotId", gpuLeaseService.getSlotId());
+        try {
+            List<GpuLease> blocked = gpuLeaseService.findBlocked();
+            if (!blocked.isEmpty()) {
+                GpuLease lease = blocked.get(0);
+                slot.put("state", "blocked");
+                slot.put("taskId", lease.getTaskId());
+                slot.put("runId", lease.getRunId());
+                slot.put("attempt", lease.getAttempt());
+                slot.put("blockedAt", stringOrNull(lease.getBlockedAt()));
+                slot.put("blockedReason", lease.getBlockedReason());
+                slot.put("fencingToken", lease.getFencingToken());
+            } else {
+                List<GpuLease> active = gpuLeaseService.findActive();
+                if (!active.isEmpty()) {
+                    GpuLease lease = active.get(0);
+                    slot.put("state", "leased");
+                    slot.put("taskId", lease.getTaskId());
+                    slot.put("runId", lease.getRunId());
+                    slot.put("attempt", lease.getAttempt());
+                    slot.put("acquiredAt", stringOrNull(lease.getAcquiredAt()));
+                    slot.put("heartbeatAt", stringOrNull(lease.getHeartbeatAt()));
+                    slot.put("expiresAt", stringOrNull(lease.getExpiresAt()));
+                    slot.put("fencingToken", lease.getFencingToken());
+                } else {
+                    slot.put("state", "idle");
+                }
+            }
+        } catch (DataAccessException exception) {
+            slot.put("available", false);
+            slot.put("state", "unknown");
+            slot.put("error", "GPU_LEASE_TABLE_UNAVAILABLE");
+        }
+        return slot;
+    }
+
+    private String stringOrNull(LocalDateTime value) {
+        return value == null ? null : value.toString();
     }
 
     @Transactional(rollbackFor = Exception.class)

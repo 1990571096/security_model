@@ -88,4 +88,14 @@ public interface DispatchConsumptionMapper extends BaseMapper<DispatchConsumptio
             WHERE status = 'processing' AND claim_until < #{now}
             """)
     long countExpiredProcessing(@Param("now") LocalDateTime now);
+
+    @Select("""
+            SELECT COUNT(*) FROM sys_dispatch_consumption WHERE status = #{status}
+            """)
+    long countByStatus(@Param("status") String status);
+
+    @Select("""
+            SELECT MIN(updated_at) FROM sys_dispatch_consumption WHERE status = 'processing'
+            """)
+    LocalDateTime oldestProcessingAt();
 }
