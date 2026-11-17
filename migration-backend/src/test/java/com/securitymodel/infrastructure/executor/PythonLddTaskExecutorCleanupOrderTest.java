@@ -14,6 +14,7 @@ import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.inOrder;
@@ -42,13 +43,16 @@ class PythonLddTaskExecutorCleanupOrderTest {
     private final PythonLddTaskExecutor executor = new PythonLddTaskExecutor(
             taskMapper, new ObjectMapper(), fingerprints, gpuLeases, artifacts, registry,
             processGuard, metrics, "python", "", 30);
+    private final PythonLddTaskExecutor configured = new PythonLddTaskExecutor(
+            taskMapper, new ObjectMapper(), fingerprints, gpuLeases, artifacts, registry,
+            processGuard, metrics, "python", "stub-ldd.py", 30);
 
     @Test
     void clearsAcceptedOnlyAfterProcessArtifactAndLeaseDecision() throws Exception {
         when(fingerprints.getWorkspace()).thenReturn(tempDir.toString());
         when(processGuard.ensureGone(any(), any(), anyLong(), eq(true))).thenReturn(true);
 
-        executor.executeAndWait(request());
+        configured.executeAndWait(request());
 
         InOrder ordered = inOrder(processGuard, artifacts, gpuLeases, registry);
         ordered.verify(processGuard).ensureGone(any(), any(), anyLong(), eq(true));
@@ -58,12 +62,26 @@ class PythonLddTaskExecutorCleanupOrderTest {
     }
 
     @Test
+    void unconfiguredExecutorReleasesLeaseWithoutQuarantining() {
+        when(fingerprints.getWorkspace()).thenReturn(tempDir.toString());
+
+        executor.executeAndWait(request());
+
+        // No script means invoke() fails before any child can be started. Probing a missing
+        // process record would only yield UNKNOWN and keep the slot blocked forever.
+        verify(processGuard, never()).ensureGone(any(), any(), anyLong(), anyBoolean());
+        verify(gpuLeases).releaseQuietly("lease-token");
+        verify(gpuLeases, never()).markBlocked(any(), any(), any());
+        verify(registry).clearAccepted(7L, "run-1", 1);
+    }
+
+    @Test
     void cleanupFailureKeepsAcceptedMarkerAndDoesNotReleaseSlot() {
         when(fingerprints.getWorkspace()).thenReturn(tempDir.toString());
         when(processGuard.ensureGone(any(), any(), anyLong(), eq(true)))
                 .thenThrow(new IllegalStateException("process tree check failed"));
 
-        assertThrows(IllegalStateException.class, () -> executor.executeAndWait(request()));
+        assertThrows(IllegalStateException.class, () -> configured.executeAndWait(request()));
 
         verify(registry, never()).clearAccepted(any(), any(), any());
         verify(gpuLeases, never()).releaseQuietly(any());
@@ -75,7 +93,7 @@ class PythonLddTaskExecutorCleanupOrderTest {
         when(fingerprints.getWorkspace()).thenReturn(tempDir.toString());
         when(processGuard.ensureGone(any(), any(), anyLong(), eq(true))).thenReturn(false);
 
-        executor.executeAndWait(request());
+        configured.executeAndWait(request());
 
         InOrder ordered = inOrder(processGuard, gpuLeases, registry);
         ordered.verify(processGuard).ensureGone(any(), any(), anyLong(), eq(true));

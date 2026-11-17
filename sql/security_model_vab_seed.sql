@@ -1,5 +1,18 @@
 -- LDD real training-pre-defense algorithm registration.
 -- Run after sql/eladmin.sql and sql/security_model_mvp_seed.sql.
+--
+-- The runtime dataset path is deployment-specific and is therefore NOT stored in this
+-- file. The caller sets @vab_dataset_root before running the script, for example:
+--   SET @vab_dataset_root = '<absolute path to VaB-main/dataset>';
+--   SOURCE sql/security_model_vab_seed.sql;
+-- scripts/dev/InitializeSecurityModelDatabase.ps1 does this from -VabDatasetRoot or
+-- SECURITY_MODEL_VAB_DATASET_ROOT and verifies the directory exists first.
+--
+-- When @vab_dataset_root is NULL or empty the dataset row is skipped, while the LDD
+-- algorithm and its default hyper-parameter template are still registered. A dataset is
+-- never written with a guessed path or a fake "success" parse status.
+
+SET @vab_root = NULLIF(TRIM(@vab_dataset_root), '');
 
 INSERT INTO `sys_dataset` (
   `dataset_name`, `description`, `enabled`, `dataset_type`, `file_path`, `file_name`,
@@ -8,35 +21,51 @@ INSERT INTO `sys_dataset` (
 )
 SELECT
   'VaB CIFAR-10 Runtime Root',
-  'Local VaB dataset root used by the LDD research adapter. Configure a deployment-specific path outside the repository.',
+  'Runtime VaB dataset root supplied by the deployment. The initializer verifies the directory exists before marking it parsed.',
   b'1', 'image',
-  CONCAT('F:/Study/postgraduate/1', CONVERT(0xE4B88B USING utf8mb4),
-    '/VB backdoor defence/VaB-main/dataset'),
-  'VaB-main/dataset',
+  @vab_root,
+  SUBSTRING_INDEX(@vab_root, '/', -1),
   NULL, 50000, 3072, 10, 'success',
-  'External VaB runtime dataset root is available.',
+  'Deployment-provided VaB runtime dataset root; the caller verified the path.',
   NOW(), 'system', 'system', NOW(), NOW()
-WHERE NOT EXISTS (
-  SELECT 1 FROM `sys_dataset` WHERE `dataset_name` = 'VaB CIFAR-10 Runtime Root'
-);
+FROM (SELECT 1) AS anchor
+WHERE @vab_root IS NOT NULL
+  AND NOT EXISTS (
+    SELECT 1 FROM `sys_dataset` WHERE `dataset_name` = 'VaB CIFAR-10 Runtime Root'
+  );
 
+-- Only refresh the path when the caller supplied one. Running this script without a root
+-- must not erase a dataset path that a previous deployment already configured.
+-- CAST(... AS BINARY) keeps the comparison byte-wise so it does not depend on the
+-- connection collation.
+SET @vab_needs_update = (
+  SELECT COUNT(*) FROM `sys_dataset`
+  WHERE `dataset_name` = 'VaB CIFAR-10 Runtime Root'
+    AND (
+      `file_path` IS NULL
+      OR CAST(`file_path` AS BINARY) <> CAST(@vab_root AS BINARY)
+      OR `parse_status` <> 'success'
+      OR `enabled` <> b'1'
+    )
+);
 UPDATE `sys_dataset`
 SET
-  `description` = 'Local VaB dataset root used by the LDD research adapter. Configure a deployment-specific path outside the repository.',
+  `description` = 'Runtime VaB dataset root supplied by the deployment. The initializer verifies the directory exists before marking it parsed.',
   `enabled` = b'1',
   `dataset_type` = 'image',
-  `file_path` = CONCAT('F:/Study/postgraduate/1', CONVERT(0xE4B88B USING utf8mb4),
-    '/VB backdoor defence/VaB-main/dataset'),
-  `file_name` = 'VaB-main/dataset',
+  `file_path` = @vab_root,
+  `file_name` = SUBSTRING_INDEX(@vab_root, '/', -1),
   `sample_count` = 50000,
   `feature_count` = 3072,
   `class_count` = 10,
   `parse_status` = 'success',
-  `parse_message` = 'External VaB runtime dataset root is available.',
+  `parse_message` = 'Deployment-provided VaB runtime dataset root; the caller verified the path.',
   `parse_time` = NOW(),
   `update_by` = 'system',
   `update_time` = NOW()
-WHERE `dataset_name` = 'VaB CIFAR-10 Runtime Root';
+WHERE `dataset_name` = 'VaB CIFAR-10 Runtime Root'
+  AND @vab_root IS NOT NULL
+  AND @vab_needs_update > 0;
 
 INSERT INTO `sys_algorithm` (
   `algorithm_name`, `description`, `enabled`, `algorithm_type`, `defense_stage`,

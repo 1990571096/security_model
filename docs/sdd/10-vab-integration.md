@@ -111,8 +111,12 @@ must be described as “the raw CIFAR-10 subset reconstructed from LDD retained 
 - `progress.json` is written beside `request.json` and `result.json` in the Java attempt
   directory; it is a live diagnostic snapshot, not a completion result.
 - `security_model_vab_seed.sql` registers the developer-machine dataset root
-  `VaB CIFAR-10 Runtime Root`. Production deployments must create an equivalent
-  resource with their own local VaB dataset path.
+  `VaB CIFAR-10 Runtime Root` only when the caller supplies `@vab_dataset_root`
+  (the initializer reads `-VabDatasetRoot` / `SECURITY_MODEL_VAB_DATASET_ROOT` and
+  verifies the directory exists). Without that variable it registers the LDD algorithm
+  and its default hyper-parameter template but no dataset, so a deployment never gets a
+  guessed or fake-parsed path. Production deployments must supply their own local VaB
+  dataset path through that variable.
 
 ## Acceptance Criteria
 

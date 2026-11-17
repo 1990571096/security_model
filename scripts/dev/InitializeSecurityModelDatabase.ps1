@@ -1,6 +1,7 @@
 param(
     [string]$RootPassword = $env:MYSQL_IT_PASSWORD,
-    [string]$SchemaName = 'security_model'
+    [string]$SchemaName = 'security_model',
+    [string]$VabDatasetRoot = $env:SECURITY_MODEL_VAB_DATASET_ROOT
 )
 
 $ErrorActionPreference = 'Stop'
@@ -23,11 +24,14 @@ function Invoke-Sql([string]$sql, [string]$database = '') {
     if ($LASTEXITCODE -ne 0) { throw "mysql 执行失败: $sql" }
 }
 
-function Invoke-SqlFile([string]$relativePath) {
+function Invoke-SqlFile([string]$relativePath, [string]$preamble = '') {
     $path = Join-Path $repoRoot $relativePath
     if (!(Test-Path -LiteralPath $path)) { throw "SQL 文件不存在: $path" }
     $asciiPath = Join-Path $mysqlDir (Split-Path -Leaf $path)
-    Copy-Item -LiteralPath $path -Destination $asciiPath -Force
+    # 用 UTF-8 无 BOM 重写，便于给种子脚本注入 SET @vab_dataset_root 前置语句。
+    $content = [IO.File]::ReadAllText($path)
+    if ($preamble) { $content = $preamble + "`n" + $content }
+    [IO.File]::WriteAllText($asciiPath, $content, (New-Object Text.UTF8Encoding($false)))
     $source = $asciiPath.Replace('\', '/')
     $args = @('-uroot', "-p$RootPassword", '--default-character-set=utf8mb4', '-D', $SchemaName,
         '-e', "SOURCE $source")
@@ -88,6 +92,27 @@ foreach ($relative in $files) {
     Write-Host ("applied {0} ({1:n0} ms)" -f $relative, $watch.ElapsedMilliseconds)
 }
 
+# 可移植 VaB 种子：只有显式提供、且真实存在的目录才写入 sys_dataset。
+# 未提供时仍注册 LDD 算法与默认超参模板，但不伪造数据集路径或“已解析”状态。
+$vabPreamble = ''
+$vabMode = 'algorithm only; no dataset root provided'
+if (-not [string]::IsNullOrWhiteSpace($VabDatasetRoot)) {
+    $resolvedVab = Resolve-Path -LiteralPath $VabDatasetRoot -ErrorAction SilentlyContinue
+    if (-not $resolvedVab) { throw "VaB 数据集目录不存在: $VabDatasetRoot" }
+    $vabPath = $resolvedVab.Path
+    if (-not (Test-Path -LiteralPath $vabPath -PathType Container)) {
+        throw "VaB 数据集路径不是目录: $vabPath"
+    }
+    $vabPathForSql = $vabPath.Replace('\', '/').TrimEnd('/')
+    $escapedVab = $vabPathForSql.Replace("'", "''")
+    $vabPreamble = "SET @vab_dataset_root = '$escapedVab';"
+    $vabMode = "dataset root=$vabPathForSql"
+}
+$watch = [System.Diagnostics.Stopwatch]::StartNew()
+Invoke-SqlFile 'sql\security_model_vab_seed.sql' $vabPreamble
+$watch.Stop()
+Write-Host ("applied sql\security_model_vab_seed.sql ({0}, {1:n0} ms)" -f $vabMode, $watch.ElapsedMilliseconds)
+
 # security_model_gpu_lease_block.sql 只用于“已有 sys_gpu_lease 但缺 blocked 列”的老库。
 # 新库由 security_model_gpu_lease.sql 直接建出这两列，重复 ALTER 会报 Duplicate column。
 $blockedColumn = (Invoke-Sql "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='$SchemaName' AND table_name='sys_gpu_lease' AND column_name='blocked_at'" $SchemaName).Trim()
@@ -117,3 +142,5 @@ if ($missing.Count -gt 0) {
 
 Write-Host "security_model initialized: tables=$tableCount"
 Invoke-Sql "SELECT user_id, username, enabled, is_admin FROM sys_user ORDER BY user_id LIMIT 10" $SchemaName
+Invoke-Sql "SELECT COUNT(*) AS dataset_count, SUM(parse_status = 'success') AS parsed_dataset_count FROM sys_dataset" $SchemaName
+Invoke-Sql "SELECT algorithm_id, algorithm_name, defense_stage, enabled, implementation_path FROM sys_algorithm WHERE implementation_path LIKE 'vab:%' ORDER BY algorithm_id" $SchemaName

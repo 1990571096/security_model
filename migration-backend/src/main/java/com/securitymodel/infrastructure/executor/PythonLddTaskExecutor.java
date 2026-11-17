@@ -93,6 +93,9 @@ public class PythonLddTaskExecutor implements DefenseTaskExecutor {
         MDC.put("runId", request.getRunId() == null ? "" : request.getRunId());
         MDC.put("attempt", String.valueOf(request.getAttempt()));
         ExecutionContext context = null;
+        // invoke() rejects a blank script before writing request.json, before the pre-start
+        // process marker and before ProcessBuilder.start(), so no child can exist in that case.
+        boolean executorConfigured = StringUtils.hasText(pythonScript);
         try {
             if (isCanceled(request)) {
                 metricOutcome = "canceled";
@@ -133,7 +136,12 @@ public class PythonLddTaskExecutor implements DefenseTaskExecutor {
             boolean cleanupDecisionComplete = false;
             try {
                 // Never release the slot while any known executor process may still be alive.
-                boolean treeGone = processGuard.ensureGone(process, taskDir, 3000, true);
+                // When the executor was never configured nothing was started, so probing the
+                // tree would only produce a missing-record UNKNOWN and quarantine the slot
+                // forever; release the lease directly instead.
+                boolean treeGone = executorConfigured
+                        ? processGuard.ensureGone(process, taskDir, 3000, true)
+                        : true;
                 if (context != null) {
                     artifactPolicy.finalizeAttempt(context.taskDir());
                 }

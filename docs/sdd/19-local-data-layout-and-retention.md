@@ -13,7 +13,7 @@
 | 任务目录内文件 | `request.json`、`result.json`、`stdout.log`、`stderr.log`、`progress.json`、`manifest.json`、`process.json`、`python-children.json`（运行中） | 同上、`ExecutorArtifactPolicy` |
 | 算法产物根 | 默认 `<attempt>/artifacts`；若设置 `SECURITY_MODEL_VAB_RESULT_ROOT`，改为 `<该根>/<时间戳>-<算法>-<任务名>/` | `algorithm_entry.py` 的 `task_output_root()` |
 | 产物内容 | `generated_<source>.py`、`execution.log`、`*.txt` 日志、`*.png`、`*.pth`、`selected_indices_<ratio>.npy` | 同上 |
-| 数据集位置 | `sys_dataset.file_path` 保存的绝对路径（当前种子指向外部 VaB 工程 `.../VaB-main/dataset`） | `security_model_vab_seed.sql` |
+| 数据集位置 | `sys_dataset.file_path` 保存的绝对路径（`security_model_vab_seed.sql` 由 `@vab_dataset_root` / `SECURITY_MODEL_VAB_DATASET_ROOT` 注入，当前新库指向外部 VaB 工程 `.../VaB-main/dataset`；未提供变量时只注册算法，不写数据集行） | `security_model_vab_seed.sql`、`InitializeSecurityModelDatabase.ps1` |
 | 数据集指纹 | 记录 `realPath`、类型、大小、修改时间；仅对**普通文件**且 ≤1GB 计算 SHA-256，目录不算内容摘要 | `ExecutionFingerprintService.fingerprint()` |
 | 导出产物 | `<任务产物根>/clean-subset-exports/clean-subset-ratio-<r>.zip`、`.metadata.json`、`.export.log`，写入时先落 `.part` 再原子改名 | `CleanSubsetExportExecutor` |
 | 保留/清理 | `ExecutorArtifactRetentionJob` 已存在，默认 `retention-days=0` 不删除；只删终态任务非当前 attempt，且删除前做 real-path containment（拒绝 symlink/junction/`..` 越界） | `ExecutorArtifactRetentionJob` |
