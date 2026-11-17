@@ -1,3 +1,10 @@
+/**
+ * 演示夹具（DEMO FIXTURES ONLY）。
+ *
+ * 当前没有任何页面导入本文件：工作台、案例库、算法详情都已改为真实接口或显式演示占位。
+ * 如果后续在答辩/截图里复用这些数据，必须在 UI 上标注“演示占位”，不得把这里的
+ * cleanAccuracy / attackSuccessRate / retentionRate 当成真实实验指标或面试经历。
+ */
 export const demoDatasets = [
   {
     datasetId: 'DS-2026-001',

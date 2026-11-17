@@ -1,6 +1,6 @@
 # 项目目标与阶段进度说明
 
-更新时间：2026-11-17（阶段 3 运行监控按五组拆分：后端 `GET /api/observability/dispatch` 返回 Outbox / Worker / 消费积压 / GPU 租约明细，前端 `RuntimeMonitorView.vue` 改为五组卡片并区分“不可用/不适用”；新库 `security_model` 已从空库初始化 48 表并以 `DB_NAME=security_model` 启动验证登录、执行池、知识索引 23 文档/574 chunks 与 5 条引用检索；导出恢复用注入的 1 条 `running` + 1 条 `pending` 导出行实测 `scanned=2, recovered=2` 并写审计（故障注入，非真实导出中断）；`sql/eladmin.sql` 的 DROP 行为与文档“全部 IF NOT EXISTS”冲突已修正，新增 `scripts/dev/InitializeSecurityModelDatabase.ps1`。本机 `verify -Pmysql-it` 为 **289 单测 + 106 IT，0 失败/9 跳过**（Redis 向量/Redis 缓存/Rabbit Broker 环境依赖），日志 `tmp/stage3-full-verify.log`；功能提交 `f70711f`，CI run `43995845889` backend/python/frontend 全绿；收尾前端标签修复 `2d716a8`，run `43996551480` 同样全绿。此前 2026-11-16 记录：R4 契约已修订并实现；六项评审缺陷已整改；真实 RabbitMQ 4.1.8 + Erlang 27.3.4.18 + 隔离 schema/vhost + 双 JVM + 短 Python 桩已实测 R4-01..R4-08，**R4 整体仍保留长期 DB 故障/多任务退避压测边界，不能写成生产部署通过**；2026-11-16 全量为 **287 单测 + 106 IT**，日志 `tmp/stage2-full-verify-new.log`；run `43846823071` backend/python/frontend 全绿）
+更新时间：2026-11-17（阶段 3 运行监控按五组拆分：后端 `GET /api/observability/dispatch` 返回 Outbox / Worker / 消费积压 / GPU 租约明细，前端 `RuntimeMonitorView.vue` 改为五组卡片并区分“不可用/不适用”；新库 `security_model` 已从空库初始化 48 表并以 `DB_NAME=security_model` 启动验证登录、执行池、知识索引 23 文档/574 chunks 与 5 条引用检索；导出恢复用注入的 1 条 `running` + 1 条 `pending` 导出行实测 `scanned=2, recovered=2` 并写审计（故障注入，非真实导出中断）；`sql/eladmin.sql` 的 DROP 行为与文档“全部 IF NOT EXISTS”冲突已修正，新增 `scripts/dev/InitializeSecurityModelDatabase.ps1`。本机 `verify -Pmysql-it` 为 **294 单测 + 106 IT，0 失败/2 跳过**（仅 `RabbitDispatchBrokerIT` 未设 `RABBIT_IT`；Redis 向量/缓存与知识检索 IT 已随 `REDIS_IT=true` 执行），日志 `tmp/stage4-full-verify2.log`；功能提交 `f70711f`，CI run `43995845889` backend/python/frontend 全绿；收尾前端标签修复 `2d716a8`，run `43996551480` 同样全绿；阶段 4 工作台已改用 `GET /api/dashboard/overview` 真实聚合并移除 90.0%/4.7% 等演示常量，案例库保留演示占位但加显式警示与“演示”标签，算法详情改按 `algorithmId` 读取真实目录。此前 2026-11-16 记录：R4 契约已修订并实现；六项评审缺陷已整改；真实 RabbitMQ 4.1.8 + Erlang 27.3.4.18 + 隔离 schema/vhost + 双 JVM + 短 Python 桩已实测 R4-01..R4-08，**R4 整体仍保留长期 DB 故障/多任务退避压测边界，不能写成生产部署通过**；2026-11-16 全量为 **287 单测 + 106 IT**，日志 `tmp/stage2-full-verify-new.log`；run `43846823071` backend/python/frontend 全绿）
 
 2026-11-13 文档与实现迭代：R2 第四切片后实现 R3-A/R3-B 代码（持久调度意图、条件抢占、统一启动恢复、有界 pending 扫描、create/start/retry 请求幂等），并完成 R5 第一批（运行指标、日志关联、Redis 代际缓存、管理员观测接口、Actuator 最小暴露、真实统计页），本机实跑 127 项单测 + 41 项 MySQL IT + 1 项真实 Redis 缓存代际 IT；带意图的真实 JVM 重启、R3-04 崩溃演练、真实 Redis 宕机、生产库建表仍未完成，R3 仍待外部复审。文档中未执行的真实 LDD 与生产库迁移仍保持未验证状态。
 
@@ -445,6 +445,7 @@ Vue 2 工程继续作为业务回归和回滚基线，不参与迁移版主流�
 - 当前不接入训练中防御和训练后防御的真实执行。
 - 三大防御阶段及算法卡片保留为完整展示架构，统一使用“展示占位”状态。
 - 工作台、案例库为演示常量，不得作为真实运行数据或指标；运行监控已接真实接口，“运行中任务”取 MySQL `status=running` 统计，线程池 `activeCount` 单独表示活动线程。
+- 2026-11-17 阶段 4 起，工作台改为 `GET /api/dashboard/overview` 的真实聚合：任务计数、近 7 日任务趋势、数据集/算法登记数、有清洗结果的成功任务数、最近任务与执行池状态；攻击成功率、干净准确率、清洗保留率因未接入模型评估链路，页面显示“未采集”，不再展示 90.0% / 4.7% 等演示常量。案例库仍是演示占位，页面已加显式警示与“演示”标签；算法详情改为按 `algorithmId` 读取真实 `/api/algorithm/{id}`，指标同样标注“未采集”。
 - 当前不以工程验证结果替代论文正式实验结论。
 - 多用户隔离已在 R1 落地：任务归属以 `owner_user_id` 为准，服务端统一校验；R2 已补 GPU 单槽租约、进程记录/整树回收、隔离槽位、启动就绪门、导出失败收敛、适配器陈旧锁接管与失败码细分；日志运行期硬上限与自动重试队列仍未做。
 

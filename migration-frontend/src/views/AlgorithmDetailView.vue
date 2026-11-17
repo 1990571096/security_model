@@ -1,55 +1,170 @@
 <template>
   <div class="page detail-page">
-    <div class="detail-topbar"><el-button text :icon="ArrowLeft" @click="$router.push('/algorithms')">返回算法资源</el-button><span class="muted">算法详情 / {{ algorithm.name }}</span></div>
-    <section class="detail-hero">
-      <div class="algorithm-icon large-icon">{{ algorithm.shortName }}</div>
-      <div class="detail-hero-copy"><div class="detail-title-row"><div><span class="eyebrow">{{ algorithm.stage }} · {{ algorithm.category }}</span><h2>{{ algorithm.name }}</h2></div><el-tag type="success" size="large">已接入运行</el-tag></div><p>{{ algorithm.description }}</p><div class="detail-meta"><span>版本 {{ algorithm.version }}</span><span>责任组 {{ algorithm.owner }}</span><span>输入：{{ algorithm.input }}</span><span>输出：{{ algorithm.output }}</span></div></div>
-    </section>
-
-    <div class="detail-stat-grid">
-      <el-card v-for="item in metricCards" :key="item.label" shadow="never"><span class="muted">{{ item.label }}</span><strong :class="item.className">{{ item.value }}</strong><small>{{ item.note }}</small></el-card>
+    <div class="detail-topbar">
+      <el-button text :icon="ArrowLeft" @click="$router.push('/algorithms')">返回算法资源</el-button>
+      <span class="muted">算法详情 / {{ algorithm?.algorithmName || '未找到' }}</span>
     </div>
 
-    <el-tabs v-model="activeTab" class="detail-tabs">
-      <el-tab-pane label="算法说明" name="overview">
-        <section class="content-grid detail-content-grid">
-          <el-card shadow="never"><template #header><strong>算法原理</strong></template><p class="detail-paragraph">{{ algorithm.principle }}</p><div class="flow-list"><div v-for="(step, index) in workflow" :key="step.title" class="flow-item"><span>{{ String(index + 1).padStart(2, '0') }}</span><div><strong>{{ step.title }}</strong><p>{{ step.detail }}</p></div></div></div></el-card>
-          <el-card shadow="never"><template #header><strong>适用场景</strong></template><div class="scene-list"><div><span>威胁类型</span><strong>数据投毒 / 后门样本</strong></div><div><span>适用阶段</span><strong>{{ algorithm.stage }}</strong></div><div><span>数据类型</span><strong>图像分类训练集</strong></div><div><span>结果形态</span><strong>{{ algorithm.output }}</strong></div></div><el-alert title="当前平台已支持统一任务调用与结果归档" type="success" :closable="false" show-icon /></el-card>
-        </section>
-      </el-tab-pane>
-      <el-tab-pane label="参数配置" name="parameters">
-        <el-card shadow="never"><template #header><div class="card-heading"><strong>参数配置快照</strong><el-tag type="info">生产配置 / 2026-09-08</el-tag></div></template><el-table :data="parameterRows" border><el-table-column prop="name" label="参数名称" width="220" /><el-table-column prop="value" label="当前值" width="220" /><el-table-column prop="description" label="参数说明" /><el-table-column label="校验状态" width="120"><template #default><el-tag type="success" size="small">已校验</el-tag></template></el-table-column></el-table></el-card>
-        <el-card shadow="never" class="detail-card-gap"><template #header><strong>运行环境</strong></template><div class="environment-grid"><div><span>Python</span><strong>3.10.12</strong></div><div><span>PyTorch</span><strong>2.2.2</strong></div><div><span>运行设备</span><strong>CUDA / RTX 3090</strong></div><div><span>随机种子</span><strong>2026</strong></div></div></el-card>
-      </el-tab-pane>
-      <el-tab-pane label="实验结果" name="results">
-        <el-card shadow="never"><template #header><div class="card-heading"><strong>实验结果对比</strong><span class="muted">指标越低越安全，准确率保持率越高越好</span></div></template><el-table :data="comparisonRows" border><el-table-column prop="name" label="实验方案" min-width="180" /><el-table-column prop="accuracy" label="干净准确率" width="150" /><el-table-column prop="asr" label="攻击成功率" width="150"><template #default="{ row }"><span :class="row.name.includes(algorithm.name) ? 'success-text' : ''">{{ row.asr }}</span></template></el-table-column><el-table-column prop="retention" label="样本保留率" width="150" /><el-table-column label="综合评价" min-width="180"><template #default="{ row }"><el-tag :type="row.name.includes(algorithm.name) ? 'success' : 'info'">{{ row.name.includes(algorithm.name) ? '推荐方案' : '参考基线' }}</el-tag></template></el-table-column></el-table></el-card>
-        <div class="result-note"><el-alert title="结果说明" :description="`${algorithm.name} 已完成当前配置下的实验执行，结果指标、清洗索引和运行日志已写入任务报告。`" type="success" :closable="false" show-icon /></div>
-      </el-tab-pane>
-    </el-tabs>
+    <el-alert v-if="errorMessage" :title="errorMessage" type="warning" :closable="false" show-icon class="page-alert" />
+
+    <template v-if="algorithm">
+      <section class="detail-hero">
+        <div class="algorithm-icon large-icon">{{ shortName }}</div>
+        <div class="detail-hero-copy">
+          <div class="detail-title-row">
+            <div><span class="eyebrow">{{ stageLabel }} · {{ algorithm.algorithmCategory || '未分类' }}</span><h2>{{ algorithm.algorithmName }}</h2></div>
+            <div>
+              <el-tag :type="algorithm.enabled ? 'success' : 'info'" size="large">{{ algorithm.enabled ? '已登记' : '已停用' }}</el-tag>
+              <el-tag :type="isRunnable ? 'success' : 'warning'" size="large">{{ isRunnable ? '已接入运行' : '展示占位' }}</el-tag>
+            </div>
+          </div>
+          <p>{{ algorithm.description || '暂无算法描述。' }}</p>
+          <div class="detail-meta">
+            <span>算法 ID {{ algorithm.algorithmId }}</span>
+            <span>类型 {{ typeLabel }}</span>
+            <span>实现路径 {{ algorithm.implementationPath || '未登记' }}</span>
+          </div>
+        </div>
+      </section>
+
+      <div class="detail-stat-grid">
+        <el-card v-for="item in metricCards" :key="item.label" shadow="never">
+          <span class="muted">{{ item.label }}</span><strong :class="item.className">{{ item.value }}</strong><small>{{ item.note }}</small>
+        </el-card>
+      </div>
+
+      <el-tabs v-model="activeTab" class="detail-tabs">
+        <el-tab-pane label="算法说明" name="overview">
+          <section class="content-grid detail-content-grid">
+            <el-card shadow="never">
+              <template #header><strong>算法元数据</strong></template>
+              <el-descriptions :column="2" border>
+                <el-descriptions-item label="算法名称">{{ algorithm.algorithmName }}</el-descriptions-item>
+                <el-descriptions-item label="算法分类">{{ algorithm.algorithmCategory || '未分类' }}</el-descriptions-item>
+                <el-descriptions-item label="防御阶段">{{ stageLabel }}</el-descriptions-item>
+                <el-descriptions-item label="算法类型">{{ typeLabel }}</el-descriptions-item>
+                <el-descriptions-item label="目录状态">{{ algorithm.enabled ? '启用' : '停用' }}</el-descriptions-item>
+                <el-descriptions-item label="实现路径">{{ algorithm.implementationPath || '未登记' }}</el-descriptions-item>
+                <el-descriptions-item label="描述" :span="2">{{ algorithm.description || '暂无描述' }}</el-descriptions-item>
+              </el-descriptions>
+            </el-card>
+            <el-card shadow="never">
+              <template #header><strong>接入状态</strong></template>
+              <div class="scene-list">
+                <div><span>本平台执行</span><strong>{{ isRunnable ? '已接入 VaB LDD 真实执行' : '未接入真实执行' }}</strong></div>
+                <div><span>结果形态</span><strong>{{ isRunnable ? '清洗结果 JSON + 产物目录' : '仅算法元数据' }}</strong></div>
+                <div><span>指标采集</span><strong>未接入</strong></div>
+                <div><span>展示口径</span><strong>{{ isRunnable ? '真实运行' : '展示占位' }}</strong></div>
+              </div>
+              <el-alert
+                :title="isRunnable ? '该算法可创建训练前 LDD 清洗任务，结果写入任务报告。' : '该算法当前只做目录登记与展示，不会创建真实任务，也不产生实验指标。'"
+                :type="isRunnable ? 'success' : 'warning'" :closable="false" show-icon />
+            </el-card>
+          </section>
+        </el-tab-pane>
+
+        <el-tab-pane label="参数配置" name="parameters">
+          <el-card shadow="never">
+            <template #header><div class="card-heading"><strong>默认参数配置</strong><el-tag type="info">来自 sys_algorithm.default_config</el-tag></div></template>
+            <el-table v-if="parameterRows.length" :data="parameterRows" border>
+              <el-table-column prop="name" label="参数名称" width="240" />
+              <el-table-column prop="value" label="默认值" />
+            </el-table>
+            <el-empty v-else description="该算法没有登记默认参数" :image-size="56" />
+          </el-card>
+          <el-card shadow="never" class="detail-card-gap">
+            <template #header><strong>运行环境</strong></template>
+            <div class="environment-grid">
+              <div><span>执行方式</span><strong>{{ isRunnable ? '外部 Python 进程 / VaB' : '未接入' }}</strong></div>
+              <div><span>任务队列</span><strong>Spring 有界执行池</strong></div>
+              <div><span>数据来源</span><strong>MySQL 资源目录</strong></div>
+              <div><span>环境指标</span><strong>未采集</strong></div>
+            </div>
+            <el-alert title="运行环境版本（Python / PyTorch / GPU 型号）由执行机决定，工作台不做展示，避免把演示常量当成真实环境。" type="info" :closable="false" show-icon />
+          </el-card>
+        </el-tab-pane>
+
+        <el-tab-pane label="实验结果" name="results">
+          <el-card shadow="never">
+            <template #header><div class="card-heading"><strong>实验结果</strong><el-tag type="info">未采集</el-tag></div></template>
+            <el-empty description="该算法尚未产生平台侧真实实验结果；攻击成功率、干净准确率等指标需要模型评估链路。" :image-size="72">
+              <el-button v-if="isRunnable" type="primary" @click="$router.push('/tasks')">去任务中心创建真实任务</el-button>
+            </el-empty>
+          </el-card>
+        </el-tab-pane>
+      </el-tabs>
+    </template>
   </div>
 </template>
 
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { ArrowLeft } from '@element-plus/icons-vue'
-import { demoAlgorithms } from '../data/demoData'
+import { getAlgorithm } from '../api/algorithm'
 
 const route = useRoute()
 const activeTab = ref('overview')
-const algorithm = computed(() => demoAlgorithms.find(item => item.key === route.params.algorithmKey) || demoAlgorithms[0])
+const algorithm = ref(null)
+const errorMessage = ref('')
+
+const STAGE_LABELS = { pre: '训练前防御', during: '训练中防御', post: '训练后防御' }
+const TYPE_LABELS = {
+  data_cleaning: '数据清洗',
+  backdoor_detection: '后门检测',
+  model_training: '模型训练',
+  model_evaluation: '模型评估',
+  model_purification: '模型修复'
+}
+const stageLabel = computed(() => STAGE_LABELS[algorithm.value?.defenseStage] || '未标注阶段')
+const typeLabel = computed(() => TYPE_LABELS[algorithm.value?.algorithmType] || algorithm.value?.algorithmType || '未标注类型')
+const shortName = computed(() => (algorithm.value?.algorithmName || 'NA').slice(0, 3).toUpperCase())
+const isRunnable = computed(() => algorithm.value?.implementationPath === 'vab://pre-defense/ldd')
+
 const metricCards = computed(() => [
-  { label: '干净准确率', value: algorithm.value.metrics.cleanAccuracy, note: '清洗后模型正常任务性能', className: '' },
-  { label: '攻击成功率', value: algorithm.value.metrics.attackSuccessRate, note: '目标后门触发成功率', className: 'success-text' },
-  { label: '样本保留率', value: algorithm.value.metrics.retentionRate, note: `移除样本 ${algorithm.value.metrics.removedCount}`, className: '' },
-  { label: '实验状态', value: '已验证', note: '统一接口能力状态', className: 'success-text' }
+  { label: '干净准确率', value: '未采集', note: '需要模型评估链路', className: '' },
+  { label: '攻击成功率', value: '未采集', note: '需要模型评估链路', className: '' },
+  { label: '样本保留率', value: '未采集', note: '请在任务报告查看清洗纯净度', className: '' },
+  { label: '目录状态', value: algorithm.value?.enabled ? '已启用' : '已停用', note: '来自 MySQL 算法目录', className: 'success-text' }
 ])
-const parameterRows = computed(() => algorithm.value.parameters.map(item => ({ name: item[0], value: item[1], description: item[2] })))
-const comparisonRows = computed(() => algorithm.value.comparisons.map(item => ({ name: item[0], accuracy: item[1], asr: item[2], retention: item[3] })))
-const workflow = [
-  { title: '数据读取与校验', detail: '检查样本、标签和元数据完整性，建立本次实验的数据版本标识。' },
-  { title: '风险分数计算', detail: '提取样本特征并计算异常分数，保留可追溯的中间结果。' },
-  { title: '索引筛选与重建', detail: '按隔离比例生成保留索引和移除索引，重建清洗后的数据子集。' },
-  { title: '报告归档', detail: '写入运行标识、参数快照、指标结果和可下载产物。' }
-]
+
+const parameterRows = computed(() => {
+  const raw = algorithm.value?.defaultConfig
+  if (!raw) return []
+  try {
+    const parsed = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return []
+    return Object.entries(parsed).map(([name, value]) => ({
+      name,
+      value: typeof value === 'string' ? value : JSON.stringify(value)
+    }))
+  } catch (error) {
+    return []
+  }
+})
+
+function unwrap(response) {
+  return response?.data?.data ?? response?.data ?? response ?? null
+}
+
+async function load() {
+  errorMessage.value = ''
+  algorithm.value = null
+  const algorithmId = Number(route.params.algorithmKey)
+  if (!Number.isFinite(algorithmId) || algorithmId <= 0) {
+    errorMessage.value = '算法标识无效：请从算法资源列表进入详情页。'
+    return
+  }
+  try {
+    const data = unwrap(await getAlgorithm(algorithmId))
+    algorithm.value = data && typeof data === 'object' ? data : null
+    if (!algorithm.value) errorMessage.value = '算法不存在或已被删除。'
+  } catch (error) {
+    errorMessage.value = error.response?.status === 404
+      ? '算法不存在或已被删除。'
+      : (error.response?.data?.message || '算法详情读取失败，请检查服务连接后重试。')
+  }
+}
+
+onMounted(load)
 </script>

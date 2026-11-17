@@ -206,6 +206,7 @@ SOURCE sql/security_model_assistant.sql;
 - `GET /actuator/metrics`、`GET /actuator/info`：仅管理员 JWT；匿名返回 401。
 - `GET /api/observability/summary`：仅管理员；返回任务状态计数、执行池、GPU 槽位和缓存计数，不返回 taskId/userId/路径。
 - `GET /api/observability/dispatch`：仅管理员；返回阶段 3 五组运行事实：`mode/role/sampledAt`、API 线程池以外的 Outbox 计数与最久等待、Worker 消费者/归属/本进程 accepted、消费账本 `processing/retry/terminal` 与过期 claim、GPU 租约 `state/taskId/runId/attempt/expiresAt/blockedReason`。该接口是运维明细，允许 taskId/runId；`/summary` 保持聚合不含身份。`dispatchReady` 为 false 时表示启动恢复未完成，不应把任务启动失败当成普通 500。
+- `GET /api/dashboard/overview?days=7`：登录用户可读，按 `TaskAccessGuard` 范围过滤（普通用户仅本人、管理员跨用户读开启时全库）。返回 `tasks` 状态计数、`taskTrend` 近 N 日按 `create_time` 分日的真实计数、`resources` 数据集/算法登记数、`reportReadiness` 有清洗结果的成功任务数、`recentTasks` 最近 5 条和执行池摘要。`metrics.available=false` 时必须显示“未采集”，不得用 0 或演示常量代替攻击成功率/干净准确率。
 - 不可用态必须和 0 分开：`outboxAvailable=false`（R4 表未迁移）、`gpuSlot.available=false`（租约表不可读）、`workerConsumerExpected=false`（db 模式无独立 Worker）分别显示为“不可用/不适用”，不能显示成 0 个积压或 0 个消费者。
 - 指标名：`security_model_task_count`、`security_model_stale_running_tasks`、`security_model_executor_tasks`、`security_model_gpu_slot`、`security_model_recovery_total`、`security_model_task_execution_duration`、`security_model_cache_requests`、`security_model_cache_stale_fill_skipped_total`。
 - 指标标签只有 status/state/result/outcome 等低基数枚举；taskId、runId、userId 不得作为标签。

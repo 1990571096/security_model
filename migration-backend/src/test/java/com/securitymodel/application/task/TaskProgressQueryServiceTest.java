@@ -12,6 +12,7 @@ import com.securitymodel.infrastructure.persistence.mapper.PreDefenseTaskMapper;
 import org.junit.jupiter.api.Test;
 import org.springframework.security.access.AccessDeniedException;
 
+import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -70,6 +71,39 @@ class TaskProgressQueryServiceTest {
         assertEquals("current-user", stats.get("scope"));
         // One total plus five per-status counts, all through the scoped wrapper.
         verify(mapper, times(6)).selectCount(any(Wrapper.class));
+    }
+
+    @Test
+    void successWithResultCountOnlyCountsCompletedTasksWithAStoredResult() {
+        when(mapper.selectCount(any(Wrapper.class))).thenReturn(3L);
+        when(currentUser.userId()).thenReturn(7L);
+
+        assertEquals(3L, service.successWithResultCount());
+        verify(mapper, times(1)).selectCount(any(Wrapper.class));
+    }
+
+    @Test
+    void trendGroupsScopedTasksByDayAndRejectsUnboundedWindows() {
+        PreDefenseTask success = task(1L);
+        success.setCreateTime(LocalDate.now().atTime(10, 0));
+        success.setStatus("success");
+        PreDefenseTask failed = task(2L);
+        failed.setCreateTime(LocalDate.now().atTime(11, 0));
+        failed.setStatus("failed");
+        when(mapper.selectList(any(Wrapper.class))).thenReturn(List.of(success, failed));
+        when(currentUser.userId()).thenReturn(7L);
+
+        var trend = service.trend(3);
+
+        assertEquals(3, trend.size());
+        assertEquals(LocalDate.now().minusDays(2).toString(), trend.get(0).get("date"));
+        assertEquals(2L, trend.get(2).get("total"));
+        assertEquals(1L, trend.get(2).get("success"));
+        assertEquals(1L, trend.get(2).get("failed"));
+        assertEquals(0L, trend.get(2).get("pending"));
+        verify(mapper, times(1)).selectList(any(Wrapper.class));
+        assertThrows(IllegalArgumentException.class, () -> service.trend(0));
+        assertThrows(IllegalArgumentException.class, () -> service.trend(31));
     }
 
     @Test

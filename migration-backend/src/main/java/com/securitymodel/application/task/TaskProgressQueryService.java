@@ -13,7 +13,9 @@ import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -30,6 +32,7 @@ public class TaskProgressQueryService {
 
     private static final long NO_OWNER_SENTINEL = -1L;
     private static final String DEMO_ORIGIN = "demo";
+    private static final List<String> STATUSES = List.of("pending", "running", "success", "failed", "canceled");
 
     private final PreDefenseTaskMapper taskMapper;
     private final ResourceQueryService resourceQueryService;
@@ -121,6 +124,66 @@ public class TaskProgressQueryService {
 
     private LambdaQueryWrapper<PreDefenseTask> scopedCount(String status) {
         return applyScope(Wrappers.<PreDefenseTask>lambdaQuery().eq(PreDefenseTask::getStatus, status));
+    }
+
+    /**
+     * Real per-day task counts for the workspace trend. Only rows the caller may read are
+     * counted, and the window is bounded so a stale or unknown client cannot request an
+     * unbounded scan.
+     */
+    public List<Map<String, Object>> trend(int days) {
+        if (days < 1 || days > 30) {
+            throw new IllegalArgumentException("趋势天数须为 1 到 30");
+        }
+        LocalDate today = LocalDate.now();
+        LocalDate firstDay = today.minusDays(days - 1L);
+        LocalDateTime from = firstDay.atStartOfDay();
+        LocalDateTime until = today.plusDays(1).atStartOfDay();
+        List<PreDefenseTask> tasks = taskMapper.selectList(
+                applyScope(Wrappers.<PreDefenseTask>lambdaQuery()
+                        .ge(PreDefenseTask::getCreateTime, from)
+                        .lt(PreDefenseTask::getCreateTime, until)));
+
+        Map<LocalDate, Map<String, Long>> grouped = new LinkedHashMap<>();
+        for (int offset = 0; offset < days; offset++) {
+            Map<String, Long> counts = new LinkedHashMap<>();
+            counts.put("total", 0L);
+            for (String status : STATUSES) {
+                counts.put(status, 0L);
+            }
+            grouped.put(firstDay.plusDays(offset), counts);
+        }
+        for (PreDefenseTask task : tasks) {
+            if (task.getCreateTime() == null) {
+                continue;
+            }
+            Map<String, Long> counts = grouped.get(task.getCreateTime().toLocalDate());
+            if (counts == null) {
+                continue;
+            }
+            counts.merge("total", 1L, Long::sum);
+            String status = task.getStatus();
+            if (status != null && counts.containsKey(status)) {
+                counts.merge(status, 1L, Long::sum);
+            }
+        }
+
+        List<Map<String, Object>> result = new ArrayList<>(days);
+        grouped.forEach((date, counts) -> {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("date", date.toString());
+            row.putAll(counts);
+            result.add(row);
+        });
+        return result;
+    }
+
+    /** Successful tasks with a stored cleaning result: the only report artifact this table can prove. */
+    public long successWithResultCount() {
+        return taskMapper.selectCount(applyScope(Wrappers.<PreDefenseTask>lambdaQuery()
+                .eq(PreDefenseTask::getStatus, "success")
+                .isNotNull(PreDefenseTask::getCleaningResult)
+                .ne(PreDefenseTask::getCleaningResult, "")));
     }
 
     private List<TaskProgressView> toViews(List<PreDefenseTask> tasks) {
