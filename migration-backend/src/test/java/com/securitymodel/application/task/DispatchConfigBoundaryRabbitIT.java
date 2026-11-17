@@ -89,10 +89,19 @@ class DispatchConfigBoundaryRabbitIT {
         registry.add("security-model.dispatch.rabbit.dead-letter-queue", () -> DLQ);
         registry.add("security-model.dispatch.rabbit.dead-letter-routing-key", () -> ROUTING_KEY + ".dead");
         registry.add("security-model.dispatch.rabbit.retry-queue-prefix", () -> RETRY_PREFIX);
-        registry.add("spring.rabbitmq.host", () -> "127.0.0.1");
-        registry.add("spring.rabbitmq.port", () -> "5673");
-        registry.add("spring.rabbitmq.username", () -> "guest");
-        registry.add("spring.rabbitmq.password", () -> "guest");
+        registry.add("spring.rabbitmq.host", () -> envOr("RABBIT_IT_HOST", "127.0.0.1"));
+        registry.add("spring.rabbitmq.port", () -> envOr("RABBIT_IT_PORT", "5673"));
+        registry.add("spring.rabbitmq.username", () -> envOr("RABBIT_IT_USER", "guest"));
+        registry.add("spring.rabbitmq.password", () -> envOr("RABBIT_IT_PASSWORD", "guest"));
+    }
+
+    /**
+     * CI and local runs use different RabbitMQ endpoints and credentials. Reading the
+     * same RABBIT_IT_* variables as the rest of the suite keeps this test real on both.
+     */
+    private static String envOr(String name, String fallback) {
+        String value = System.getenv(name);
+        return value == null || value.isBlank() ? fallback : value;
     }
 
     @BeforeEach
