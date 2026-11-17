@@ -24,8 +24,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class VabSeedPortabilityTest {
 
     private static final Path SEED = Path.of("..", "sql", "security_model_vab_seed.sql");
+    private static final Path MVP_SEED = Path.of("..", "sql", "security_model_mvp_seed.sql");
+    private static final Path MVP_CONVERGENCE = Path.of("..", "sql",
+            "security_model_mvp_legacy_convergence.sql");
     private static final Path INITIALIZER = Path.of("..", "scripts", "dev",
             "InitializeSecurityModelDatabase.ps1");
+    private static final Path GUARD_TEST = Path.of("..", "scripts", "dev",
+            "Test-InitializeSecurityModelDatabaseGuard.ps1");
     private static final Path LEGACY_TASK = Path.of("..", "sql",
             "security_model_legacy_running_task_baseline.sql");
     private static final Pattern DRIVE_PATH =
@@ -89,6 +94,33 @@ class VabSeedPortabilityTest {
                 "guard must explain why the schema is refused");
         assertTrue(script.contains("security_model_legacy_running_task_baseline.sql"),
                 "initializer must converge legacy running demo rows before startup recovery");
+        assertTrue(script.contains("DbHost") && script.contains("Port"),
+                "initializer must accept the same MySQL host/port as the guard test");
+        assertTrue(script.contains("unclassified running tasks without run context"),
+                "initializer must print an audit list instead of silently touching unknown rows");
+    }
+
+    @Test
+    void mvpSeedIsAdditiveAndHistoricalChangesAreExplicit() throws Exception {
+        String seed = Files.readString(MVP_SEED);
+        assertFalse(seed.contains("UPDATE `sys_algorithm`"),
+                "the normal MVP seed must not rewrite algorithm enabled flags");
+        assertFalse(seed.contains("UPDATE `sys_menu`"),
+                "the normal MVP seed must not rewrite menu visibility");
+        assertFalse(seed.contains("SET `status` = 'deprecated'"),
+                "the normal MVP seed must not deprecate model rows");
+        assertTrue(seed.contains("builtin://baseline/statistical-cleaning"),
+                "builtin catalog rows must still be registered");
+        assertTrue(seed.contains("security_model_mvp_legacy_convergence.sql"),
+                "the seed must point to the explicit historical migration");
+
+        String migration = Files.readString(MVP_CONVERGENCE);
+        assertTrue(migration.contains("NOT RUN BY scripts/dev/InitializeSecurityModelDatabase.ps1"),
+                "the historical convergence must not be automatic");
+        assertTrue(migration.contains("UPDATE `sys_algorithm`"),
+                "the explicit migration owns the historical disable operation");
+        assertTrue(migration.contains("UPDATE `sys_menu`"),
+                "the explicit migration owns the historical menu operation");
     }
 
     @Test
@@ -98,7 +130,21 @@ class VabSeedPortabilityTest {
         assertTrue(sql.contains("current_run_id` IS NULL")
                         && sql.contains("current_attempt` IS NULL"),
                 "only rows without execution context may be touched");
+        assertTrue(sql.contains("task_id` = 3") && sql.contains("task_id` = 4"),
+                "only the exact seed task IDs may be converged");
+        assertTrue(sql.contains("MNIST数据预处理") && sql.contains("文本数据清洗任务"),
+                "seed names are part of the stable identity");
+        assertTrue(sql.contains("create_by` = 'test'"),
+                "seed author is part of the stable identity");
+        assertFalse(sql.contains("可安全重试"),
+                "the baseline must not claim retry is safe without evidence");
         assertFalse(sql.contains("'success'"),
                 "the baseline must never fabricate a successful task");
+
+        String guardTest = Files.readString(GUARD_TEST);
+        assertTrue(guardTest.contains("DbHost") && guardTest.contains("Port"),
+                "guard test must pass host/port to the real initializer");
+        assertTrue(guardTest.contains("sys_sentinel") && guardTest.contains("beforeTables"),
+                "guard test must assert sentinel rows and table count are unchanged");
     }
 }

@@ -252,13 +252,18 @@ class VabSeedMySqlIT {
     }
 
     @Test
-    void legacyRunningRowsWithoutRunContextAreFailedButRealAttemptsAreUntouched() {
+    void onlySeedLegacyRunningRowsAreFailedAndUnknownRowsAreUntouched() {
         // sys_pre_defense has FKs to both sys_dataset and sys_algorithm; the fixture rows
         // are created by this test, not borrowed from a real deployment.
         executeSeed(null);
         // sql/eladmin.sql is the pre-migration base; the run-context columns arrive with
         // the idempotent migration that the initializer applies before the legacy baseline.
         executeSql(RUN_CONTEXT);
+        // Restore the two exact seed rows to their shipped state. The baseline must not
+        // derive permission to rewrite an arbitrary old task from this shape alone.
+        jdbc.update("UPDATE sys_pre_defense SET status='running', progress=65, "
+                + "cleaning_result=NULL, current_run_id=NULL, current_attempt=NULL, end_time=NULL "
+                + "WHERE task_id IN (3,4)");
         jdbc.update("INSERT INTO sys_dataset (dataset_name, enabled, dataset_type, file_path, "
                 + "parse_status, create_time, update_time) "
                 + "VALUES ('legacy-running-fixture', b'1', 'image', '/tmp/fixture', "
@@ -270,25 +275,44 @@ class VabSeedMySqlIT {
                 "SELECT algorithm_id FROM sys_algorithm WHERE implementation_path='vab://pre-defense/ldd'",
                 Long.class);
 
-        String legacyName = "legacy-running-" + UUID.randomUUID();
+        String unknownName = "unknown-running-" + UUID.randomUUID();
         String realName = "real-running-" + UUID.randomUUID();
+        // Same "running but no run context" shape as the seed rows, but a different
+        // task_id/name/author: this row must remain evidence for manual review.
         jdbc.update("INSERT INTO sys_pre_defense (task_name, status, dataset_id, algorithm_id, "
-                + "progress, create_time, update_time) VALUES (?, 'running', ?, ?, 65, NOW(), NOW())",
-                legacyName, datasetId, algorithmId);
+                + "progress, create_by, update_by, create_time, update_time) "
+                + "VALUES (?, 'running', ?, ?, 65, 'operator', 'operator', NOW(), NOW())",
+                unknownName, datasetId, algorithmId);
         jdbc.update("INSERT INTO sys_pre_defense (task_name, status, dataset_id, algorithm_id, "
                 + "progress, current_run_id, current_attempt, create_time, update_time) "
                 + "VALUES (?, 'running', ?, ?, 10, 'run-real', 1, NOW(), NOW())",
                 realName, datasetId, algorithmId);
         executeSql(LEGACY_TASK);
 
-        Map<String, Object> legacy = jdbc.queryForMap(
-                "SELECT status, progress, cleaning_result FROM sys_pre_defense WHERE task_name=?",
-                legacyName);
-        assertEquals("failed", legacy.get("status"));
-        assertEquals(0, ((Number) legacy.get("progress")).intValue());
-        String result = String.valueOf(legacy.get("cleaning_result"));
-        org.junit.jupiter.api.Assertions.assertTrue(result.contains("EXECUTOR_RESTARTED"));
-        org.junit.jupiter.api.Assertions.assertTrue(result.contains("应用重启导致任务中断"));
+        Map<String, Object> unknown = jdbc.queryForMap(
+                "SELECT status, progress, cleaning_result, current_run_id FROM sys_pre_defense "
+                        + "WHERE task_name=?", unknownName);
+        assertEquals("running", unknown.get("status"));
+        assertEquals(65, ((Number) unknown.get("progress")).intValue());
+        assertNull(unknown.get("cleaning_result"));
+        assertNull(unknown.get("current_run_id"));
+
+        String unknownResult = jdbc.queryForObject(
+                "SELECT cleaning_result FROM sys_pre_defense WHERE task_name=?", String.class, unknownName);
+        assertNull(unknownResult);
+
+        for (Long seedTaskId : new Long[]{3L, 4L}) {
+            Map<String, Object> seed = jdbc.queryForMap(
+                    "SELECT status, progress, cleaning_result FROM sys_pre_defense WHERE task_id=?",
+                    seedTaskId);
+            assertEquals("failed", seed.get("status"));
+            assertEquals(0, ((Number) seed.get("progress")).intValue());
+            String result = String.valueOf(seed.get("cleaning_result"));
+            org.junit.jupiter.api.Assertions.assertTrue(result.contains("EXECUTOR_RESTARTED"));
+            org.junit.jupiter.api.Assertions.assertTrue(result.contains("需人工审核"));
+            org.junit.jupiter.api.Assertions.assertFalse(result.contains("可安全重试"),
+                    "the baseline must not assert that retry is safe without evidence");
+        }
 
         Map<String, Object> real = jdbc.queryForMap(
                 "SELECT status, progress, current_run_id FROM sys_pre_defense WHERE task_name=?",

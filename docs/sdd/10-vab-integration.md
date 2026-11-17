@@ -123,6 +123,17 @@ must be described as “the raw CIFAR-10 subset reconstructed from LDD retained 
 - The seed is additive only: existing dataset, algorithm and hyper-template rows are
   never updated by a rerun. A changed path, default config, enabled flag or template
   requires the resource API or an explicit versioned migration, not initialization.
+- Full-initialization idempotency is proved separately from the VaB seed: the isolated
+  MySQL test runs `InitializeSecurityModelDatabase.ps1` twice and compares all business
+  rows including `update_time`; it then edits path/parameters/enabled flags (and inserts
+  an unknown no-context running task) and proves the third run preserves those values and
+  only prints the unknown row in the review list. Legacy running convergence is limited to
+  the exact `sql/eladmin.sql` rows `task_id=3/4`, names `MNIST数据预处理`/`文本数据清洗任务`,
+  and `create_by=test`.
+- The normal MVP seed is additive as well. Historical builtin-algorithm disable, model
+  deprecation and menu visibility changes moved to the non-automatic
+  `sql/security_model_mvp_legacy_convergence.sql`; builtin rows may stay visible, but the
+  LDD-only command allowlist prevents creating or starting a task for them.
 
 ## Acceptance Criteria
 

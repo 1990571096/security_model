@@ -55,6 +55,11 @@ The error message names the bound property and environment variable explicitly:
 `security-model.executor.python.script` / `SECURITY_MODEL_EXECUTOR_PYTHON_SCRIPT`. No short
 alias is bound.
 
+`isConfigured()` is a lightweight preflight only: it checks that the script property is
+non-blank, not that the file exists or that the interpreter is runnable. A missing file or
+broken interpreter is surfaced by the actual process launch and converged as a task failure;
+it is not guessed from configuration.
+
 ## Invocation
 
 ```bash

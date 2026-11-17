@@ -1,22 +1,13 @@
 -- Security Model Training Platform MVP seed patch.
 -- Run this after sql/eladmin.sql on an existing development database.
 -- The script avoids destructive deletes so legacy role/menu references remain valid.
-
--- The current thesis demonstration scope is LDD only.
--- Keep historical mock algorithms in the database for migration compatibility,
--- but disable them so they cannot be selected or used by the current platform.
-UPDATE `sys_algorithm`
-SET `enabled` = b'0', `update_by` = 'system', `update_time` = NOW()
-WHERE `implementation_path` LIKE 'builtin://baseline/%';
-
--- Disable obvious test rows from the original competition/demo data.
-UPDATE `sys_algorithm`
-SET `enabled` = b'0', `update_by` = 'system', `update_time` = NOW()
-WHERE `algorithm_name` IN ('321');
-
-UPDATE `sys_model`
-SET `status` = 'deprecated', `update_by` = 'system', `update_time` = NOW()
-WHERE `model_name` IN ('321');
+--
+-- This seed is ADDITIVE ONLY: every statement below inserts a missing row and never
+-- updates an existing row. Historical disable/deprecation/menu actions live in the
+-- explicit, non-automatic migration `security_model_mvp_legacy_convergence.sql`.
+-- Keeping builtin algorithms enabled here is intentional: they remain visible in the
+-- catalog, while PreDefenseTaskCommandService's LDD-only execution allowlist refuses to
+-- create/start a task for an algorithm without an executable implementation path.
 
 -- Baseline pre-training data cleaning algorithms.
 INSERT INTO `sys_algorithm` (
@@ -238,13 +229,6 @@ FROM `sys_algorithm` a
 WHERE a.`algorithm_name` = '基线-对抗训练占位'
   AND NOT EXISTS (SELECT 1 FROM `sys_hyper` h WHERE h.`template_name` = '基线-对抗训练占位 - 默认配置');
 
--- Reduce the visible surface for the MVP without deleting legacy ELADMIN data.
--- Role/menu permissions are kept intact; this only controls sidebar visibility.
-UPDATE `sys_menu`
-SET `hidden` = b'1', `update_by` = 'system', `update_time` = NOW()
-WHERE `menu_id` NOT IN (122, 117, 123, 124, 125, 146);
-
--- Keep the core security training modules visible in the sidebar.
-UPDATE `sys_menu`
-SET `hidden` = b'0', `update_by` = 'system', `update_time` = NOW()
-WHERE `menu_id` IN (122, 117, 123, 124, 125, 146);
+-- Menu visibility is not changed by this seed. The historical MVP sidebar reduction is
+-- an explicit operator migration (`security_model_mvp_legacy_convergence.sql`), not an
+-- initialization side effect.

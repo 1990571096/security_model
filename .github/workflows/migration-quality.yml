@@ -7,6 +7,7 @@ on:
       - "migration-frontend/**"
       - "docs/sdd/**"
       - "sql/**"
+      - "scripts/dev/**"
       - "algorithm-runtime/**"
       - ".github/workflows/migration-quality.yml"
   pull_request:
@@ -15,6 +16,7 @@ on:
       - "migration-frontend/**"
       - "docs/sdd/**"
       - "sql/**"
+      - "scripts/dev/**"
       - "algorithm-runtime/**"
       - ".github/workflows/migration-quality.yml"
 
@@ -85,6 +87,41 @@ jobs:
           python-version: "3.11"
       - name: Run adapter tests
         run: python -m unittest discover -s algorithm-runtime/vab/tests -v
+
+  init-scripts:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: migration-test-password
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping --host=127.0.0.1 --password=migration-test-password"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+    env:
+      MYSQL_IT_HOST: 127.0.0.1
+      MYSQL_IT_PORT: 3306
+      MYSQL_IT_PASSWORD: migration-test-password
+    steps:
+      - uses: actions/checkout@v4
+      - name: Ensure MySQL client
+        run: |
+          if ! command -v mysql >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y mysql-client || \
+              sudo apt-get install -y mysql-client-8.0 || \
+              sudo apt-get install -y default-mysql-client
+          fi
+      - name: Verify initializer guard and full idempotency
+        run: |
+          pwsh -NoProfile -File scripts/dev/Test-InitializeSecurityModelDatabaseGuard.ps1 \
+            -RootPassword "$MYSQL_IT_PASSWORD" -MysqlExe mysql -DbHost 127.0.0.1 -Port 3306
+          pwsh -NoProfile -File scripts/dev/Test-InitializeSecurityModelDatabaseIdempotency.ps1 \
+            -RootPassword "$MYSQL_IT_PASSWORD" -MysqlExe mysql -DbHost 127.0.0.1 -Port 3306
 
   frontend:
     runs-on: ubuntu-latest

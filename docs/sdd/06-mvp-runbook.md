@@ -180,9 +180,10 @@ SOURCE sql/security_model_vab_seed.sql;
    ```powershell
    $env:MYSQL_IT_PASSWORD = '<本机 root 密码>'
    $env:SECURITY_MODEL_VAB_DATASET_ROOT = '<本机 VaB-main\dataset 绝对路径>'   # 可选
-   .\scripts\dev\InitializeSecurityModelDatabase.ps1
+   .\scripts\dev\InitializeSecurityModelDatabase.ps1 -DbHost 127.0.0.1 -Port 3306
    ```
-   成功输出应包含 `security_model initialized: tables=48`，并列出 `sys_user` 的 admin/test 等种子账号；提供 VaB 路径时还会输出 `dataset_count=6`、`parsed_dataset_count=0` 与 `LDD (VaB)` 算法行。脚本顺序：`sql/eladmin.sql` → 执行快照 → run context → 子集导出 → 审计 → 归属 → GPU 租约 → 派发意图 → Outbox → 幂等 → 知识库 → 向量对账 → Assistant → MVP seed → legacy running task 基线 → 历史样例数据集重置 → VaB 种子；新库已含 `blocked_at`，所以 `security_model_gpu_lease_block.sql` 会被条件跳过。VaB 种子通过 `SET @vab_dataset_root` 注入路径，脚本会先把反斜杠规整为 `/`、校验目录存在、可读、非空，并检查 `cifar-10-batches-py` 下 `batches.meta`、`data_batch_1..5`、`test_batch` 都存在且非空，然后才写 `sys_dataset`；登记状态固定为 `pending`，`sample_count/feature_count/class_count` 保持 `NULL`，预期 50000/3072/10 只写在说明里，不是实测统计。管理员执行 `POST /api/dataset/{id}/validate` 后才会进入 `GET /api/dataset/available`。种子是纯 additive：数据集、算法和模板只要已存在就不再更新，不会覆盖运维改过的路径、参数、启用状态或更新时间；不提供变量时只注册 LDD 算法与默认超参模板，不会伪造数据集行。
+   成功输出应包含 `security_model initialized: tables=48`，并列出 `sys_user` 的 admin/test 等种子账号；提供 VaB 路径时还会输出 `dataset_count=6`、`parsed_dataset_count=0` 与 `LDD (VaB)` 算法行。脚本顺序：`sql/eladmin.sql` → 执行快照 → run context → 子集导出 → 审计 → 归属 → GPU 租约 → 派发意图 → Outbox → 幂等 → 知识库 → 向量对账 → Assistant → MVP seed → legacy running task 基线 → 历史样例数据集重置 → VaB 种子；新库已含 `blocked_at`，所以 `security_model_gpu_lease_block.sql` 会被条件跳过。VaB 种子通过 `SET @vab_dataset_root` 注入路径，脚本会先把反斜杠规整为 `/`、校验目录存在、可读、非空，并检查 `cifar-10-batches-py` 下 `batches.meta`、`data_batch_1..5`、`test_batch` 都存在且非空，然后才写 `sys_dataset`；登记状态固定为 `pending`，`sample_count/feature_count/class_count` 保持 `NULL`，预期 50000/3072/10 只写在说明里，不是实测统计。管理员执行 `POST /api/dataset/{id}/validate` 后才会进入 `GET /api/dataset/available`。
+   **完整初始化**也遵循 additive：MVP seed 只补缺失算法/模板，不更新已有行；legacy running 基线只处理 `sql/eladmin.sql` 自带的任务 ID 3/4（精确名称 + `create_by=test`），其他缺少执行上下文的 running 行保持不动，并在初始化输出中列为待人工审核清单。历史 MVP 的算法禁用/模型废弃/菜单显隐已移出自动种子，需要时显式执行 `sql/security_model_mvp_legacy_convergence.sql`（该文件不在初始化列表中）。未接入的 builtin 算法仍可在目录中展示，但 `PreDefenseTaskCommandService` 的 LDD-only 执行白名单会拒绝为其创建/启动任务。
 3. 设置启动环境变量（示例，值按本机替换）：
    ```powershell
    $env:DB_NAME='security_model'; $env:DB_USER='root'; $env:DB_PWD='<密码>'
@@ -206,6 +207,14 @@ SOURCE sql/security_model_vab_seed.sql;
    - 取消链路同为短桩：观察到 `running` 后 `POST /api/pre-defense/cancel/{id}`，任务收敛 `canceled`，GPU 槽位 `idle`、租约 `released_at` 非空且无 blocked。此结果只证明隔离环境的平台链路，不能写成真实 LDD 执行验收。
    - 恢复派发和 Rabbit Worker 的配置缺失分支由 `TaskDispatchCoordinatorTest` 单测覆盖（释放租约、失败收敛、不 `markSubmitting`/不 claim），干净库未做端到端故障注入。
    - 导出恢复仍以 2026-11-17 人工注入的 1 条 `running` + 1 条 `pending` 导出行实测：重启后 `scanned=2, recovered=2`，分别收敛 `failed`（`EXPORT_INTERRUPTED` / `EXPORT_NOT_STARTED`）并写审计；这是故障注入，不是真实导出进程中断。
+8. 初始化自检（使用隔离 schema，不碰 `security_model` 业务库）：
+   ```powershell
+   .\scripts\dev\Test-InitializeSecurityModelDatabaseGuard.ps1 `
+     -RootPassword $env:MYSQL_IT_PASSWORD -DbHost 127.0.0.1 -Port 3306
+   .\scripts\dev\Test-InitializeSecurityModelDatabaseIdempotency.ps1 `
+     -RootPassword $env:MYSQL_IT_PASSWORD -DbHost 127.0.0.1 -Port 3306
+   ```
+   第一个脚本验证“无可信标记的非空库”被拒绝且哨兵表/行/表数不变；第二个脚本在隔离库完整初始化两次，比较业务行与 `update_time` 完全一致，再修改路径、参数、启用状态并插入未知 running 行，确认第三次初始化不覆盖且只输出审核清单。CI 的 `init-scripts` job 运行同样两项，适用于 `scripts/dev/**` 变更。
 
 ### 启动与停止
 

@@ -46,10 +46,10 @@ CREATE DATABASE IF NOT EXISTS security_model
 
 ```powershell
 $env:MYSQL_IT_PASSWORD = '<本机 root 密码>'
-.\scripts\dev\InitializeSecurityModelDatabase.ps1
+.\scripts\dev\InitializeSecurityModelDatabase.ps1 -DbHost 127.0.0.1 -Port 3306
 ```
 
-脚本只允许初始化 `security_model`，顺序为 `sql/eladmin.sql` → 执行快照 → run context → 子集导出 → 审计 → 归属 → GPU 租约 → 调度意图 → Outbox → 幂等 → 知识库 → 向量对账 → Assistant → MVP seed。基础 schema 成功后立即写入 `sys_dev_init_marker`；无 marker 且已有 `sys_pre_defense` 时拒绝执行，因为 `sql/eladmin.sql` 是 `DROP TABLE IF EXISTS` 后重建，不是幂等脚本。
+脚本只允许初始化 `security_model`，顺序为 `sql/eladmin.sql` → 执行快照 → run context → 子集导出 → 审计 → 归属 → GPU 租约 → 调度意图 → Outbox → 幂等 → 知识库 → 向量对账 → Assistant → MVP seed → legacy running task 基线 → 历史样例数据集基线 → VaB 种子。基础 schema 成功后立即写入 `sys_dev_init_marker`；无 marker 且目标 schema 已有**任意表或视图**时拒绝执行，因为 `sql/eladmin.sql` 是 `DROP TABLE IF EXISTS` 后重建，不是幂等脚本。legacy 基线只处理种子任务 ID 3/4（精确名称 + `create_by=test`），其他无 run 上下文的 running 行只输出审核清单；MVP seed 只补缺失，历史算法禁用/菜单显隐需显式执行 `security_model_mvp_legacy_convergence.sql`。
 
 3. 增量脚本顺序以脚本内清单和 `06-mvp-runbook.md` 的“数据库初始化顺序”为准，至少包括：
 
@@ -68,7 +68,12 @@ security_model_knowledge.sql
 security_model_knowledge_vector_reconcile.sql
 security_model_assistant.sql
 security_model_mvp_seed.sql
+security_model_legacy_running_task_baseline.sql
+security_model_dataset_verification_baseline.sql
+security_model_vab_seed.sql（由 -VabDatasetRoot 注入 SET @vab_dataset_root）
 ```
+
+`security_model_mvp_legacy_convergence.sql` 是可选的一次性历史迁移，不在上述自动顺序中；只有明确需要恢复旧算法禁用/菜单显隐行为时才手工执行。`Test-InitializeSecurityModelDatabaseIdempotency.ps1` 会在隔离 schema 完整初始化两次并比较业务行/更新时间，再修改资源后重跑验证保留。
 
 4. 启动前设置：
 

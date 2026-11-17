@@ -1,7 +1,14 @@
 param(
     [string]$RootPassword = $env:MYSQL_IT_PASSWORD,
     [string]$SchemaName = 'security_model',
-    [string]$VabDatasetRoot = $env:SECURITY_MODEL_VAB_DATASET_ROOT
+    [string]$VabDatasetRoot = $env:SECURITY_MODEL_VAB_DATASET_ROOT,
+    [string]$DbHost = '127.0.0.1',
+    [int]$Port = 3306,
+    [string]$MysqlExe = $(if ($IsWindows -or $env:OS -eq 'Windows_NT') {
+        'C:\Program Files\MySQL\MySQL Server 8.0\bin\mysql.exe'
+    } else {
+        'mysql'
+    })
 )
 
 $ErrorActionPreference = 'Stop'
@@ -12,20 +19,22 @@ if ($SchemaName -ne 'security_model') {
     throw "拒绝操作：本脚本只允许初始化 security_model，当前=$SchemaName"
 }
 
-$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
-$mysql = if ($env:MYSQL_EXE) { $env:MYSQL_EXE } else { 'C:\Program Files\MySQL\MySQL Server 8.0\bin\mysql.exe' }
-$mysqlDir = Join-Path $env:TEMP 'security-model-sql'
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+$mysql = if ($env:MYSQL_EXE) { $env:MYSQL_EXE } else { $MysqlExe }
+$mysqlDir = [IO.Path]::Combine([IO.Path]::GetTempPath(), 'security-model-sql')
 New-Item -ItemType Directory -Force -Path $mysqlDir | Out-Null
 
 function Invoke-Sql([string]$sql, [string]$database = '') {
-    $args = @('-uroot', "-p$RootPassword", '--default-character-set=utf8mb4', '-N', '-B', '-e', $sql)
+    $args = @('-h', $DbHost, '-P', "$Port", '-uroot', "-p$RootPassword",
+        '--default-character-set=utf8mb4', '-N', '-B', '-e', $sql)
     if ($database) { $args += $database }
     & $mysql @args
     if ($LASTEXITCODE -ne 0) { throw "mysql 执行失败: $sql" }
 }
 
 function Invoke-SqlFile([string]$relativePath, [string]$preamble = '') {
-    $path = Join-Path $repoRoot $relativePath
+    $relative = $relativePath.Replace('\', '/')
+    $path = Join-Path $repoRoot $relative
     if (!(Test-Path -LiteralPath $path)) { throw "SQL 文件不存在: $path" }
     $asciiPath = Join-Path $mysqlDir (Split-Path -Leaf $path)
     # 用 UTF-8 无 BOM 重写，便于给种子脚本注入 SET @vab_dataset_root 前置语句。
@@ -33,8 +42,8 @@ function Invoke-SqlFile([string]$relativePath, [string]$preamble = '') {
     if ($preamble) { $content = $preamble + "`n" + $content }
     [IO.File]::WriteAllText($asciiPath, $content, (New-Object Text.UTF8Encoding($false)))
     $source = $asciiPath.Replace('\', '/')
-    $args = @('-uroot', "-p$RootPassword", '--default-character-set=utf8mb4', '-D', $SchemaName,
-        '-e', "SOURCE $source")
+    $args = @('-h', $DbHost, '-P', "$Port", '-uroot', "-p$RootPassword",
+        '--default-character-set=utf8mb4', '-D', $SchemaName, '-e', "SOURCE $source")
     & $mysql @args
     if ($LASTEXITCODE -ne 0) { throw "mysql SOURCE 失败: $relativePath" }
 }
@@ -98,6 +107,17 @@ foreach ($relative in $files) {
     Invoke-SqlFile $relative
     $watch.Stop()
     Write-Host ("applied {0} ({1:n0} ms)" -f $relative, $watch.ElapsedMilliseconds)
+}
+
+# The baseline only converges the two exact seed demo rows. Any other running row without
+# run context is left untouched; print it so an operator can review ownership and decide
+# whether it is safe to retry. This is evidence output, not an automatic state change.
+$legacyAudit = ((Invoke-Sql "SELECT task_id, task_name, create_by, progress FROM sys_pre_defense WHERE status='running' AND current_run_id IS NULL AND current_attempt IS NULL ORDER BY task_id" $SchemaName) -join "`n").Trim()
+if ($legacyAudit) {
+    Write-Host 'WARNING: unclassified running tasks without run context were left unchanged; operator review required:'
+    Write-Host $legacyAudit
+} else {
+    Write-Host 'legacy running audit: no unclassified rows without run context'
 }
 
 # 可移植 VaB 种子：只有显式提供、且真实存在、可读、非空并含 CIFAR-10 结构的目录才写入 sys_dataset。
