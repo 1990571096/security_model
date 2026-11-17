@@ -10,7 +10,7 @@ public record AssistantChatResponse(Long sessionId, String status, String answer
                                     List<AssistantPendingConfirmation> pendingConfirmations,
                                     List<JsonNode> citations, String modelStatus,
                                     String modelMessage, int modelCalls, int toolCalls,
-                                    int quotaRemaining) {
+                                    int quotaRemaining, String scenario, JsonNode structured) {
 
     public record AssistantToolTrace(String toolName, String summary, JsonNode data, long durationMs) {
     }

@@ -94,6 +94,41 @@ class DeepSeekAssistantModelTest {
         }
     }
 
+    @Test
+    void retriesOn429ThenReturnsTheSuccessfulAnswer() throws Exception {
+        try (SequenceServer server = new SequenceServer(429, "{\"error\":\"rate limited\"}",
+                "{\"choices\":[{\"message\":{\"content\":\"重试后成功\"}}]}")) {
+            DeepSeekAssistantModel model = new DeepSeekAssistantModel(
+                    objectMapper, true, server.url(), "deepseek-chat", "key", 5, 128, 1);
+            AssistantModel.ModelReply reply = model.respond(request());
+
+            assertEquals("ok", reply.status());
+            assertEquals("重试后成功", reply.answer());
+            assertEquals(2, server.requestCount());
+        }
+    }
+
+    @Test
+    void serverErrorWithoutRetryReturnsStableUnavailableStatus() throws Exception {
+        try (FakeServer server = new FakeServer("{\"error\":\"boom\"}", 500)) {
+            DeepSeekAssistantModel model = model(server.url(), "key");
+            AssistantModel.ModelReply reply = model.respond(request());
+
+            assertEquals("model_unavailable", reply.status());
+            assertEquals(1, server.requestCount());
+        }
+    }
+
+    @Test
+    void malformedResponseReturnsInvalidResponseStatus() throws Exception {
+        try (FakeServer server = new FakeServer("{\"choices\":[{\"message\":", 200)) {
+            DeepSeekAssistantModel model = model(server.url(), "key");
+            AssistantModel.ModelReply reply = model.respond(request());
+
+            assertEquals("model_invalid_response", reply.status());
+        }
+    }
+
     private DeepSeekAssistantModel model(String url, String key) {
         return new DeepSeekAssistantModel(objectMapper, true, url, "deepseek-chat", key, 5, 128, 0);
     }
@@ -108,6 +143,39 @@ class DeepSeekAssistantModelTest {
                 List.of(new AssistantModel.ModelMessage("user", "查询 42 号任务")),
                 List.of(new AssistantToolDescriptor("get_my_task_summary", "查询任务摘要", false, schema)),
                 2, 5000);
+    }
+
+    private static final class SequenceServer implements AutoCloseable {
+        private final HttpServer server;
+        private final AtomicInteger requests = new AtomicInteger();
+
+        SequenceServer(int firstStatus, String firstBody, String secondBody) throws IOException {
+            server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+            server.createContext("/chat/completions", exchange -> {
+                int request = requests.getAndIncrement();
+                String body = request == 0 ? firstBody : secondBody;
+                int status = request == 0 ? firstStatus : 200;
+                byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+                exchange.getResponseHeaders().add("Content-Type", "application/json");
+                exchange.sendResponseHeaders(status, bytes.length);
+                exchange.getResponseBody().write(bytes);
+                exchange.close();
+            });
+            server.start();
+        }
+
+        String url() {
+            return "http://127.0.0.1:" + server.getAddress().getPort() + "/chat/completions";
+        }
+
+        int requestCount() {
+            return requests.get();
+        }
+
+        @Override
+        public void close() {
+            server.stop(0);
+        }
     }
 
     private static final class FakeServer implements AutoCloseable {

@@ -2,10 +2,12 @@ package com.securitymodel.application.assistant;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.securitymodel.application.knowledge.KnowledgeSanitizer;
 import com.securitymodel.application.task.TaskAccessGuard;
 import com.securitymodel.domain.task.PreDefenseTask;
+import com.securitymodel.infrastructure.executor.DefenseTaskExecutor;
 import org.springframework.stereotype.Component;
 
 import java.util.Set;
@@ -15,10 +17,13 @@ import java.util.Set;
 public class TaskSummaryTool implements AssistantTool {
 
     private final TaskAccessGuard taskAccessGuard;
+    private final DefenseTaskExecutor executor;
     private final ObjectMapper objectMapper;
 
-    public TaskSummaryTool(TaskAccessGuard taskAccessGuard, ObjectMapper objectMapper) {
+    public TaskSummaryTool(TaskAccessGuard taskAccessGuard, DefenseTaskExecutor executor,
+                           ObjectMapper objectMapper) {
         this.taskAccessGuard = taskAccessGuard;
+        this.executor = executor;
         this.objectMapper = objectMapper;
     }
 
@@ -51,9 +56,20 @@ public class TaskSummaryTool implements AssistantTool {
         if (task.getEndTime() != null) {
             data.put("endTime", task.getEndTime().toString());
         }
+        ArrayNode blockers = objectMapper.createArrayNode();
+        if (!"pending".equals(task.getStatus())) {
+            blockers.addObject().put("code", "TASK_NOT_PENDING")
+                    .put("message", "只有 pending 任务可以启动");
+        }
+        if (!executor.isConfigured()) {
+            blockers.addObject().put("code", "EXECUTOR_NOT_CONFIGURED")
+                    .put("message", "执行器未配置，启动会被拒绝");
+        }
+        data.set("blockers", blockers);
+        data.set("warnings", objectMapper.createArrayNode());
         String summary = "任务 #" + task.getTaskId() + "「" + data.path("taskName").asText()
                 + "」状态 " + task.getStatus() + "，进度 " + (task.getProgress() == null ? 0 : task.getProgress())
-                + "%；仅返回当前用户自己的任务。";
+                + "%；阻塞项 " + blockers.size() + " 个，仅返回当前用户自己的任务。";
         return new AssistantToolResult(summary, data, null, null, task.getTaskId(),
                 task.getCurrentRunId(), null);
     }

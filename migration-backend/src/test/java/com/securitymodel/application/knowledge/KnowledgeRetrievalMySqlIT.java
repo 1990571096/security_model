@@ -1,6 +1,8 @@
 package com.securitymodel.application.knowledge;
 
 import com.baomidou.mybatisplus.autoconfigure.MybatisPlusAutoConfiguration;
+import com.securitymodel.application.audit.AuthenticatedUser;
+import com.securitymodel.application.audit.CurrentUserService;
 import com.securitymodel.domain.knowledge.KnowledgeChunk;
 import com.securitymodel.domain.knowledge.KnowledgeDocument;
 import com.securitymodel.infrastructure.persistence.mapper.KnowledgeChunkMapper;
@@ -40,6 +42,8 @@ import java.util.UUID;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 /**
  * Real MySQL proof for R6 ACL: retired versions never surface, shared documents are
@@ -124,6 +128,51 @@ class KnowledgeRetrievalMySqlIT {
                 """);
         jdbc.update("DELETE FROM sys_knowledge_chunk");
         jdbc.update("DELETE FROM sys_knowledge_document");
+    }
+
+    @Test
+    void retrievalServiceReturnsSharedButNeverForeignPrivateRows() {
+        Long shared = insertDocument("sdd:05.md", 1, "shared", null, "shared");
+        insertChunk(shared, 0, "GPU 单槽租约过期后必须隔离，不能直接接管");
+        Long foreign = insertDocument("task_report:99", 1, "private", 99L, "foreign");
+        insertChunk(foreign, 0, "purity 93.1 攻击成功率 4.2");
+
+        CurrentUserService alice = mock(CurrentUserService.class);
+        when(alice.requireStableIdentity()).thenReturn(new AuthenticatedUser(7L, "alice", false));
+        KnowledgeRetrievalService service = new KnowledgeRetrievalService(
+                documentMapper, alice, 100, 5, 0.05, 0, false);
+
+        List<KnowledgeHit> sharedHits = service.search("GPU 单槽租约过期");
+        assertEquals(1, sharedHits.size());
+        assertEquals("sdd:05.md", sharedHits.get(0).row().getSourceKey());
+
+        assertTrue(service.search("purity 93.1 攻击成功率").isEmpty(),
+                "the real ACL-first service must not rank a foreign private report");
+    }
+
+    @Test
+    void citationLinesMatchTheRealSddSourceFile() throws Exception {
+        Path source = Path.of("../docs/sdd/05-decisions.md").toAbsolutePath().normalize();
+        assertTrue(Files.isRegularFile(source), "real SDD source file must exist: " + source);
+        String raw = Files.readString(source, StandardCharsets.UTF_8);
+        String sanitized = KnowledgeSanitizer.sanitize(raw);
+        List<MarkdownKnowledgeChunker.Draft> drafts = MarkdownKnowledgeChunker.chunk(
+                sanitized, "sdd:05-decisions.md", 800);
+        assertTrue(drafts.size() > 5, "source file should produce multiple chunks");
+        writer.saveVersion("sdd", "sdd:05-decisions.md", "05-decisions.md", "shared",
+                null, "hash-real-05", drafts, LocalDateTime.now());
+
+        CurrentUserService alice = mock(CurrentUserService.class);
+        when(alice.requireStableIdentity()).thenReturn(new AuthenticatedUser(7L, "alice", false));
+        KnowledgeRetrievalService service = new KnowledgeRetrievalService(
+                documentMapper, alice, 1000, 5, 0.05, 0, false);
+        List<KnowledgeHit> hits = service.search("GPU 单槽租约过期");
+        assertTrue(!hits.isEmpty(), "real source should answer the lease question");
+        KnowledgeHit top = hits.get(0);
+        assertEquals("sdd:05-decisions.md", top.row().getSourceKey());
+        assertTrue(top.row().getStartLine() >= 1 && top.row().getEndLine() >= top.row().getStartLine(),
+                "citation must carry a valid line range");
+        assertTrue(top.row().getContent().contains("租约"), "retrieved chunk must match its source text");
     }
 
     @Test

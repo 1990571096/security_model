@@ -30,11 +30,12 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /**
- * Independent assistant/RAG evaluation set. Fixtures live in this test class, not in the
- * searchable SDD corpus, so measured retrieval is not confounded by the evaluation text.
- * Each dimension is asserted and printed separately instead of a single pass rate.
+ * Ranker sample fixtures, not a production ACL/injection proof. Fixtures live in this
+ * test class rather than the searchable SDD corpus. The helper filters private rows before
+ * ranking; real ACL and citation behavior are covered separately through the production
+ * retrieval service in {@code KnowledgeRetrievalMySqlIT}.
  */
-class AssistantScenarioEvaluationSetTest {
+class AssistantRankerSampleEvaluationTest {
 
     private final ObjectMapper objectMapper = new ObjectMapper();
 

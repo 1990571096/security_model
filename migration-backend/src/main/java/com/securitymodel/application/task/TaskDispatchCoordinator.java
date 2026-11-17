@@ -96,7 +96,9 @@ public class TaskDispatchCoordinator {
         }
         if (!executor.isConfigured()) {
             // The Worker owns its own execution configuration. A missing script cannot be
-            // fixed by redelivery, so converge the attempt instead of claiming a lease.
+            // fixed by redelivery, so converge the attempt and release this run's lease
+            // instead of claiming a slot that no process can ever use.
+            gpuLeaseService.releaseByRun(intent.getTaskId(), intent.getRunId());
             failAndAbandon(intent.getTaskId(), intent.getRunId(), intent.getAttempt(),
                     "EXECUTOR_NOT_CONFIGURED",
                     "Worker 执行器未配置 security-model.executor.python.script"

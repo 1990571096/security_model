@@ -2,10 +2,13 @@ package com.securitymodel.application.assistant;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.securitymodel.application.audit.CurrentUserService;
 import com.securitymodel.application.knowledge.KnowledgeSanitizer;
 import com.securitymodel.domain.assistant.AssistantSession;
 import jakarta.annotation.PreDestroy;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.concurrent.DelegatingSecurityContextExecutorService;
@@ -37,6 +40,7 @@ public class AssistantChatService {
 
     private final AssistantModel model;
     private final AssistantToolRegistry registry;
+    private final AssistantScenarioCatalog scenarioCatalog;
     private final AssistantPreviewService previewService;
     private final AssistantAuditService auditService;
     private final AssistantQuotaService quotaService;
@@ -52,9 +56,11 @@ public class AssistantChatService {
     private final long timeoutMillis;
     private final int maxConcurrentPerUser;
 
+    @Autowired
     public AssistantChatService(
             AssistantModel model,
             AssistantToolRegistry registry,
+            AssistantScenarioCatalog scenarioCatalog,
             AssistantPreviewService previewService,
             AssistantAuditService auditService,
             AssistantQuotaService quotaService,
@@ -67,6 +73,7 @@ public class AssistantChatService {
             @Value("${security-model.assistant.max-concurrent-per-user:1}") int maxConcurrentPerUser) {
         this.model = model;
         this.registry = registry;
+        this.scenarioCatalog = scenarioCatalog;
         this.previewService = previewService;
         this.auditService = auditService;
         this.quotaService = quotaService;
@@ -92,7 +99,31 @@ public class AssistantChatService {
         this.maxConcurrentPerUser = Math.max(1, Math.min(4, maxConcurrentPerUser));
     }
 
+    /** Backward-compatible constructor for unit tests that do not wire the catalog bean. */
+    public AssistantChatService(
+            AssistantModel model,
+            AssistantToolRegistry registry,
+            AssistantPreviewService previewService,
+            AssistantAuditService auditService,
+            AssistantQuotaService quotaService,
+            AssistantSessionService sessionService,
+            CurrentUserService currentUserService,
+            ObjectMapper objectMapper,
+            int maxModelCalls,
+            int maxToolCalls,
+            long timeoutSeconds,
+            int maxConcurrentPerUser) {
+        this(model, registry, new AssistantScenarioCatalog(registry, false), previewService, auditService,
+                quotaService, sessionService, currentUserService, objectMapper, maxModelCalls,
+                maxToolCalls, timeoutSeconds, maxConcurrentPerUser);
+    }
+
     public AssistantChatResponse chat(Long sessionId, String question) {
+        return chat(sessionId, question, null);
+    }
+
+    public AssistantChatResponse chat(Long sessionId, String question, String scenarioName) {
+        ScenarioScope scope = resolveScope(scenarioName);
         if (!requestSlots.tryAcquire()) {
             throw new AssistantException("ASSISTANT_BUSY", HttpStatus.TOO_MANY_REQUESTS,
                     "助手当前请求过多，请稍后重试；普通任务接口不受影响。");
@@ -112,14 +143,27 @@ public class AssistantChatService {
                     "同一用户的助手请求过多，请等待当前回答完成；普通任务接口不受影响。");
         }
         try {
-            return chatWithBudget(sessionId, question);
+            return chatWithBudget(sessionId, question, scope);
         } finally {
             userSlot.release();
             requestSlots.release();
         }
     }
 
-    private AssistantChatResponse chatWithBudget(Long sessionId, String question) {
+    private ScenarioScope resolveScope(String scenarioName) {
+        if (scenarioName == null || scenarioName.isBlank()) {
+            return null;
+        }
+        AssistantScenarioCatalog.Scenario scenario = scenarioCatalog.find(scenarioName.trim());
+        if (scenario == null) {
+            throw new AssistantException("ASSISTANT_SCENARIO_UNKNOWN", HttpStatus.BAD_REQUEST,
+                    "未知助手场景");
+        }
+        return new ScenarioScope(scenario.name(), Set.copyOf(scenario.tools()),
+                scenario.requiredEvidenceTool());
+    }
+
+    private AssistantChatResponse chatWithBudget(Long sessionId, String question, ScenarioScope scope) {
         Long userId = currentUserService.requireStableIdentity().userId();
         if (question == null || question.isBlank()) {
             throw new AssistantException("ASSISTANT_QUESTION_REQUIRED", HttpStatus.BAD_REQUEST,
@@ -144,31 +188,34 @@ public class AssistantChatService {
 
         while (true) {
             if (System.nanoTime() > deadline) {
-                return finish(session, question, "timeout",
+                return finish(session, question, scope, "timeout",
                         "助手请求超时，后续工具与模型调用不会继续；底层操作可能仍在收尾。", traces, pending,
                         citations, "timeout", modelCalls, toolCalls);
             }
             if (modelCalls >= maxModelCalls) {
-                return finish(session, question, "limit_reached",
+                return finish(session, question, scope, "limit_reached",
                         "模型调用次数已达上限，未完成的写操作不会执行。", traces, pending,
                         citations, "max_model_calls", modelCalls, toolCalls);
             }
             long remainingNanos = deadline - System.nanoTime();
             if (remainingNanos <= 0) {
-                return finish(session, question, "timeout",
+                return finish(session, question, scope, "timeout",
                         "助手请求超时，后续工具与模型调用不会继续；底层操作可能仍在收尾。", traces, pending,
                         citations, "timeout", modelCalls, toolCalls);
             }
             long remainingMillis = Math.max(1, TimeUnit.NANOSECONDS.toMillis(remainingNanos));
+            List<AssistantToolDescriptor> descriptors = registry.descriptors().stream()
+                    .filter(descriptor -> scope == null || scope.tools().contains(descriptor.name()))
+                    .toList();
             AssistantModel.ModelRequest request = new AssistantModel.ModelRequest(
-                    safeQuestion, List.copyOf(messages), registry.descriptors(),
+                    safeQuestion, List.copyOf(messages), descriptors,
                     Math.max(0, maxToolCalls - toolCalls), remainingMillis);
             AssistantModel.ModelReply reply;
             Future<AssistantModel.ModelReply> future;
             try {
                 future = modelExecutor.submit(() -> model.respond(request));
             } catch (RejectedExecutionException exception) {
-                return finish(session, question, "busy",
+                return finish(session, question, scope, "busy",
                         "助手模型队列已满，请稍后重试；未执行任何工具。", traces, pending,
                         citations, "busy", modelCalls, toolCalls);
             }
@@ -176,43 +223,43 @@ public class AssistantChatService {
                 reply = future.get(remainingNanos, TimeUnit.NANOSECONDS);
             } catch (TimeoutException exception) {
                 future.cancel(true);
-                return finish(session, question, "timeout",
+                return finish(session, question, scope, "timeout",
                         "模型调用超过剩余时限，后续工具与模型调用不会继续；底层操作可能仍在收尾。", traces, pending,
                         citations, "timeout", modelCalls, toolCalls);
             } catch (InterruptedException exception) {
                 future.cancel(true);
                 Thread.currentThread().interrupt();
-                return finish(session, question, "timeout",
+                return finish(session, question, scope, "timeout",
                         "助手请求被中断，后续工具与模型调用不会继续；底层操作可能仍在收尾。", traces, pending,
                         citations, "timeout", modelCalls, toolCalls);
             } catch (ExecutionException exception) {
                 // Provider exceptions can contain request bodies, endpoints and credentials.
                 // Never copy them into the user-visible response.
-                return finish(session, question, "model_unavailable",
+                return finish(session, question, scope, "model_unavailable",
                         "模型调用失败，未执行工具；详情仅保留在服务端日志。",
                         traces, pending, citations, "model_unavailable", modelCalls, toolCalls);
             }
             modelCalls++;
             if (System.nanoTime() > deadline) {
-                return finish(session, question, "timeout",
+                return finish(session, question, scope, "timeout",
                         "模型返回时已超过总时限，未处理的工具调用不会执行。", traces, pending,
                         citations, "timeout", modelCalls, toolCalls);
             }
             if (!"ok".equals(reply.status())) {
                 String safeStatus = "model_disabled".equals(reply.status())
                         ? "model_disabled" : "model_unavailable";
-                return finish(session, question, safeStatus,
+                return finish(session, question, scope, safeStatus,
                         "模型暂不可用，未执行工具；详情仅保留在服务端日志。", traces, pending,
                         citations, reply.status(), modelCalls, toolCalls);
             }
             if (reply.toolCall() != null) {
                 if (System.nanoTime() > deadline) {
-                    return finish(session, question, "timeout",
+                    return finish(session, question, scope, "timeout",
                             "工具调用前已超过总时限，未执行该工具。", traces, pending,
                             citations, "timeout", modelCalls, toolCalls);
                 }
                 if (toolCalls >= maxToolCalls) {
-                    return finish(session, question, "limit_reached",
+                    return finish(session, question, scope, "limit_reached",
                             "工具调用次数已达上限，未完成的写操作不会执行。", traces, pending,
                             citations, "max_tool_calls", modelCalls, toolCalls);
                 }
@@ -221,7 +268,7 @@ public class AssistantChatService {
                 long toolBudgetMillis = Math.max(1,
                         TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime()));
                 try {
-                    execution = executeTool(session, reply.toolCall(), toolBudgetMillis, trace -> {
+                    execution = executeTool(session, reply.toolCall(), toolBudgetMillis, scope, trace -> {
                         if (trace.pending() != null) {
                             pending.add(trace.pending());
                         }
@@ -231,17 +278,17 @@ public class AssistantChatService {
                     });
                     traces.add(execution.trace());
                     if (System.nanoTime() > deadline) {
-                        return finish(session, question, "timeout",
+                        return finish(session, question, scope, "timeout",
                                 "工具已执行，但已超过总时限；后续工具调用不会执行。", traces, pending,
                                 citations, "timeout", modelCalls, toolCalls);
                     }
                 } catch (AssistantException exception) {
                     if ("ASSISTANT_TOOL_TIMEOUT".equals(exception.getCode())) {
-                        return finish(session, question, "timeout",
+                        return finish(session, question, scope, "timeout",
                                 "工具执行超过剩余时限，后续工具与模型调用不会继续；底层操作可能仍在收尾。", traces, pending,
                                 citations, "tool_timeout", modelCalls, toolCalls);
                     }
-                    return finish(session, question, "tool_error", exception.getMessage(), traces, pending,
+                    return finish(session, question, scope, "tool_error", exception.getMessage(), traces, pending,
                             citations, exception.getCode(), modelCalls, toolCalls);
                 }
                 messages.add(new AssistantModel.ModelMessage("assistant",
@@ -252,18 +299,24 @@ public class AssistantChatService {
                 continue;
             }
             if (reply.answer() == null || reply.answer().isBlank()) {
-                return finish(session, question, "model_invalid",
+                return finish(session, question, scope, "model_invalid",
                         "模型没有返回可校验的回答。", traces, pending, citations,
                         "empty_answer", modelCalls, toolCalls);
             }
-            return finish(session, question, "answered", reply.answer(), traces, pending,
+            return finish(session, question, scope, "answered", reply.answer(), traces, pending,
                     citations, reply.model() == null ? "model" : reply.model(), modelCalls, toolCalls);
         }
     }
 
     private ToolExecution executeTool(AssistantSession session, AssistantModel.ToolCall call,
-                                      long timeoutMillis,
+                                      long timeoutMillis, ScenarioScope scope,
                                       java.util.function.Consumer<ToolExecution> observer) {
+        if (scope != null && !scope.tools().contains(call.toolName())) {
+            auditService.record(session.getSessionId(), call.toolName(), null, null, null,
+                    "SCENARIO_DENIED", 0);
+            throw new AssistantException("ASSISTANT_TOOL_NOT_ALLOWED_FOR_SCENARIO",
+                    HttpStatus.FORBIDDEN, "当前场景不允许调用该工具");
+        }
         AssistantTool tool = registry.find(call.toolName());
         long started = System.nanoTime();
         try {
@@ -356,12 +409,22 @@ public class AssistantChatService {
         return result;
     }
 
-    private AssistantChatResponse finish(AssistantSession session, String question, String status,
-                                         String answer,
+    private AssistantChatResponse finish(AssistantSession session, String question, ScenarioScope scope,
+                                         String status, String answer,
                                          List<AssistantChatResponse.AssistantToolTrace> traces,
                                          List<AssistantChatResponse.AssistantPendingConfirmation> pending,
                                          Set<JsonNode> citations, String modelStatus,
                                          int modelCalls, int toolCalls) {
+        String effectiveStatus = status;
+        String effectiveAnswer = answer;
+        String effectiveModelStatus = modelStatus;
+        if (scope != null && "answered".equals(status)
+                && traces.stream().noneMatch(trace -> scope.requiredEvidenceTool().equals(trace.toolName()))) {
+            effectiveStatus = "scenario_incomplete";
+            effectiveAnswer = "未取得场景必要证据（" + scope.requiredEvidenceTool()
+                    + "），不能给出结论；未执行任何写操作。";
+            effectiveModelStatus = "scenario_required_tool_missing";
+        }
         List<String> toolNames = traces.stream().map(AssistantChatResponse.AssistantToolTrace::toolName).toList();
         List<Long> confirmationIds = pending.stream()
                 .map(AssistantChatResponse.AssistantPendingConfirmation::confirmationId).toList();
@@ -371,10 +434,90 @@ public class AssistantChatService {
                 citationIds.add(citation.path("citationId").asText());
             }
         }
-        sessionService.appendTurn(session, question, status, answer, toolNames, confirmationIds, citationIds);
-        return new AssistantChatResponse(session.getSessionId(), status, answer, traces, pending,
-                new ArrayList<>(citations), modelStatus, answer, modelCalls, toolCalls,
-                quotaService.remaining());
+        JsonNode structured = scope == null ? null : buildStructured(scope, effectiveStatus, effectiveAnswer,
+                effectiveModelStatus, traces, pending, citations);
+        sessionService.appendTurn(session, question, effectiveStatus, effectiveAnswer, toolNames,
+                confirmationIds, citationIds);
+        return new AssistantChatResponse(session.getSessionId(), effectiveStatus, effectiveAnswer, traces, pending,
+                new ArrayList<>(citations), effectiveModelStatus, effectiveAnswer, modelCalls, toolCalls,
+                quotaService.remaining(), scope == null ? null : scope.name(), structured);
+    }
+
+    private JsonNode buildStructured(ScenarioScope scope, String status, String answer, String modelStatus,
+                                     List<AssistantChatResponse.AssistantToolTrace> traces,
+                                     List<AssistantChatResponse.AssistantPendingConfirmation> pending,
+                                     Set<JsonNode> citations) {
+        ObjectNode root = objectMapper.createObjectNode();
+        root.put("scenario", scope.name());
+        root.put("status", status);
+        root.put("requiredEvidenceTool", scope.requiredEvidenceTool());
+        root.set("toolNames", objectMapper.valueToTree(
+                traces.stream().map(AssistantChatResponse.AssistantToolTrace::toolName).toList()));
+        root.put("pendingConfirmation", !pending.isEmpty());
+        root.set("confirmationIds", objectMapper.valueToTree(
+                pending.stream().map(AssistantChatResponse.AssistantPendingConfirmation::confirmationId).toList()));
+        root.set("citations", objectMapper.valueToTree(new ArrayList<>(citations)));
+        ObjectNode evidence = root.putObject("evidence");
+        for (AssistantChatResponse.AssistantToolTrace trace : traces) {
+            JsonNode data = trace.data() == null ? objectMapper.createObjectNode() : trace.data();
+            switch (trace.toolName()) {
+                case "get_parameter_guide" -> {
+                    evidence.set("catalog", data);
+                    ArrayNode findings = evidence.putArray("findings");
+                    for (JsonNode algorithm : data.path("algorithms")) {
+                        findings.addObject().put("algorithmId", algorithm.path("algorithmId").asLong())
+                                .put("name", algorithm.path("name").asText())
+                                .put("type", algorithm.path("type").asText());
+                    }
+                }
+                case "get_my_task_summary" -> {
+                    evidence.set("task", data);
+                    evidence.set("blockers", data.path("blockers").deepCopy());
+                    evidence.set("warnings", data.path("warnings").deepCopy());
+                }
+                case "get_my_report_summary" -> {
+                    evidence.put("taskId", data.path("taskId").asLong());
+                    evidence.put("taskStatus", data.path("status").asText());
+                    ObjectNode metrics = evidence.putObject("metrics");
+                    if (data.has("cleanPurityPercentByIsolationRatio")) {
+                        metrics.set("cleanPurityPercentByIsolationRatio",
+                                data.get("cleanPurityPercentByIsolationRatio").deepCopy());
+                    }
+                    if (data.has("selectedSampleCountByIsolationRatio")) {
+                        metrics.set("selectedSampleCountByIsolationRatio",
+                                data.get("selectedSampleCountByIsolationRatio").deepCopy());
+                    }
+                    if (metrics.isEmpty()) {
+                        metrics.put("state", "unavailable");
+                    }
+                    evidence.put("exportAvailability", data.path("cleanSubsetExportAvailable").asBoolean(false));
+                    if (data.has("failureSummary")) {
+                        evidence.put("failureSummary", data.path("failureSummary").asText());
+                    }
+                }
+                default -> {
+                    // search_knowledge contributes citations only; its raw text is not copied.
+                }
+            }
+        }
+        for (AssistantChatResponse.AssistantPendingConfirmation confirmation : pending) {
+            JsonNode preview = confirmation.preview();
+            if (preview.has("finalParameters")) {
+                evidence.set("finalParameters", preview.get("finalParameters").deepCopy());
+            }
+            if (preview.has("configFingerprint")) {
+                evidence.put("configFingerprint", preview.path("configFingerprint").asText());
+            }
+            if (preview.has("blockers")) {
+                evidence.set("blockers", preview.get("blockers").deepCopy());
+            }
+        }
+        if (!"answered".equals(status)) {
+            ObjectNode failure = root.putObject("failure");
+            failure.put("code", modelStatus == null ? status : modelStatus);
+            failure.put("message", answer == null ? "场景未完成" : KnowledgeSanitizer.forModel(answer, 300));
+        }
+        return root;
     }
 
     @PreDestroy
@@ -390,5 +533,8 @@ public class AssistantChatService {
     private record ToolExecution(AssistantChatResponse.AssistantToolTrace trace,
                                  AssistantChatResponse.AssistantPendingConfirmation pending,
                                  List<JsonNode> citations) {
+    }
+
+    private record ScenarioScope(String name, Set<String> tools, String requiredEvidenceTool) {
     }
 }

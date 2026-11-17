@@ -302,28 +302,28 @@ R3-01/02/03/05/06/07/08/09/10 必须含真实 MySQL 证据；R3-04 包含短进�
 |---|---|---|---|---|---|---|
 | R6-01 | 词法候选 + 向量重排，固定 20 题 | `KnowledgeEvaluationTest`、`KnowledgeHybridEvaluationTest` | `tmp/round4-docs-knowledge-eval.log`（7/7） | 通过（隔离，可答 10/10） | 未执行 | 固定小语料，不是大规模评估 |
 | R6-02 | 引用带 sourceKey/version/章节/行号，回答后校验 | `KnowledgeControllerTest`、`KnowledgeEvaluationTest` | `tmp/round3-full-verify-final.log` | 通过（隔离） | 未执行 | 未接付费模型生产质量评估 |
-| R6-03 | 词法候选为空直接拒答；IDF 覆盖率阈值 `0.30` + 最低分 20 | `KnowledgeEvaluationTest`、`KnowledgeHybridEvaluationTest`、`AssistantScenarioEvaluationSetTest` | `tmp/round4-docs-knowledge-eval.log`（7/7，未知 0 命中）；独立集 `tmp/stage6-scenario-eval.log` | 通过（隔离，未知 0 命中；独立集未知 2/2 拒答） | 未执行 | 有限样本校准；独立保留题集已加入测试类，但仍不是大规模语料评估 |
+| R6-03 | 词法候选为空直接拒答；IDF 覆盖率阈值 `0.30` + 最低分 20 | `KnowledgeEvaluationTest`、`KnowledgeHybridEvaluationTest`、`AssistantRankerSampleEvaluationTest` | `tmp/round4-docs-knowledge-eval.log`（7/7，未知 0 命中）；排序器样例 `tmp/stage7-scenario-tests.log` | 通过（隔离，未知 0 命中；样例未知 2/2 拒答） | 未执行 | 有限样本校准；`AssistantRankerSampleEvaluationTest` 仅是排序器样例，不证明生产 ACL/注入 |
 | R6-04 | ACL 前置 + `status='active'`；退役立即不可召回；持久清理状态/退避/公平排序 | `KnowledgeRetrievalMySqlIT`、`KnowledgeVectorStoreRedisIT`、`KnowledgeHybridEvaluationTest` | `tmp/round3-p2.log`（6/6） | 通过（隔离） | 未执行 | 向量残留靠对账，不是强一致；失败期间只保证 ACL 不召回 |
 | R6-04a | 基础表四列/索引；增量/回滚脚本动态判断，可重复执行 | `KnowledgeVectorCleanupMigrationIT` | `tmp/round3-p2-migration.log`（1/1） | 通过（隔离） | 未执行 | 仅隔离 schema；生产库未迁移；回滚需停机 |
 | R6-05 | 四层路径规则 + 凭据/PII；所有外发渠道复用 `forModel()` | `KnowledgeSanitizerTest` 9/9、`AssistantOutboundPrivacyTest` 1/1 两轮最终 body | `tmp/round3-p1.log` | 通过（隔离） | 未执行 | 正则形态过滤，不能穷举自由文本隐私形态 |
 | R6-06 | 模型/工具预算、超时、`provider=disabled` 降级 | `AssistantChatServiceTest`、`AssistantPreviewServiceTest`、`KnowledgeControllerTest` | `tmp/round3-full-verify-final.log` | 通过（隔离） | 未执行 | 付费供应商额度未形成生产配置 |
-| R6-07 | system prompt 声明 context 不可信；工具白名单；注入题零私有候选 | `KnowledgeEvaluationTest.unsafeOrUnauthorizedPromptsNeverExposeForeignPrivateData`、`KnowledgeHybridEvaluationTest`、`AssistantScenarioEvaluationSetTest` | `tmp/round4-docs-knowledge-eval.log`（7/7）；`tmp/stage6-scenario-eval.log` | 通过（隔离） | 未执行 | 非对抗性红队覆盖 |
+| R6-07 | system prompt 声明 context 不可信；工具白名单；注入题零私有候选 | `KnowledgeEvaluationTest.unsafeOrUnauthorizedPromptsNeverExposeForeignPrivateData`、`KnowledgeHybridEvaluationTest`、`AssistantScenarioExecutionTest` 的越界工具拒绝 | `tmp/round4-docs-knowledge-eval.log`（7/7）；`tmp/stage7-scenario-tests.log` | 通过（隔离，仅服务端工具边界与词法候选） | 未执行 | 非对抗性红队覆盖；真实模型自然语言注入行为未由本轮证明 |
 
-**2026-11-17 独立评估集（质量改进，不新增必选 ID）**：`AssistantScenarioEvaluationSetTest` 的题集只存在于测试类，不写入 `docs/sdd`，避免被检索语料污染。固定输出维度为 `retrieval_hit`、`citation_correct`、`refusal_unknown`、`permission_blocked`、`injection_blocked`，并单独断言参数默认值/schema、报告白名单指标与绝对路径脱敏、过期确认拒绝。评估首跑发现 `ParameterGuideTool` 会把算法默认配置的 `script` 绝对路径带入结果，已修为递归丢弃 path/script/dir/file/log/workspace/root 字段并把绝对路径文本替换为 `[redacted]`；该用例固化为回归。结果只代表隔离环境确定性测试，不代表真实 DeepSeek 多轮质量或部署验收。
+**2026-11-17 排序器样例（质量改进，不新增必选 ID）**：`AssistantRankerSampleEvaluationTest` 的题集只存在于测试类，不写入 `docs/sdd`，避免被检索语料污染。固定输出维度为 `retrieval_hit`、`citation_correct`、`refusal_unknown`、`permission_blocked`、`injection_blocked`，并单独断言参数默认值/schema、报告白名单指标与绝对路径脱敏、过期确认拒绝。该测试在辅助方法中已按 owner 过滤私有语料，因此权限/注入计数只是排序器样例，不证明生产 ACL 或模型注入防御。评估首跑发现 `ParameterGuideTool` 会把算法默认配置的 `script` 绝对路径带入结果，已修为递归丢弃 path/script/dir/file/log/workspace/root 字段并把绝对路径文本替换为 `[redacted]`；该用例固化为回归。结果只代表隔离环境确定性测试，不代表真实 DeepSeek 多轮质量或部署验收。
 
 #### R7 受控助手
 
 | 需求 ID | 实现方法 | 具体测试 | 实跑证据 | 实现验收 | 部署验收 | 剩余边界 |
 |---|---|---|---|---|---|---|
 | R7-01 | 只读工具复用 `TaskAccessGuard.requireOwned`；写预览校验 owner | `AssistantConfirmationEndToEndIT` 跨用户 403 | `tmp/round3-full-verify-final.log` | 通过（隔离） | 未执行 | 单进程权限，不是组织级 RBAC/双人审批 |
-| R7-02 | 注册表白名单，模型不能新增工具 | `AssistantToolRegistryTest`、`AssistantChatServiceTest` | `tmp/round3-full-verify-final.log` | 通过（隔离） | 未执行 | 模型仍可能尝试未知工具，被拒绝 |
-| R7-03 | 写工具只返回预览；确认前不写任务/不领租约/不派发 | `AssistantConfirmationEndToEndIT` 预览零写入 | `tmp/round3-full-verify-final.log` | 通过（隔离） | 未执行 | 无 |
+| R7-02 | 注册表白名单；场景进一步收窄工具集，执行前二次校验，越界 403 并写 `SCENARIO_DENIED` 审计 | `AssistantToolRegistryTest`、`AssistantChatServiceTest`、`AssistantScenarioExecutionTest` | `tmp/stage7-scenario-tests.log` | 通过（隔离） | 未执行 | 模型仍可能尝试未知/越界工具，被服务端拒绝 |
+| R7-03 | 写工具只返回预览；确认前不创建或修改实验任务、不写调度意图、不领取 GPU；允许保存确认与审计记录 | `AssistantConfirmationEndToEndIT` 预览用例；`AssistantScenarioExecutionTest.resultExplanationCannotRequestAWritePreview` | `tmp/round3-full-verify-final.log`、`tmp/stage7-scenario-tests.log` | 通过（隔离） | 未执行 | 确认记录和审计会落库，不能表述为“零写入” |
 | R7-04 | token 哈希、TTL、条件消费、跨用户校验、篡改审计 | `AssistantConfirmationEndToEndIT` 重复/过期/跨用户/篡改 | `tmp/round2-r7-a.log` | 通过（隔离） | 未执行 | 无数据库泄露后的离线重放防护 |
 | R7-05 | 重校验 task/run/attempt/update_time、参数哈希、资源指纹；变化 409 零派发 | `AssistantConfirmationEndToEndIT` 资源/默认值变化 | `tmp/round3-full-verify-final.log` | 通过（隔离） | 未执行 | 无 |
-| R7-06 | 模型线程池有界、总预算/工具预算、超时取消；核心 API 不共享失败 | `AssistantChatServiceTest`、`AssistantConfirmationEndToEndIT` | `tmp/round2-r7-a.log` | 通过（隔离） | 未执行 | 底层 JDBC 物理终止不保证 |
+| R7-06 | 模型线程池有界、总预算/工具预算、超时取消；模型 401/429/5xx/非法响应稳定降级，核心 API 不共享失败 | `AssistantChatServiceTest`、`AssistantConfirmationEndToEndIT`、`DeepSeekAssistantModelTest`、`AssistantOutboundPrivacyTest`、`AssistantModelFailureEndToEndIT` | `tmp/round2-r7-a.log`、`tmp/stage7-model-failure-e2e.log`、`tmp/stage7-full-verify.log` | 通过（隔离） | 未执行 | 底层 JDBC 物理终止不保证；真实供应商生产额度未验证 |
 | R7-07 | 审计只存工具名/operator/target/resultCode/duration；请求体脱敏 | `AssistantOutboundPrivacyTest`、`AssistantConfirmationEndToEndIT` | `tmp/round2-p1-final.log`、`tmp/round2-r7-a.log` | 通过（隔离） | 未执行 | 无 |
 
-**2026-11-17 三场景契约与配置缺失边界（质量改进）**：`AssistantScenarioCatalog`/`GET /api/assistant/scenarios` 固化 LDD 参数校验、任务预检、结果解释的输入、工具白名单、返回字段、引用与失败降级；`DispatchConfigBoundaryIT` 2/2 覆盖启动恢复 `replayPending` 与 Rabbit Worker 消费在空白执行器脚本下返回 `EXECUTOR_NOT_CONFIGURED`、intent `abandoned`、租约释放且 `blocked_at` 为空、无本地 accepted、重复投递不重复执行。写工具仍走“预览→确认→后端授权与状态机”，`AssistantConfirmationEndToEndIT` 22 项仍是确认前零副作用、资源变化拒绝、重复确认不重复执行的基线，其中 `modelDisabledReturnsExplicitStatusAndCoreApiStillWorks` 验证模型不可用时助手显式返回 `model_disabled`、工具调用为 0，任务读取 API 仍为 200；本轮未新增真实外部模型故障注入的端到端项。
+**2026-11-17 三场景执行契约与配置缺失边界（质量改进）**：`scenario` 可选字段只向模型暴露该场景工具，执行前二次校验，越界 403 `ASSISTANT_TOOL_NOT_ALLOWED_FOR_SCENARIO` 并审计；缺必要证据降级 `scenario_incomplete`；`structured` 由服务端工具结果组装，模型伪造指标/引用不进入证据。`DispatchConfigBoundaryIT` 2/2 是服务层集成（mock transport），真实 Broker 另由 `DispatchConfigBoundaryRabbitIT` 覆盖重复投递、账本、队列收敛、零 Python 与租约释放；该用例暴露并修复 Worker 配置缺失分支未释放租约。真实 ACL/引用由 `KnowledgeRetrievalMySqlIT` 的检索服务用例验证；`AssistantRankerSampleEvaluationTest` 仅保留为排序器样例。写工具仍走“预览→确认→后端授权与状态机”，口径为“确认前不创建/修改实验任务、不写调度意图、不领取 GPU；允许保存确认与审计”。真实模型自然语言注入行为未由这些服务端边界测试证明。本机全量门禁（`RABBIT_IT=true`、`REDIS_IT=true`）为 **322 单测 + 117 IT，0 失败/0 跳过，BUILD SUCCESS，2:05**（`tmp/stage7-full-verify.log`）；远端 CI 未触发。
 
 #### R4 单机可靠派发（真实 Broker 双 JVM 已执行，仍有未执行边界）
 

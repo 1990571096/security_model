@@ -72,7 +72,7 @@ public class AssistantController {
 
     @PostMapping("/chat")
     public AssistantChatResponse chat(@RequestBody @jakarta.validation.Valid AssistantChatRequest request) {
-        return chatService.chat(request.sessionId(), request.question());
+        return chatService.chat(request.sessionId(), request.question(), request.scenario());
     }
 
     @PostMapping("/confirmations/confirm")

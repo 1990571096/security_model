@@ -18,6 +18,7 @@ public class AssistantScenarioCatalog {
             String title,
             String inputExample,
             List<String> tools,
+            String requiredEvidenceTool,
             List<String> returnFields,
             String citationPolicy,
             String failureFallback,
@@ -26,44 +27,64 @@ public class AssistantScenarioCatalog {
 
     private final List<Scenario> scenarios;
 
+    @org.springframework.beans.factory.annotation.Autowired
     public AssistantScenarioCatalog(AssistantToolRegistry registry) {
+        this(registry, true);
+    }
+
+    /**
+     * @param validate when false, only build the catalog; used by unit tests that wire a
+     *                 deliberately small tool registry. Production startup always validates.
+     */
+    public AssistantScenarioCatalog(AssistantToolRegistry registry, boolean validate) {
         this.scenarios = List.of(
                 new Scenario(
                         "ldd_parameter_validation",
                         "LDD 参数校验",
                         "创建 LDD 清洗任务，数据集 4、算法 14，batch_size 128、num_epochs 5，检查参数是否可执行",
                         List.of("get_parameter_guide", "search_knowledge", "preview_create_task"),
+                        "get_parameter_guide",
                         List.of("scenario", "status", "findings", "finalParameters", "configFingerprint",
                                 "citations", "pendingConfirmation", "failure"),
                         "参数范围与默认值以 get_parameter_guide 的算法 schema 为准；解释依据引用本地知识时返回 citationId/sectionPath/startLine/endLine",
                         "数据集/算法不可用、非 LDD 算法或参数非法时返回 status=refused 与稳定 errorCode；不生成创建确认",
-                        "preview_create_task 只生成预览，确认前零写入、零 GPU 领取"),
+                        "preview_create_task 只生成预览，确认前不创建或修改实验任务、不写调度意图、不领取 GPU；允许保存确认与审计记录"),
                 new Scenario(
                         "task_preflight",
                         "任务预检",
                         "任务 500 现在能否启动？列出阻塞项",
                         List.of("get_my_task_summary", "preview_start_task", "search_knowledge"),
+                        "get_my_task_summary",
                         List.of("scenario", "status", "taskId", "taskStatus", "blockers", "warnings",
                                 "pendingConfirmation", "citations", "failure"),
                         "任务状态以 get_my_task_summary 为准；调度/租约规则引用本地知识时返回 citationId 与行号",
                         "任务不存在或不属于当前用户时拒绝；不可启动时返回 blockers，不领取 GPU、不改变任务状态",
-                        "preview_start_task 只校验并预览，确认前不领取租约、不启动 Python"),
+                        "preview_start_task 只校验并预览，确认前不创建或修改实验任务、不写调度意图、不领取 GPU；允许保存确认与审计记录"),
                 new Scenario(
                         "result_explanation",
                         "结果解释",
                         "解释任务 500 的清洗结果和失败原因",
                         List.of("get_my_report_summary", "search_knowledge"),
+                        "get_my_report_summary",
                         List.of("scenario", "status", "taskId", "taskStatus", "metrics", "failureSummary",
                                 "exportAvailability", "citations", "failure"),
                         "指标只取自 get_my_report_summary 的白名单字段；方法/阈值解释引用本地知识时返回 citationId 与行号",
                         "任务不存在或越权时拒绝；结果未解析或未采集时明确返回 metrics=unavailable，不编造数值",
-                        "只读；不返回原始结果、日志、文件路径或其他用户数据")
+                        "只读；不生成写预览，不返回原始结果、日志、文件路径或其他用户数据")
         );
+        if (!validate) {
+            return;
+        }
         for (Scenario scenario : scenarios) {
             Set<String> declared = Set.copyOf(scenario.tools());
-            if (!registry.descriptors().stream().map(AssistantToolDescriptor::name)
-                    .collect(java.util.stream.Collectors.toSet()).containsAll(declared)) {
+            Set<String> registered = registry.descriptors().stream()
+                    .map(AssistantToolDescriptor::name)
+                    .collect(java.util.stream.Collectors.toSet());
+            if (!registered.containsAll(declared)) {
                 throw new IllegalStateException("助手场景声明了未注册工具: " + scenario.name());
+            }
+            if (!declared.contains(scenario.requiredEvidenceTool())) {
+                throw new IllegalStateException("助手场景的必要证据工具不在白名单: " + scenario.name());
             }
             for (AssistantToolDescriptor descriptor : registry.descriptors()) {
                 if (declared.contains(descriptor.name()) && descriptor.write()

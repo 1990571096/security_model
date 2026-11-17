@@ -113,6 +113,7 @@ class DispatchConfigBoundaryIT {
     void workerConsumptionWithoutPythonScriptAcksAfterTerminalConvergence() {
         seedRunningTask(WORKER_TASK_ID, WORKER_RUN_ID);
         long intentId = seedPendingIntent(WORKER_TASK_ID, WORKER_RUN_ID).getIntentId();
+        holdLease(WORKER_TASK_ID, WORKER_RUN_ID);
         String messageId = UUID.randomUUID().toString();
         DispatchEvent event = new DispatchEvent(DispatchEvent.SCHEMA_VERSION, messageId,
                 DispatchEvent.EVENT_TASK_DISPATCH, WORKER_TASK_ID, WORKER_RUN_ID, 1,

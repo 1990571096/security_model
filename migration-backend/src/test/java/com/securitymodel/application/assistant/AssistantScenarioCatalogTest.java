@@ -29,12 +29,14 @@ class AssistantScenarioCatalogTest {
         assertTrue(validation.tools().contains("preview_create_task"));
         assertTrue(validation.returnFields().contains("pendingConfirmation"));
         assertTrue(validation.returnFields().contains("citations"));
-        assertTrue(validation.sideEffectPolicy().contains("零写入"));
+        assertTrue(validation.sideEffectPolicy().contains("允许保存确认与审计记录"));
+        assertEquals("get_parameter_guide", validation.requiredEvidenceTool());
 
         AssistantScenarioCatalog.Scenario preflight = catalog.find("task_preflight");
         assertNotNull(preflight);
         assertTrue(preflight.tools().contains("preview_start_task"));
-        assertTrue(preflight.sideEffectPolicy().contains("不领取租约"));
+        assertTrue(preflight.sideEffectPolicy().contains("允许保存确认与审计记录"));
+        assertEquals("get_my_task_summary", preflight.requiredEvidenceTool());
 
         AssistantScenarioCatalog.Scenario explanation = catalog.find("result_explanation");
         assertNotNull(explanation);
