@@ -51,6 +51,7 @@ class TaskDispatchCoordinatorTest {
         com.securitymodel.domain.user.SysUser owner = new com.securitymodel.domain.user.SysUser();
         owner.setEnabled(true);
         when(userMapper.selectById(7L)).thenReturn(owner);
+        when(executor.isConfigured()).thenReturn(true);
     }
 
     @Test
@@ -235,6 +236,50 @@ class TaskDispatchCoordinatorTest {
                 TaskDispatchCoordinator.QueueDispatchResult.BUSY,
                 coordinator.consume(intent, task()));
         verify(executor, never()).executeAndWait(any());
+    }
+
+    @Test
+    void unconfiguredReplayReleasesLeaseAndConvergesWithoutStarting() {
+        TaskDispatchIntent intent = intent();
+        when(executor.isConfigured()).thenReturn(false);
+
+        assertFalse(coordinator.replayPending(intent, task()));
+
+        verify(gpuLeaseService).releaseByRun(1L, "run-1");
+        verify(taskMapper).failBeforeExecution(eq(1L), eq("run-1"), eq(1), any(), any());
+        verify(intentService).abandon(eq(1L), eq("run-1"), eq(1),
+                eq("EXECUTOR_NOT_CONFIGURED"), any());
+        verify(intentService, never()).markSubmitting(any(), any(), any(), any());
+        verify(gpuLeaseService, never()).acquire(any(), any(), any());
+        verify(executor, never()).runPreDefense(any());
+    }
+
+    @Test
+    void unconfiguredWorkerFailsBeforeClaimingALease() {
+        TaskDispatchIntent intent = intent();
+        when(executor.isConfigured()).thenReturn(false);
+
+        org.junit.jupiter.api.Assertions.assertEquals(
+                TaskDispatchCoordinator.QueueDispatchResult.TERMINAL,
+                coordinator.consume(intent, task()));
+
+        verify(taskMapper).failBeforeExecution(eq(1L), eq("run-1"), eq(1), any(), any());
+        verify(intentService).abandon(eq(1L), eq("run-1"), eq(1),
+                eq("EXECUTOR_NOT_CONFIGURED"), any());
+        verify(gpuLeaseService, never()).acquire(any(), any(), any());
+        verify(executor, never()).executeAndWait(any());
+    }
+
+    @Test
+    void unconfiguredAfterCommitDispatchFailsBeforeMarkingSubmitting() {
+        when(executor.isConfigured()).thenReturn(false);
+
+        coordinator.dispatchAfterCommit(request());
+
+        verify(gpuLeaseService).releaseByRun(1L, "run-1");
+        verify(taskMapper).failBeforeExecution(eq(1L), eq("run-1"), eq(1), any(), any());
+        verify(intentService, never()).markSubmitting(any(), any(), any(), any());
+        verify(executor, never()).runPreDefense(any());
     }
 
     private DefenseTaskRequest request() {

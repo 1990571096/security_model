@@ -47,16 +47,22 @@ function Get-TableCount([string]$where = '') {
 Invoke-Sql "CREATE DATABASE IF NOT EXISTS $SchemaName CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci"
 
 # sql/eladmin.sql 开头是 DROP TABLE IF EXISTS，不是幂等建表脚本。
-# 只有在本脚本留下 marker 之后才允许重跑增量；否则要求目标库为空，防止清空已有业务数据。
-$markerExists = (Invoke-Sql "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='$SchemaName' AND table_name='sys_dev_init_marker'" $SchemaName).Trim()
-$baseExists = (Invoke-Sql "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='$SchemaName' AND table_name='sys_pre_defense'" $SchemaName).Trim()
+# 只有在本脚本留下 marker 之后才允许重跑增量；没有 marker 时，目标库必须是完全空的。
+# 不能只看 sys_pre_defense：只存在 sys_user/sys_dataset 等表的库同样会被基础 SQL 清空。
+$markerTableExists = (Invoke-Sql "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='$SchemaName' AND table_name='sys_dev_init_marker'" $SchemaName).Trim()
+$existingTableCount = (Invoke-Sql "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='$SchemaName'" $SchemaName).Trim()
+# 标记表存在但没有任何一行属于本库，同样不可信；只有 schema_name 匹配的记录才算 marker。
+$markerRecordCount = '0'
+if ($markerTableExists -ne '0') {
+    $markerRecordCount = (Invoke-Sql "SELECT COUNT(*) FROM sys_dev_init_marker WHERE schema_name='$SchemaName'" $SchemaName).Trim()
+}
 
-if ($markerExists -eq '0' -and $baseExists -ne '0') {
-    throw "拒绝执行：$SchemaName 已有业务表但没有初始化标记。sql/eladmin.sql 会 DROP 并重建业务表，" +
+if ($markerRecordCount -eq '0' -and [int]$existingTableCount -gt 0) {
+    throw "拒绝执行：$SchemaName 已有 $existingTableCount 个表或视图，但没有可信初始化标记（sys_dev_init_marker 中无本库记录）。sql/eladmin.sql 会 DROP 并重建业务表，" +
           "不能对已有数据的库执行。请先确认该库可清空，或改用新库名。"
 }
 
-if ($markerExists -eq '0') {
+if ($markerRecordCount -eq '0') {
     $watch = [System.Diagnostics.Stopwatch]::StartNew()
     Invoke-SqlFile 'sql\eladmin.sql'
     $watch.Stop()
@@ -82,7 +88,9 @@ $files = @(
     'sql\security_model_knowledge.sql',
     'sql\security_model_knowledge_vector_reconcile.sql',
     'sql\security_model_assistant.sql',
-    'sql\security_model_mvp_seed.sql'
+    'sql\security_model_mvp_seed.sql',
+    'sql\security_model_legacy_running_task_baseline.sql',
+    'sql\security_model_dataset_verification_baseline.sql'
 )
 
 foreach ($relative in $files) {
@@ -92,8 +100,10 @@ foreach ($relative in $files) {
     Write-Host ("applied {0} ({1:n0} ms)" -f $relative, $watch.ElapsedMilliseconds)
 }
 
-# 可移植 VaB 种子：只有显式提供、且真实存在的目录才写入 sys_dataset。
+# 可移植 VaB 种子：只有显式提供、且真实存在、可读、非空并含 CIFAR-10 结构的目录才写入 sys_dataset。
 # 未提供时仍注册 LDD 算法与默认超参模板，但不伪造数据集路径或“已解析”状态。
+# 目录结构检查不等于样本解析，因此种子只登记 pending，样本统计保持 NULL；
+# 管理员随后通过 POST /api/dataset/{id}/validate 推进可用状态。
 $vabPreamble = ''
 $vabMode = 'algorithm only; no dataset root provided'
 if (-not [string]::IsNullOrWhiteSpace($VabDatasetRoot)) {
@@ -103,10 +113,33 @@ if (-not [string]::IsNullOrWhiteSpace($VabDatasetRoot)) {
     if (-not (Test-Path -LiteralPath $vabPath -PathType Container)) {
         throw "VaB 数据集路径不是目录: $vabPath"
     }
+    try {
+        $vabEntries = @(Get-ChildItem -LiteralPath $vabPath -Force -ErrorAction Stop)
+    } catch {
+        throw "VaB 数据集目录不可读: $vabPath ($($_.Exception.Message))"
+    }
+    if ($vabEntries.Count -eq 0) {
+        throw "VaB 数据集目录为空: $vabPath"
+    }
+    $cifarDir = Join-Path $vabPath 'cifar-10-batches-py'
+    if (-not (Test-Path -LiteralPath $cifarDir -PathType Container)) {
+        throw "VaB 数据集目录缺少 CIFAR-10 结构：需要 $cifarDir"
+    }
+    $cifarFiles = @('batches.meta', 'data_batch_1', 'data_batch_2', 'data_batch_3',
+        'data_batch_4', 'data_batch_5', 'test_batch')
+    $missingCifar = @()
+    foreach ($name in $cifarFiles) {
+        $candidate = Join-Path $cifarDir $name
+        $item = Get-Item -LiteralPath $candidate -ErrorAction SilentlyContinue
+        if (-not $item -or $item.PSIsContainer -or $item.Length -le 0) { $missingCifar += $name }
+    }
+    if ($missingCifar.Count -gt 0) {
+        throw "VaB 数据集目录不是可运行的 CIFAR-10 结构，缺少或为空: $($missingCifar -join ', ')"
+    }
     $vabPathForSql = $vabPath.Replace('\', '/').TrimEnd('/')
     $escapedVab = $vabPathForSql.Replace("'", "''")
     $vabPreamble = "SET @vab_dataset_root = '$escapedVab';"
-    $vabMode = "dataset root=$vabPathForSql"
+    $vabMode = "dataset root=$vabPathForSql (CIFAR-10 structure verified; seed registers pending)"
 }
 $watch = [System.Diagnostics.Stopwatch]::StartNew()
 Invoke-SqlFile 'sql\security_model_vab_seed.sql' $vabPreamble

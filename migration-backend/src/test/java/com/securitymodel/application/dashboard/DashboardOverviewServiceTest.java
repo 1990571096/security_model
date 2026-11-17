@@ -92,8 +92,11 @@ class DashboardOverviewServiceTest {
         assertEquals(0L, ((Map<?, ?>) overview.get("tasks")).get("total"));
         assertNull(((Map<?, ?>) overview.get("reportReadiness")).get("ratio"));
         assertEquals(0, ((Map<?, ?>) overview.get("resources")).get("datasetCount"));
-        assertFalse(overview.toString().contains("90.0"));
-        assertFalse(overview.toString().contains("4.7"));
+        // sampledAt carries wall-clock milliseconds; scanning the whole response makes this
+        // assertion flaky (a millisecond like 24.764 contains the substring "4.7").
+        Map<?, ?> metrics = (Map<?, ?>) overview.get("metrics");
+        assertFalse(metrics.toString().contains("90.0"));
+        assertFalse(metrics.toString().contains("4.7"));
     }
 
     @Test

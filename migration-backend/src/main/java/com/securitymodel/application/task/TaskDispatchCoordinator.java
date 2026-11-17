@@ -94,6 +94,15 @@ public class TaskDispatchCoordinator {
                 || !intent.getAttempt().equals(task.getCurrentAttempt())) {
             return QueueDispatchResult.STALE;
         }
+        if (!executor.isConfigured()) {
+            // The Worker owns its own execution configuration. A missing script cannot be
+            // fixed by redelivery, so converge the attempt instead of claiming a lease.
+            failAndAbandon(intent.getTaskId(), intent.getRunId(), intent.getAttempt(),
+                    "EXECUTOR_NOT_CONFIGURED",
+                    "Worker 执行器未配置 security-model.executor.python.script"
+                            + "（环境变量 SECURITY_MODEL_EXECUTOR_PYTHON_SCRIPT）");
+            return QueueDispatchResult.TERMINAL;
+        }
         DefenseTaskRequest request;
         try {
             request = intentService.readRequest(intent);
@@ -163,6 +172,16 @@ public class TaskDispatchCoordinator {
 
     /** Runs after the launch transaction commits; never throws into the caller's thread. */
     public void dispatchAfterCommit(DefenseTaskRequest request) {
+        if (!executor.isConfigured()) {
+            // Defensive: start/retry precheck should have rejected this before the transaction.
+            // The request was never handed to the executor, so this run's lease is safe to release.
+            gpuLeaseService.releaseByRun(request.getTaskId(), request.getRunId());
+            failAndAbandon(request.getTaskId(), request.getRunId(), request.getAttempt(),
+                    "EXECUTOR_NOT_CONFIGURED",
+                    "执行器未配置 security-model.executor.python.script"
+                            + "（环境变量 SECURITY_MODEL_EXECUTOR_PYTHON_SCRIPT）");
+            return;
+        }
         try {
             if (!intentService.markSubmitting(request.getTaskId(), request.getRunId(),
                     request.getAttempt(), LocalDateTime.now())) {
@@ -227,6 +246,17 @@ public class TaskDispatchCoordinator {
         if ("demo".equals(task.getDataOrigin())) {
             failAndAbandon(intent.getTaskId(), intent.getRunId(), intent.getAttempt(),
                     "DISPATCH_DEMO_FORBIDDEN", "演示任务不允许自动重放");
+            return false;
+        }
+        if (!executor.isConfigured()) {
+            // A pending intent is persisted proof that the executor was never invoked for
+            // this attempt. With no script configured, replay cannot make progress; release
+            // the old lease and converge instead of leaving a running task behind.
+            gpuLeaseService.releaseByRun(intent.getTaskId(), intent.getRunId());
+            failAndAbandon(intent.getTaskId(), intent.getRunId(), intent.getAttempt(),
+                    "EXECUTOR_NOT_CONFIGURED",
+                    "恢复派发拒绝：执行器未配置 security-model.executor.python.script"
+                            + "（环境变量 SECURITY_MODEL_EXECUTOR_PYTHON_SCRIPT）");
             return false;
         }
         DefenseTaskRequest request;

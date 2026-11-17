@@ -91,7 +91,7 @@ public class ApiExceptionHandler {
             TaskCommandException exception,
             HttpServletRequest request) {
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Map.of(
-                "code", "TASK_COMMAND_INVALID",
+                "code", exception.getCode() == null ? "TASK_COMMAND_INVALID" : exception.getCode(),
                 "message", exception.getMessage(),
                 "path", request.getRequestURI(),
                 "timestamp", OffsetDateTime.now().toString()

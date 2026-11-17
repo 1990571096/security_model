@@ -540,6 +540,7 @@ class MySqlTaskPersistenceIT {
         TaskDispatchIntentService intents = new TaskDispatchIntentService(intentMapper, objectMapper);
         com.securitymodel.infrastructure.executor.DefenseTaskExecutor executor =
                 mock(com.securitymodel.infrastructure.executor.DefenseTaskExecutor.class);
+        when(executor.isConfigured()).thenReturn(true);
         com.securitymodel.infrastructure.executor.AttemptProcessRegistry registry =
                 new com.securitymodel.infrastructure.executor.AttemptProcessRegistry(objectMapper, "");
         GpuLeaseService leases = mock(GpuLeaseService.class);

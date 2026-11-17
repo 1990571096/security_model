@@ -44,11 +44,16 @@ environment variable name is the upper-snake-case form):
 | `SECURITY_MODEL_VAB_RESULT_ROOT` | same | unset | Optional external artifact root for VaB runs |
 | `VAB_ROOT` | same | unset | Required by the adapter; points to the external `VaB-main` |
 
-An empty `script` fails the attempt with `EXECUTOR_NOT_CONFIGURED`. There is no fallback to a
-demo or mock executor in this backend.
+An empty `script` fails the attempt with the stable code `EXECUTOR_NOT_CONFIGURED`. There is
+no fallback to a demo or mock executor in this backend. In db mode the API rejects
+`start/retry` before it claims a lease, increments an attempt, writes a snapshot or creates
+a dispatch intent, so the task keeps its previous state. The recovery replay path and the
+Rabbit Worker apply the same executor check; a Rabbit API instance does not require its own
+Python script, because it never starts Python.
 
-The Java executor's own error message still says `未配置 SECURITY_MODEL_PYTHON_SCRIPT`; that
-variable name is stale and is *not* bound to the property above. Use the table.
+The error message names the bound property and environment variable explicitly:
+`security-model.executor.python.script` / `SECURITY_MODEL_EXECUTOR_PYTHON_SCRIPT`. No short
+alias is bound.
 
 ## Invocation
 

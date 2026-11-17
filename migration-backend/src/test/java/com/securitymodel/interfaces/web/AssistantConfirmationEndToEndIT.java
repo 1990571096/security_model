@@ -122,6 +122,7 @@ class AssistantConfirmationEndToEndIT {
 
     @BeforeEach
     void resetRunningTask() {
+        when(executor.isConfigured()).thenReturn(true);
         jdbc.update("DELETE FROM sys_pre_defense WHERE task_id = ?", ALICE_RUNNING_TASK);
         jdbc.update("DELETE FROM sys_pre_defense WHERE task_id = ?", ALICE_PENDING_TASK);
         jdbc.update("DELETE FROM sys_pre_defense WHERE task_id = ?", ALICE_FAILED_TASK);

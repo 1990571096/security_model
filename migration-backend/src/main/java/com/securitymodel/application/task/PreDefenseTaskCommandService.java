@@ -229,6 +229,7 @@ public class PreDefenseTaskCommandService {
             throw new TaskCommandException("只有失败的任务才能重试");
         }
         TaskExecutionPlan plan = requireApprovedPlan(task, expectedFingerprint);
+        requireLocalExecutionConfigured();
         if (taskMapper.resetForRetry(taskId) != 1) {
             throw new TaskCommandException("任务状态已变化，请刷新后重试");
         }
@@ -443,6 +444,21 @@ public class PreDefenseTaskCommandService {
         launchTask(task, plan(task));
     }
 
+    /**
+     * Rabbit API never starts Python and therefore must not reject a valid command just
+     * because this JVM has no script configured; the Worker checks its own executor.
+     */
+    private void requireLocalExecutionConfigured() {
+        if (!dispatchRuntimePolicy.directDispatchOwnedByApi()) {
+            return;
+        }
+        if (!defenseTaskExecutor.isConfigured()) {
+            throw new TaskCommandException("EXECUTOR_NOT_CONFIGURED",
+                    "EXECUTOR_NOT_CONFIGURED: 未配置 security-model.executor.python.script"
+                            + "（环境变量 SECURITY_MODEL_EXECUTOR_PYTHON_SCRIPT），任务状态未改变");
+        }
+    }
+
     private void launchTask(PreDefenseTask task, TaskExecutionPlan approvedPlan) {
         if (!readinessGate.isReady()) {
             throw new TaskCommandException("SCHEDULING_NOT_READY: 启动恢复尚未完成，暂不接受新的执行请求");
@@ -455,6 +471,9 @@ public class PreDefenseTaskCommandService {
         if (rabbitApi && taskOutboxService == null) {
             throw new TaskCommandException("DISPATCH_OUTBOX_UNAVAILABLE: Outbox 持久层未装配");
         }
+        // db mode owns the local Python attempt. Refuse before nextAttempt/lease/snapshot/
+        // intent writes so a missing script leaves the task exactly as it was.
+        requireLocalExecutionConfigured();
         int attempt = nextAttempt(task.getExecutionSnapshot());
         String runId = UUID.randomUUID().toString();
         // db: lease + task claim + intent share one transaction. rabbit: the API must not

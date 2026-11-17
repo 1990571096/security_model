@@ -48,6 +48,11 @@ public class PythonLddTaskExecutor implements DefenseTaskExecutor {
     private final ConcurrentMap<String, Process> activeProcesses = new ConcurrentHashMap<>();
     private final java.util.Set<String> canceledRuns = ConcurrentHashMap.newKeySet();
 
+    @Override
+    public boolean isConfigured() {
+        return StringUtils.hasText(pythonScript);
+    }
+
     public PythonLddTaskExecutor(
             PreDefenseTaskMapper taskMapper,
             ObjectMapper objectMapper,
@@ -197,7 +202,7 @@ public class PythonLddTaskExecutor implements DefenseTaskExecutor {
     private String invoke(DefenseTaskRequest request, ExecutionContext context)
             throws IOException, InterruptedException, CanceledException {
         if (!StringUtils.hasText(pythonScript)) {
-            throw new IllegalStateException("EXECUTOR_NOT_CONFIGURED: 未配置 SECURITY_MODEL_PYTHON_SCRIPT");
+            throw new IllegalStateException("EXECUTOR_NOT_CONFIGURED: 未配置 security-model.executor.python.script（环境变量 SECURITY_MODEL_EXECUTOR_PYTHON_SCRIPT）");
         }
         Files.writeString(context.requestFile, objectMapper.writeValueAsString(request), StandardCharsets.UTF_8);
         List<String> command = List.of(pythonExecutable, pythonScript,

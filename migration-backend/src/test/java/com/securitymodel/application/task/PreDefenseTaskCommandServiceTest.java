@@ -82,6 +82,7 @@ class PreDefenseTaskCommandServiceTest {
         when(resourceQueryService.findDatasetAuthoritative(1L)).thenReturn(dataset());
         when(resourceQueryService.findAlgorithmAuthoritative(2L)).thenReturn(algorithm());
         when(currentUserService.username()).thenReturn("tester");
+        when(defenseTaskExecutor.isConfigured()).thenReturn(true);
         when(gpuLeaseService.acquire(any(), any(), any())).thenReturn(gpuLease());
     }
 
@@ -181,6 +182,42 @@ class PreDefenseTaskCommandServiceTest {
                 exception.getMessage().contains("SCHEDULING_NOT_READY"));
         verify(gpuLeaseService, org.mockito.Mockito.never()).acquire(any(), any(), any());
         verify(taskMapper, org.mockito.Mockito.never()).claimForExecution(any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void startRefusesUnconfiguredExecutorBeforeLeaseAttemptSnapshotOrIntent() {
+        PreDefenseTask pending = task(34L, "pending", null);
+        when(taskAccessGuard.requireOwned(34L)).thenReturn(pending);
+        when(taskMapper.selectByIdForUpdate(34L)).thenReturn(pending);
+        when(defenseTaskExecutor.isConfigured()).thenReturn(false);
+
+        var exception = org.junit.jupiter.api.Assertions.assertThrows(TaskCommandException.class,
+                () -> commandService.start(34L));
+
+        assertEquals("EXECUTOR_NOT_CONFIGURED", exception.getCode());
+        org.junit.jupiter.api.Assertions.assertTrue(
+                exception.getMessage().contains("SECURITY_MODEL_EXECUTOR_PYTHON_SCRIPT"));
+        verify(gpuLeaseService, never()).acquire(any(), any(), any());
+        verify(taskMapper, never()).claimForExecution(any(), any(), any(), any(), any());
+        verify(intentService, never()).createPending(any(), any(), any());
+        verify(dispatchCoordinator, never()).dispatchAfterCommit(any());
+    }
+
+    @Test
+    void retryRefusesUnconfiguredExecutorBeforeResettingTheFailedTask() {
+        PreDefenseTask failed = task(36L, "failed", null);
+        when(taskAccessGuard.requireOwned(36L)).thenReturn(failed);
+        when(taskMapper.selectByIdForUpdate(36L)).thenReturn(failed);
+        when(defenseTaskExecutor.isConfigured()).thenReturn(false);
+
+        var exception = org.junit.jupiter.api.Assertions.assertThrows(TaskCommandException.class,
+                () -> commandService.retry(36L));
+
+        assertEquals("EXECUTOR_NOT_CONFIGURED", exception.getCode());
+        verify(taskMapper, never()).resetForRetry(36L);
+        verify(gpuLeaseService, never()).acquire(any(), any(), any());
+        verify(taskMapper, never()).claimForExecution(any(), any(), any(), any(), any());
+        verify(dispatchCoordinator, never()).dispatchAfterCommit(any());
     }
 
     private PreDefenseTask task(Long taskId, String status, String executionSnapshot) {

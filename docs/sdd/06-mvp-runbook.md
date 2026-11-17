@@ -162,12 +162,14 @@ SOURCE sql/security_model_knowledge.sql;
 SOURCE sql/security_model_knowledge_vector_reconcile.sql;
 SOURCE sql/security_model_assistant.sql;
 SOURCE sql/security_model_mvp_seed.sql;
+SOURCE sql/security_model_legacy_running_task_baseline.sql;
+SOURCE sql/security_model_dataset_verification_baseline.sql;
 -- 可选：先 SET @vab_dataset_root = '<部署机 VaB-main/dataset>'; 再执行，
 -- 没有变量时只注册 LDD 算法与超参模板，不写数据集行。
 SOURCE sql/security_model_vab_seed.sql;
 ```
 
-除 `sql/eladmin.sql` 外，增量脚本按 `CREATE TABLE IF NOT EXISTS` / 条件 `ALTER` 编写，正常可重复执行；`sql/eladmin.sql` 开头是 `DROP TABLE IF EXISTS` 后重建，**不是幂等建表脚本**，重复执行会清空业务表，不能对已有数据的库直接执行。开发库统一用 `scripts/dev/InitializeSecurityModelDatabase.ps1`，脚本只允许 `security_model`，并用 `sys_dev_init_marker` 区分“基础 schema 已应用”和“从未初始化”：无 marker 且已存在 `sys_pre_defense` 时直接拒绝，避免误删。回滚脚本只删除本阶段新增表，不删除业务任务。R3 两张表没有外键到任务表，回滚不会级联删除任务。知识库退役向量清理的增量脚本 `security_model_knowledge_vector_reconcile.sql` 也必须执行，否则 `vector_cleanup_status` 等列缺失，退役对账会失败；回滚先执行 `sql/security_model_knowledge_vector_reconcile_rollback.sql`，要求停止调度且无活跃任务，脚本只删除索引和四个清理列，不删业务行。
+除 `sql/eladmin.sql` 外，增量脚本按 `CREATE TABLE IF NOT EXISTS` / 条件 `ALTER` 编写，正常可重复执行；`sql/eladmin.sql` 开头是 `DROP TABLE IF EXISTS` 后重建，**不是幂等建表脚本**，重复执行会清空业务表，不能对已有数据的库直接执行。开发库统一用 `scripts/dev/InitializeSecurityModelDatabase.ps1`，脚本只允许 `security_model`，并用 `sys_dev_init_marker` 区分“基础 schema 已应用”和“从未初始化”：没有可信 marker 且目标库存在**任意表或视图**时直接拒绝，不再只检查 `sys_pre_defense`；只有 `sys_dev_init_marker` 中 `schema_name` 匹配的记录才算可信 marker。`sql/security_model_dataset_verification_baseline.sql` 把 `sql/eladmin.sql` 自带的历史样例数据集、以及阶段 5 仅凭目录检查写成 `success` 的 VaB 目录登记，从伪造的 `success` 改为 `pending`、清空样本统计，避免它们进入可用列表；该脚本只匹配仍保留原始种子消息的行，管理员真实验证后不会再次覆盖。`sql/security_model_legacy_running_task_baseline.sql` 只收敛 `sql/eladmin.sql` 自带的无 `current_run_id` / `current_attempt` 的 `running` 演示任务：置为 `failed`、`progress=0`，并写入 `EXECUTOR_RESTARTED` / “应用重启导致任务中断”；它绝不写 `success`，也不碰已有 run 上下文的任务，避免干净库启动时恢复扫描把 GPU 槽位永久隔离。回滚脚本只删除本阶段新增表，不删除业务任务。R3 两张表没有外键到任务表，回滚不会级联删除任务。知识库退役向量清理的增量脚本 `security_model_knowledge_vector_reconcile.sql` 也必须执行，否则 `vector_cleanup_status` 等列缺失，退役对账会失败；回滚先执行 `sql/security_model_knowledge_vector_reconcile_rollback.sql`，要求停止调度且无活跃任务，脚本只删除索引和四个清理列，不删业务行。
 
 ### 干净库启动手册（2026-11-17）
 
@@ -180,7 +182,7 @@ SOURCE sql/security_model_vab_seed.sql;
    $env:SECURITY_MODEL_VAB_DATASET_ROOT = '<本机 VaB-main\dataset 绝对路径>'   # 可选
    .\scripts\dev\InitializeSecurityModelDatabase.ps1
    ```
-   成功输出应包含 `security_model initialized: tables=48`，并列出 `sys_user` 的 admin/test 等种子账号；提供 VaB 路径时还会输出 `dataset_count=6`、`parsed_dataset_count=5` 与 `LDD (VaB)` 算法行。脚本顺序：`sql/eladmin.sql` → 执行快照 → run context → 子集导出 → 审计 → 归属 → GPU 租约 → 派发意图 → Outbox → 幂等 → 知识库 → 向量对账 → Assistant → MVP seed → VaB 种子；新库已含 `blocked_at`，所以 `security_model_gpu_lease_block.sql` 会被条件跳过。VaB 种子通过 `SET @vab_dataset_root` 注入路径，脚本会先把反斜杠规整为 `/`、校验目录存在，再写 `sys_dataset`；不提供变量时只注册 LDD 算法与默认超参模板，不会伪造数据集行，也不会覆盖上一次已配置的路径。
+   成功输出应包含 `security_model initialized: tables=48`，并列出 `sys_user` 的 admin/test 等种子账号；提供 VaB 路径时还会输出 `dataset_count=6`、`parsed_dataset_count=0` 与 `LDD (VaB)` 算法行。脚本顺序：`sql/eladmin.sql` → 执行快照 → run context → 子集导出 → 审计 → 归属 → GPU 租约 → 派发意图 → Outbox → 幂等 → 知识库 → 向量对账 → Assistant → MVP seed → legacy running task 基线 → 历史样例数据集重置 → VaB 种子；新库已含 `blocked_at`，所以 `security_model_gpu_lease_block.sql` 会被条件跳过。VaB 种子通过 `SET @vab_dataset_root` 注入路径，脚本会先把反斜杠规整为 `/`、校验目录存在、可读、非空，并检查 `cifar-10-batches-py` 下 `batches.meta`、`data_batch_1..5`、`test_batch` 都存在且非空，然后才写 `sys_dataset`；登记状态固定为 `pending`，`sample_count/feature_count/class_count` 保持 `NULL`，预期 50000/3072/10 只写在说明里，不是实测统计。管理员执行 `POST /api/dataset/{id}/validate` 后才会进入 `GET /api/dataset/available`。种子是纯 additive：数据集、算法和模板只要已存在就不再更新，不会覆盖运维改过的路径、参数、启用状态或更新时间；不提供变量时只注册 LDD 算法与默认超参模板，不会伪造数据集行。
 3. 设置启动环境变量（示例，值按本机替换）：
    ```powershell
    $env:DB_NAME='security_model'; $env:DB_USER='root'; $env:DB_PWD='<密码>'
@@ -192,11 +194,18 @@ SOURCE sql/security_model_vab_seed.sql;
 5. 健康检查 `GET /actuator/health` 为 `UP`；管理员登录后依次验证：
    - `GET /api/task-progress/executor-status`：执行池计数与 GPU `default-gpu-0` 状态；
    - `GET /api/observability/dispatch`（admin）：返回 `mode/role/outbox*/consumption*/worker*/gpuSlot` 五组字段；db 模式下 `workerConsumerExpected=false`，消费账本仍应可读；
-   - `GET /api/dataset/available?datasetType=image` 与 `GET /api/algorithm/14`：提供 VaB 路径后应能看到 `VaB CIFAR-10 Runtime Root` 与 `vab://pre-defense/ldd`；
+   - `GET /api/dataset?` 中 `VaB CIFAR-10 Runtime Root` 初始为 `pending`；管理员调用 `POST /api/dataset/{id}/validate` 后才应出现在 `GET /api/dataset/available?datasetType=image`，同时 `GET /api/algorithm/14` 返回 `vab://pre-defense/ldd`；
    - `POST /api/knowledge/reindex` 后再查 `GET /api/knowledge/status`，`activeDocuments` 应大于 0；
    - `POST /api/knowledge/query` 返回引用，`retrieval_only` 表示外部模型未启用，不是故障。
 6. 验收口径：空库任务页 `total=0` 是正常的，因为 MVP seed 的 4 条任务 `owner_user_id` 为 NULL，被 R1 归属规则过滤；不要为了“看起来有数据”直接把 owner 改成当前管理员。需要历史任务时走 API 新建或单独做可审计的归属回填。
-7. 未执行项要如实标注：VaB 种子已改为部署参数（2026-11-17 在本机新库以真实目录执行，重复执行无新增行，未提供变量时不会覆盖既有路径）。任务创建/详情/删除已用新库 API 实测；取消、报告读取、导出、Assistant 预览确认仍未逐项执行。真实 LDD/GPU 未运行：db 模式在未配置 `SECURITY_MODEL_PYTHON_SCRIPT` 时启动任务会快速失败并释放 GPU 租约，不能作为执行链路通过证据。导出恢复已在 2026-11-17 用人工注入的 1 条 `running` + 1 条 `pending` 导出行实测：重启后日志 `scanned=2, recovered=2`，分别收敛为 `failed`（`EXPORT_INTERRUPTED` / `EXPORT_NOT_STARTED`）并写审计；这是故障注入，不是真实导出进程中断。
+7. 验收口径要如实标注（2026-11-17 干净库 `security_model_accept_20261117124258`，18103，db/api）：
+   - VaB 种子用真实目录初始化，初始化后 6 个数据集全部 `pending`、0 个 `success`；管理员 `POST /api/dataset/6/validate` 后才进入可用列表。重复初始化不覆盖运维已改的路径、参数、启用状态或更新时间。
+   - 未配置 `security-model.executor.python.script`（环境变量 `SECURITY_MODEL_EXECUTOR_PYTHON_SCRIPT`）时，普通 API `start` 返回 400 `EXECUTOR_NOT_CONFIGURED`，任务保持 `pending`、`progress=0`、无 run/attempt/快照/意图/租约；Assistant `preview_start_task` 预览 200，确认也返回同一错误码且任务仍 `pending`；已失败任务 `retry` 返回同一错误码，任务仍 `failed`、attempt/progress/run 不变（`resetForRetry` 未执行）。以上均为真实 HTTP + 真实 MySQL。
+   - 跨用户权限：admin 创建的任务，`test` 用户详情与 `start` 均 403。
+   - 成功链路只使用短协议桩和合成产物，不运行真实 LDD/GPU：任务 `2122553484081897474` 为 `success/attempt=1`，`GET /api/pre-defense/report/{id}` 200、`cleanDatasetDownload.available=true`；`POST /api/pre-defense/cleaned-dataset/exports/{id}?isolationRatio=75` 202 后导出成功，下载 165 bytes zip；`GET /api/pre-defense/artifact-preview/{id}?artifactPath=...` 200。
+   - 取消链路同为短桩：观察到 `running` 后 `POST /api/pre-defense/cancel/{id}`，任务收敛 `canceled`，GPU 槽位 `idle`、租约 `released_at` 非空且无 blocked。此结果只证明隔离环境的平台链路，不能写成真实 LDD 执行验收。
+   - 恢复派发和 Rabbit Worker 的配置缺失分支由 `TaskDispatchCoordinatorTest` 单测覆盖（释放租约、失败收敛、不 `markSubmitting`/不 claim），干净库未做端到端故障注入。
+   - 导出恢复仍以 2026-11-17 人工注入的 1 条 `running` + 1 条 `pending` 导出行实测：重启后 `scanned=2, recovered=2`，分别收敛 `failed`（`EXPORT_INTERRUPTED` / `EXPORT_NOT_STARTED`）并写审计；这是故障注入，不是真实导出进程中断。
 
 ### 启动与停止
 

@@ -105,6 +105,7 @@ class TaskCommandServicePipelineIT {
                 ) VALUES (?, 'pipeline-race', 'pending', 1, 1, ?, 0,
                     'alice', NOW(3), NOW(3), 2, 'user')
                 """, TASK_ID, finalConfig());
+        when(executor.isConfigured()).thenReturn(true);
         when(resourceQueryService.findDatasetAuthoritative(1L)).thenReturn(dataset());
         when(resourceQueryService.findAlgorithmAuthoritative(1L)).thenReturn(algorithm());
         authenticate();

@@ -3,6 +3,15 @@ package com.securitymodel.infrastructure.executor;
 import com.securitymodel.application.task.DefenseTaskRequest;
 
 public interface DefenseTaskExecutor {
+
+    /**
+     * Whether this executor can accept a local attempt. The db-mode API checks this before
+     * claiming an attempt or a lease; the Rabbit API leaves the check to the Worker.
+     */
+    default boolean isConfigured() {
+        return true;
+    }
+
     void runPreDefense(DefenseTaskRequest request);
 
     /**

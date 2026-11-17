@@ -110,13 +110,19 @@ must be described as “the raw CIFAR-10 subset reconstructed from LDD retained 
 - The Java executor timeout must match the selected dataset and epoch count.
 - `progress.json` is written beside `request.json` and `result.json` in the Java attempt
   directory; it is a live diagnostic snapshot, not a completion result.
-- `security_model_vab_seed.sql` registers the developer-machine dataset root
+- `security_model_vab_seed.sql` registers the deployment dataset root
   `VaB CIFAR-10 Runtime Root` only when the caller supplies `@vab_dataset_root`
-  (the initializer reads `-VabDatasetRoot` / `SECURITY_MODEL_VAB_DATASET_ROOT` and
-  verifies the directory exists). Without that variable it registers the LDD algorithm
-  and its default hyper-parameter template but no dataset, so a deployment never gets a
-  guessed or fake-parsed path. Production deployments must supply their own local VaB
-  dataset path through that variable.
+  (the initializer reads `-VabDatasetRoot` / `SECURITY_MODEL_VAB_DATASET_ROOT`, checks
+  the directory exists, is readable/non-empty, and contains `cifar-10-batches-py` plus
+  `batches.meta`, `data_batch_1..5` and `test_batch`). A directory check is not a sample
+  parse: the row is always inserted as `pending` with NULL sample/feature/class counts.
+  An administrator promotes it with `POST /api/dataset/{id}/validate`; until then it is
+  not in the available-dataset list. Without the variable the seed registers the LDD
+  algorithm and its default hyper-parameter template but no dataset, so a deployment
+  never gets a guessed or fake-parsed path.
+- The seed is additive only: existing dataset, algorithm and hyper-template rows are
+  never updated by a rerun. A changed path, default config, enabled flag or template
+  requires the resource API or an explicit versioned migration, not initialization.
 
 ## Acceptance Criteria
 
