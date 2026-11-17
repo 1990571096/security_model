@@ -159,7 +159,10 @@ class DispatchConfigBoundaryRabbitIT {
         waitUntil(() -> "failed".equals(jdbc.queryForObject(
                 "SELECT status FROM sys_pre_defense WHERE task_id = ?", String.class, TASK_ID))
                 && jdbc.queryForObject(
-                "SELECT lease_token FROM sys_gpu_lease WHERE slot_id = ?", String.class, SLOT_ID) == null,
+                "SELECT lease_token FROM sys_gpu_lease WHERE slot_id = ?", String.class, SLOT_ID) == null
+                && "abandoned".equals(jdbc.queryForObject("""
+                SELECT status FROM sys_task_dispatch_intent WHERE task_id = ? AND run_id = ?
+                """, String.class, TASK_ID, RUN_ID)),
                 10_000);
         assertEquals("abandoned", jdbc.queryForObject("""
                 SELECT status FROM sys_task_dispatch_intent WHERE task_id = ? AND run_id = ?
