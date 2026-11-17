@@ -154,7 +154,7 @@ SECURITY_MODEL_JWT_SECRET=<至少 32 字节>
 2. 后端以 `DB_NAME=security_model` 启动，无缺表/缺列错误。
 3. 匿名健康检查、管理员登录、任务创建、取消、报告读取、导出、知识库和 Assistant 预览确认各走一遍。
 4. GPU 租约表存在，任务启动前能领取槽位，结束后释放。
-5. 停止后端再启动，`ExportRecoveryRunner` 将中断的导出收敛为失败，不自动重派发。
+5. 停止后端再启动，`ExportRecoveryRunner` 将中断的导出收敛为失败，不自动重派发。2026-11-17 已实测：向空库人工注入 1 条 `running` + 1 条 `pending` 导出行，重启后日志 `scanned=2, recovered=2`，两条分别收敛为 `failed`（`EXPORT_INTERRUPTED` / `EXPORT_NOT_STARTED`）并写入 `security_operation_audit`。这是恢复器的故障注入测试，不是真实导出进程中断；验证后已删除测试导出行、保留审计。
 6. 记录脚本清单、执行顺序、耗时、失败点和修复记录，形成可重复的手册。
 
 ## 8. 执行状态与证据
@@ -162,7 +162,7 @@ SECURITY_MODEL_JWT_SECRET=<至少 32 字节>
 | 项 | 状态 | 证据/说明 |
 | --- | --- | --- |
 | 新库 `security_model` | 已完成（2026-11-17） | 从空库初始化 48 表；日志 `tmp/security-model-init2.log`、幂等复跑 `tmp/security-model-init-rerun.log` |
-| 新库启动验证 | 部分完成 | `DB_NAME=security_model` 在 18102 启动，健康检查 UP、管理员登录成功、执行池与 GPU 读取正常；知识索引 23 文档 / 574 chunks，检索返回 5 条引用。导出恢复重启收敛未实测 |
+| 新库启动验证 | 部分完成 | `DB_NAME=security_model` 在 18102 启动，健康检查 UP、管理员登录成功、执行池与 GPU 读取正常；知识索引 23 文档 / 574 chunks，检索返回 5 条引用；导出恢复用注入的 running/pending 行实测收敛为 failed（`scanned=2, recovered=2`）。真实导出进程中断、任务创建/取消/报告读取未在本轮逐项执行 |
 | 旧 `eladmin` 迁移 | 未执行 | 未改表、未回填、未备份 |
 | `application.yml` 默认库 | 未改 | 仍为 `DB_NAME=eladmin` |
 | Tag `migration-r4-verified` | 未执行 | 尚未创建 |

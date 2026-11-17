@@ -189,7 +189,7 @@ SOURCE sql/security_model_assistant.sql;
    - `POST /api/knowledge/reindex` 后再查 `GET /api/knowledge/status`，`activeDocuments` 应大于 0；
    - `POST /api/knowledge/query` 返回引用，`retrieval_only` 表示外部模型未启用，不是故障。
 6. 验收口径：空库任务页 `total=0` 是正常的，因为 MVP seed 的 4 条任务 `owner_user_id` 为 NULL，被 R1 归属规则过滤；不要为了“看起来有数据”直接把 owner 改成当前管理员。需要历史任务时走 API 新建或单独做可审计的归属回填。
-7. 未执行项要如实标注：`security_model_vab_seed.sql` 依赖本机 VaB 数据集绝对路径，属部署相关种子，默认不执行；导出恢复的 pending/running 重启收敛需要先造出对应行才能实测，不能凭代码存在写成已验收。
+7. 未执行项要如实标注：`security_model_vab_seed.sql` 依赖本机 VaB 数据集绝对路径，属部署相关种子，默认不执行。导出恢复已在 2026-11-17 用人工注入的 1 条 `running` + 1 条 `pending` 导出行实测：重启后日志 `scanned=2, recovered=2`，分别收敛为 `failed`（`EXPORT_INTERRUPTED` / `EXPORT_NOT_STARTED`）并写审计；这是故障注入，不是真实导出进程中断。真实 LDD/GPU、任务创建/取消/报告读取仍未在本轮逐项执行，不能写成完整部署验收通过。
 
 ### 启动与停止
 
