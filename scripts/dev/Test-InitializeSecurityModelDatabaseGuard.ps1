@@ -64,10 +64,11 @@ try {
     if ($exitCode -eq 0) {
         throw "保护测试失败：非空库($schema)未被拒绝。输出:`n$text"
     }
-    if ($text -notmatch '没有可信初始化标记') {
+    $compact = ($text -replace '\s', '') -replace '\|', ''
+    if ($compact -notmatch '没有可信初始化标记') {
         throw "保护测试失败：拒绝原因不是缺少可信标记。输出:`n$text"
     }
-    if ($text -notmatch "已有\s*$beforeTables\s*个表或视图") {
+    if ($compact -notmatch "已有$beforeTables个表或视图") {
         throw "保护测试失败：没有报告拒绝前的表数量 $beforeTables。输出:`n$text"
     }
 
