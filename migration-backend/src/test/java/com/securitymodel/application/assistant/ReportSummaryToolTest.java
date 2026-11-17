@@ -39,6 +39,7 @@ class ReportSummaryToolTest {
                 .execute(new ObjectMapper().createObjectNode().put("taskId", 5));
 
         assertEquals(91.5, result.data().path("cleanPurityPercentByIsolationRatio").asDouble());
+        assertEquals("5", result.data().path("taskIdText").asText());
         assertEquals(1000, result.data().path("selectedSampleCountByIsolationRatio").asInt());
         assertEquals("isolation_ratio", result.data().path("selectionKind").asText());
         assertEquals("执行进程异常退出", result.data().path("failureSummary").asText());

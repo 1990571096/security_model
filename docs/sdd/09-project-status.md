@@ -9,6 +9,17 @@
 测试使用临时隔离 schema。迁移后端以 MySQL 保存任务状态，通过有界 JVM 线程池调用 Python
 LDD 进程；R4 的 RabbitMQ/Outbox/Worker 已用真实 Broker + 隔离 MySQL 双 JVM 执行主要场景，默认仍关闭，未执行项见 §5.17。
 
+## 2026-11-17 R7 场景联调收口（当前事实）
+
+R7 助手已完成“参数策略—模型证据—隔离后端/真实前端/脚本化假模型”浏览器联调，详见 [23-r7-scenario-integration-closeout.md](23-r7-scenario-integration-closeout.md)。
+
+- `dataset`/`trigger_type` 已要求文本类型并校验支持集合，错误码区分 `PARAMETER_REQUIRED`、`PARAMETER_TYPE_INVALID`、`PARAMETER_VALUE_INVALID`、`PARAMETER_OUT_OF_RANGE`；种子 `config_schema` 与 Java 集合一致。
+- `AssistantModelEvidence` 已为校验与预检增加有限量、脱敏投影；本地假 HTTP 捕获确认 `valid/code/message/configFingerprint/normalizedParameters`、`executorConfiguration/blockers/warnings` 进入第二轮请求，且无绝对路径、`data_path` 或原始日志。
+- 浏览器已实测合法参数、未知 dataset/trigger、数字/布尔/对象类型错误、结果未采集、Worker 未知、越界 403、模型故障与确认卡片；任务 ID 精度用 `taskIdText` 修正，800px 与 390px 视口无横向溢出。
+- 全量门禁为 **337 单测 + 123 IT，0 失败/0 错误/0 跳过**，前端构建成功；日志 `tmp/stage9-full-verify-retry.log`、`tmp/stage9-frontend-build.log`。
+- 本轮仍未运行真实 LDD/GPU、未调用真实外部模型、未迁移或操作原 `eladmin`；确认卡片只验证出现，未点击执行。参数校验通过不等于任务可执行，`worker_unknown` 仍按“运行环境尚未验证”展示。
+
+
 R0 已完成一次以源码为准的事实审计（2026-11-13）：修正了 7 处与代码冲突的文档表述（清单见
 [05-decisions.md](05-decisions.md) ADR-012），冻结了状态机、执行/结果协议与目录语义，并把
 多用户归属、共享资源权限、历史数据迁移、GPU 并发列为待决事项。**本轮不实现授权、不接入

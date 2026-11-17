@@ -131,7 +131,7 @@
                 <el-tag size="small" effect="plain">{{ taskEvidence.status || 'unknown' }}</el-tag>
               </div>
               <p class="table-caption">
-                任务 #{{ taskEvidence.taskId }}「{{ taskEvidence.taskName }}」· 进度 {{ taskEvidence.progress ?? 0 }}%
+                任务 #{{ taskEvidence.taskIdText || taskEvidence.taskId }}「{{ taskEvidence.taskName }}」· 进度 {{ taskEvidence.progress ?? 0 }}%
                 · 执行器 {{ executorLabel(taskEvidence.executorConfiguration) }}
               </p>
               <div v-if="structured.evidence.blockers?.length" class="evidence-list">
@@ -516,6 +516,9 @@ onMounted(async () => {
 .assistant-hero { background: linear-gradient(135deg, #0f2742 0%, #1d4b66 100%); }
 .assistant-summary { min-width: 210px; }
 .assistant-grid { margin-top: 18px; }
+@media (max-width: 900px) {
+  .assistant-grid { grid-template-columns: 1fr; }
+}
 .assistant-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 14px; }
 .assistant-alert { margin-top: 14px; }
 .assistant-scenario { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }

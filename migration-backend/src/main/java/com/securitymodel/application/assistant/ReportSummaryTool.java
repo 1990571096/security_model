@@ -47,6 +47,7 @@ public class ReportSummaryTool implements AssistantTool {
 
         ObjectNode data = objectMapper.createObjectNode();
         data.put("taskId", task.getTaskId());
+        data.put("taskIdText", String.valueOf(task.getTaskId()));
         data.put("taskName", KnowledgeSanitizer.forModel(task.getTaskName(), 120));
         data.put("status", task.getStatus());
         data.put("progress", task.getProgress());

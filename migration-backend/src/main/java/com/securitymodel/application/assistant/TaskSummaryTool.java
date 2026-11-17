@@ -47,6 +47,9 @@ public class TaskSummaryTool implements AssistantTool {
 
         ObjectNode data = objectMapper.createObjectNode();
         data.put("taskId", task.getTaskId());
+        // JavaScript numbers cannot represent 19-digit snowflake IDs exactly. Keep the
+        // numeric field for compatibility and add a lossless display value for the UI.
+        data.put("taskIdText", String.valueOf(task.getTaskId()));
         data.put("taskName", KnowledgeSanitizer.forModel(task.getTaskName(), 120));
         data.put("status", task.getStatus());
         data.put("progress", task.getProgress());

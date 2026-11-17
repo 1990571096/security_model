@@ -20,6 +20,15 @@ public class LddConfigurationPolicy {
             "r", "alpha1", "alpha2", "seed", "data_path"
     ));
 
+    // Keep these sets in sync with sql/security_model_vab_seed.sql (config_schema).
+    static final Set<String> SUPPORTED_DATASETS = new LinkedHashSet<>(Arrays.asList(
+            "cifar10", "cifar100", "gtsrb"
+    ));
+
+    static final Set<String> SUPPORTED_TRIGGER_TYPES = new LinkedHashSet<>(Arrays.asList(
+            "SIG", "WaNet", "badnet", "blended", "CL"
+    ));
+
     private final ObjectMapper objectMapper;
 
     public LddConfigurationPolicy(ObjectMapper objectMapper) {
@@ -51,8 +60,8 @@ public class LddConfigurationPolicy {
             }
         }
 
-        requireText(merged, "dataset");
-        requireText(merged, "trigger_type");
+        requireOneOf(merged, "dataset", SUPPORTED_DATASETS);
+        requireOneOf(merged, "trigger_type", SUPPORTED_TRIGGER_TYPES);
         requireNumber(merged, "trigger_label", 0, 99, true);
         requireOneOf(merged, "poisoned_mode", "all2one", "all2all");
         requireNumber(merged, "poisoned_portion", 0.01, 0.6, false);
@@ -87,17 +96,31 @@ public class LddConfigurationPolicy {
     }
 
     private void requireText(ObjectNode config, String key) {
-        if (!config.hasNonNull(key) || !StringUtils.hasText(config.get(key).asText())) {
+        requireTextValue(config, key);
+    }
+
+    private String requireTextValue(ObjectNode config, String key) {
+        JsonNode value = config.get(key);
+        if (value == null || value.isNull() || (value.isTextual() && !StringUtils.hasText(value.asText()))) {
             throw new TaskCommandException("PARAMETER_REQUIRED", "LDD 参数 " + key + " 不能为空");
+        }
+        if (!value.isTextual()) {
+            throw new TaskCommandException("PARAMETER_TYPE_INVALID",
+                    "LDD 参数 " + key + " 必须是字符串");
+        }
+        return value.asText();
+    }
+
+    private void requireOneOf(ObjectNode config, String key, Set<String> allowed) {
+        String value = requireTextValue(config, key);
+        if (!allowed.contains(value)) {
+            throw new TaskCommandException("PARAMETER_VALUE_INVALID",
+                    "LDD 参数 " + key + " 取值不合法，支持: " + String.join(", ", allowed));
         }
     }
 
     private void requireOneOf(ObjectNode config, String key, String... allowed) {
-        requireText(config, key);
-        if (!Arrays.asList(allowed).contains(config.get(key).asText())) {
-            throw new TaskCommandException("PARAMETER_VALUE_INVALID",
-                    "LDD 参数 " + key + " 取值不合法");
-        }
+        requireOneOf(config, key, new LinkedHashSet<>(Arrays.asList(allowed)));
     }
 
     private void requireNumber(ObjectNode config, String key, double min, double max, boolean integer) {

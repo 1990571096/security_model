@@ -241,6 +241,8 @@ SOURCE sql/security_model_vab_seed.sql;
 - 写操作必须调用确认接口：预览返回 `confirmationId` 与一次性 `token`，TTL 默认 300 秒；服务端只存 token 的 SHA-256。确认后重校验用户、task/run/attempt、参数哈希和状态，并返回 `confirmationReplayed`。
 - 审计表 `sys_assistant_tool_audit` 只存工具名、operator、目标、结果码和耗时；不存 prompt、参数正文或 token。会话 7 天，用户可删除自己的会话。
 - 未配置模型时页面明确显示 `model_disabled`，不得写成“助手联调完成”。
+- 2026-11-17 浏览器联调：在隔离库 `security_model_browser` 上启动 8100 后端、8090 脚本化假模型和 8014 真实 Vite 前端，已实测三场景、合法/非法 LDD 参数、结果未采集、Worker 未知、越界 403、模型故障和确认卡片。假模型请求体写入 `tmp/browser-fixture/model-requests.jsonl`，其中不包含真实凭据；本地联调不代表真实外部模型验收通过。完整矩阵见 [23-r7-scenario-integration-closeout.md](23-r7-scenario-integration-closeout.md)。
+- 三态口径：工具执行失败（403、`model_unavailable` 等）不得写成“参数无效”；校验正常但参数不合法时为 `PARAMETER_TYPE_INVALID` / `PARAMETER_VALUE_INVALID` / `PARAMETER_OUT_OF_RANGE`；参数通过但 `executorConfiguration=worker_unknown` 时只能写“运行环境尚未验证”，不能写“任务可以启动”。
 
 ### 2026-11-15 隔离库收口演练
 

@@ -27,6 +27,7 @@ final class AssistantModelEvidence {
         }
         ObjectNode evidence = root.putObject("evidence");
         copyText(objectMapper, data, evidence, "taskId");
+        copyText(objectMapper, data, evidence, "taskIdText", 80);
         copyText(objectMapper, data, evidence, "taskName");
         copyText(objectMapper, data, evidence, "status");
         copyText(objectMapper, data, evidence, "progress");
@@ -47,6 +48,12 @@ final class AssistantModelEvidence {
         copyCitations(objectMapper, data, evidence);
         if ("get_parameter_guide".equals(toolName)) {
             copyParameterGuide(objectMapper, data, evidence);
+        }
+        if ("validate_ldd_parameters".equals(toolName)) {
+            copyValidationEvidence(objectMapper, data, evidence);
+        }
+        if ("get_my_task_summary".equals(toolName)) {
+            copyPreflightEvidence(objectMapper, data, evidence);
         }
         // Never substring a serialized JSON envelope: that produces invalid JSON and can
         // cut a citation in half. If the compact envelope is still too large, return a
@@ -244,6 +251,76 @@ final class AssistantModelEvidence {
             });
         } else {
             target.put(field, KnowledgeSanitizer.forModel(value.toString(), maxChars));
+        }
+    }
+
+    private static void copyValidationEvidence(ObjectMapper objectMapper, JsonNode data,
+                                                ObjectNode evidence) {
+        copyText(objectMapper, data, evidence, "valid");
+        copyText(objectMapper, data, evidence, "code", 80);
+        copyText(objectMapper, data, evidence, "message", 240);
+        copyText(objectMapper, data, evidence, "parameterSource", 80);
+        copyText(objectMapper, data, evidence, "configFingerprint", 120);
+        copyText(objectMapper, data, evidence, "sideEffect", 40);
+        copyText(objectMapper, data, evidence, "confirmationCreated");
+        copyScalarParameters(objectMapper, data.get("normalizedParameters"), evidence);
+    }
+
+    private static void copyPreflightEvidence(ObjectMapper objectMapper, JsonNode data,
+                                               ObjectNode evidence) {
+        copyText(objectMapper, data, evidence, "executorMode", 40);
+        copyText(objectMapper, data, evidence, "executorRole", 40);
+        copyText(objectMapper, data, evidence, "executorConfiguration", 40);
+        copyLimitedItems(objectMapper, data.get("blockers"), evidence, "blockers",
+                "code", "message", 4);
+        copyLimitedItems(objectMapper, data.get("warnings"), evidence, "warnings",
+                "code", "message", 4);
+    }
+
+    /**
+     * Keep only scalar LDD parameters. A nested object could smuggle raw paths or logs;
+     * data_path is excluded even when a caller puts it back into the tool payload.
+     */
+    private static void copyScalarParameters(ObjectMapper objectMapper, JsonNode parameters,
+                                              ObjectNode evidence) {
+        if (parameters == null || !parameters.isObject()) {
+            return;
+        }
+        ObjectNode safe = evidence.putObject("normalizedParameters");
+        int count = 0;
+        java.util.Iterator<java.util.Map.Entry<String, JsonNode>> fields = parameters.fields();
+        while (fields.hasNext() && count < 20) {
+            java.util.Map.Entry<String, JsonNode> field = fields.next();
+            String key = field.getKey();
+            JsonNode value = field.getValue();
+            if ("data_path".equals(key) || value == null || value.isNull()
+                    || value.isContainerNode()) {
+                continue;
+            }
+            count++;
+            if (value.isTextual()) {
+                safe.put(key, KnowledgeSanitizer.forModel(value.asText(), 120));
+            } else if (value.isNumber() || value.isBoolean()) {
+                safe.set(key, value.deepCopy());
+            }
+        }
+    }
+
+    private static void copyLimitedItems(ObjectMapper objectMapper, JsonNode source,
+                                          ObjectNode evidence, String field,
+                                          String codeField, String messageField, int maxItems) {
+        if (source == null || !source.isArray()) {
+            return;
+        }
+        ArrayNode safe = evidence.putArray(field);
+        int count = 0;
+        for (JsonNode item : source) {
+            if (count++ >= maxItems || !item.isObject()) {
+                break;
+            }
+            ObjectNode projected = safe.addObject();
+            copyText(objectMapper, item, projected, codeField, 80);
+            copyText(objectMapper, item, projected, messageField, 180);
         }
     }
 

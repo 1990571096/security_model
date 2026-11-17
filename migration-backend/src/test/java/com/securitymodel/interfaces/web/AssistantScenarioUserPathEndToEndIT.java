@@ -339,7 +339,7 @@ class AssistantScenarioUserPathEndToEndIT {
         algorithm.setDefenseStage("pre");
         algorithm.setImplementationPath("vab://pre-defense/ldd");
         algorithm.setDefaultConfig("""
-                {"dataset":"cifar10","trigger_type":"badnets","trigger_label":0,
+                {"dataset":"cifar10","trigger_type":"badnet","trigger_label":0,
                 "poisoned_mode":"all2one","poisoned_portion":0.1,"batch_size":128,
                 "num_epochs":10,"lr_poison":0.01,"r":0.1,"alpha1":0.1,
                 "alpha2":0.1,"seed":42}

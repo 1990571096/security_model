@@ -32,6 +32,7 @@ class TaskSummaryToolTest {
         assertEquals("EXECUTOR_NOT_CONFIGURED",
                 result.data().path("blockers").get(0).path("code").asText());
         assertEquals("missing", result.data().path("executorConfiguration").asText());
+        assertEquals("500", result.data().path("taskIdText").asText());
         assertTrue(result.data().path("blockers").toString().contains("本机执行器未配置"));
         assertTrue(result.summary().contains("阻塞项 1 个"));
     }

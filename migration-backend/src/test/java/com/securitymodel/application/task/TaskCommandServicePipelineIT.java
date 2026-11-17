@@ -427,7 +427,7 @@ class TaskCommandServicePipelineIT {
     }
 
     private String finalConfig() {
-        return "{\"dataset\":\"cifar10\",\"trigger_type\":\"badnets\",\"trigger_label\":0,"
+        return "{\"dataset\":\"cifar10\",\"trigger_type\":\"badnet\",\"trigger_label\":0,"
                 + "\"poisoned_mode\":\"all2one\",\"poisoned_portion\":0.1,\"batch_size\":128,"
                 + "\"num_epochs\":5,\"lr_poison\":0.01,\"r\":0.5,\"alpha1\":1.0,\"alpha2\":1.0,"
                 + "\"seed\":11}";
