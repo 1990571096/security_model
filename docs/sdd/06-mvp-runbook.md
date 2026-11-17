@@ -130,9 +130,20 @@ mvn -pl eladmin-system -am test "-Denforcer.skip=true" "-Dsecurity-model.skip-te
 
 以下命令针对 Spring Boot 3 迁移版，旧 ELADMIN 命令仅保留为历史记录。
 
-### 数据库初始化顺序
+### 数据库边界与开发库决策（2026-11-17）
 
-只在新开发库执行；生产库 `eladmin` 的迁移仍需要单独授权、执行窗口、备份路径、执行人与回滚方案。
+“生产库迁移”指实际运行平台所连接的业务数据库发生表结构变更，不一定是线上正式服务器。当前 `application.yml:13` 默认仍是 `DB_NAME=eladmin`，本轮未改动该默认值。
+
+开发、截图演示与论文工程验证的当前决策是：**新建独立库 `security_model`，不修改旧 `eladmin`**；旧库保留为原始数据和回退依据，不做历史任务归属回填。启动时通过环境变量 `DB_NAME=security_model` 指到新库。旧 `eladmin` 只在需要继续使用历史任务/正式部署时迁移，且必须先备份、只读核对、审核归属、回填 `owner_user_id`、验证并留档。
+
+```sql
+CREATE DATABASE IF NOT EXISTS security_model
+  CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
+```
+
+只在新开发库执行数据库初始化顺序；生产库 `eladmin` 的迁移仍需要单独授权、执行窗口、备份路径、执行人与回滚方案。当前尚未创建 `security_model`，也未对 `eladmin` 执行任何建表或回填。
+
+### 数据库初始化顺序
 
 ```sql
 SOURCE sql/eladmin.sql;
