@@ -124,8 +124,7 @@ LDD 参数在进入异步执行器前执行 JSON 对象、白名单、必填项�
 ## 7. 面试时需要诚实说明的边界
 
 - 当前真实演示只开放 LDD，VS、训练中防御和训练后防御没有放入主流程。
-- 当前默认执行模型是单机本地 Python 进程和 Spring 异步线程，尚未默认启用消息队列、独立 worker
-  和 GPU 资源调度；R4 的 RabbitMQ/独立 Worker 代码已实现，默认 `dispatch.mode=db`。
+- 当前默认执行模型是单机本地 Python 进程和 Spring 异步线程；R4 已实现可选的 RabbitMQ/独立 Worker、消费账本与 GPU 单槽租约，默认仍 `dispatch.mode=db`，尚未启用分布式多机调度。实现验收通过（隔离），部署验收未执行。
 - 当前工程验证使用小批次和小轮次配置，不能直接替代论文正式实验结论。
 - 当前主运行版本已迁移至 Spring Boot 3、Java 17、Vue 3 和 Vite；旧 ELADMIN 工程仅作为回归与回滚基线保留。
 - RabbitMQ/Kafka 的 R4 代码已接入但默认 `dispatch.mode=db`；2026-11-16 本机真实 RabbitMQ + 双 JVM 已完成 R4-01..08 实现验收（7s 延迟 confirm、db→rabbit→db 双向停机切换、旧 dead 与新 attempt 竞争；287 单测 + 106 IT 全绿），**部署验收未执行**（长期 DB 故障/多任务退避与跨主机仍是压力边界），不能写成已部署或已整体验收；Redis 当前仅用于资源目录缓存，不能表述为任务状态存储或消息队列替代品。

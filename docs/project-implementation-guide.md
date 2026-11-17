@@ -614,7 +614,7 @@ POST 提交导出(taskId, ratio)
 
 ZIP 包含 `metadata.json`、`selected_indices.npy`、索引 CSV、标签 CSV 和 PNG 图片。它表示“根据 LDD 保留索引从 CIFAR-10 原始训练集重建的子集”，不是 VaB 运行期间内存中的触发器修改张量。
 
-导出任务有自己的 `pending/running/success/failed` 状态和失败重试。Java 使用 `.part` 临时文件，成功后再移动为正式文件，避免将未完成文件标记为可下载结果。当前迁移版未实现导出任务的应用启动恢复扫描，这一点要与旧 ELADMIN 代码区分。
+导出任务有自己的 `pending/running/success/failed` 状态和失败重试。Java 使用 `.part` 临时文件，成功后再移动为正式文件，避免将未完成文件标记为可下载结果。迁移版已实现导出任务的应用启动恢复扫描：`ExportRecoveryRunner` 将中断的 pending/running 导出显式收敛为失败，不自动重派发。
 
 代码位置：[导出服务](../migration-backend/src/main/java/com/securitymodel/application/export/CleanSubsetExportService.java)、[导出执行器](../migration-backend/src/main/java/com/securitymodel/application/export/CleanSubsetExportExecutor.java)、Python `export_clean_subset()`。
 

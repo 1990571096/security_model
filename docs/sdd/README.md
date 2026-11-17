@@ -20,10 +20,10 @@
 - [14-framework-migration-plan.md](14-framework-migration-plan.md)：框架迁移实施路线、兼容策略和阶段验收标准。
 - [16-engineering-improvement-roadmap.md](16-engineering-improvement-roadmap.md)：迁移后质量门禁、可靠任务执行、Redis/MQ 引入条件和迭代验收项。
 - [17-agent-development-guide.md](17-agent-development-guide.md)：后续逐轮开发 Agent 的任务范围、依赖门槛、验收条件和交接模板（规划文档，非实现状态）。
-- [18-multiuser-ownership-and-resources.md](18-multiuser-ownership-and-resources.md)：数据归属矩阵、共享资源权限方案、历史无 owner 迁移、GPU 并发建议与待决事项（R0 设计契约）。
+- [18-multiuser-ownership-and-resources.md](18-multiuser-ownership-and-resources.md)：数据归属矩阵、共享资源权限方案、历史无 owner 迁移、GPU 并发与租约实现、待决事项（R0 设计契约 + R1/R2 当前事实）。
 - [19-local-data-layout-and-retention.md](19-local-data-layout-and-retention.md)：受控本地目录布局与文件保留策略草案（R0 草案）。
 - [20-stage-execution-and-acceptance.md](20-stage-execution-and-acceptance.md)：逐阶段执行任务书，明确默认决策、实施顺序、故障用例、验收指标和交接证据；与 17 号总纲配套使用；§6.8 为 R3/R6/R7 逐 ID 实现/部署验收表。
-- [21-r4-outbox-rabbitmq-design.md](21-r4-outbox-rabbitmq-design.md)：R4 单机 API + 独立 Worker + Transactional Outbox + RabbitMQ 契约（主体已实现；真实 Broker 验收阻塞；默认关闭）。
+- [21-r4-outbox-rabbitmq-design.md](21-r4-outbox-rabbitmq-design.md)：R4 单机 API + 独立 Worker + Transactional Outbox + RabbitMQ 契约（已实现；实现验收通过（隔离），部署验收未执行；默认关闭）。
 - [../project-introduction-and-interview-guide.md](../project-introduction-and-interview-guide.md)：完整项目介绍、业务流程、当前进度和面试讲解稿。
 - [../resume-project-entry.md](../resume-project-entry.md)：简历项目简介和 4-5 条核心项目要点。
 

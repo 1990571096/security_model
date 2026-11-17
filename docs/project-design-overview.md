@@ -90,7 +90,7 @@ Java、Python 与算法仓库之间通过 JSON 文件协议和进程边界协作
 | 报告与日志 | 聚合任务、快照、算法结果和导出记录；按偏移读取日志 | `application/report/` |
 | 清洗子集导出 | 校验 LDD 索引，异步重建并打包原始 CIFAR-10 训练样本 | `application/export/` |
 
-当前迁移版使用 MySQL 和 MyBatis-Plus 保存业务数据，任务执行由 JVM 内的有界线程池承担。Redis 已接入，但只缓存可由 MySQL 重建的数据集、算法和超参数目录等资源元数据，默认 TTL 为 5 分钟；Redis 不保存任务状态，也不是任务队列。RabbitMQ、Kafka 均未接入。
+当前迁移版使用 MySQL 和 MyBatis-Plus 保存业务数据，默认任务执行由 JVM 内的有界线程池承担。Redis 已接入，但只缓存可由 MySQL 重建的数据集、算法和超参数目录等资源元数据，默认 TTL 为 5 分钟；Redis 不保存任务状态，也不是任务队列。RabbitMQ/Transactional Outbox/独立 Worker 已在 R4 实现，默认 `dispatch.mode=db`；实现验收通过（隔离），部署验收未执行。Kafka 未接入。
 
 ## 5. 核心业务流程
 
@@ -238,7 +238,7 @@ pending ──启动──> running ──正常结果──> success           
 ### 当前不应当作已完成的能力
 
 - 其他训练前算法、训练中防御算法、训练后防御算法的真实执行。
-- 分布式任务调度、跨节点租约、消息队列调度、GPU 资源调度。
+- **分布式多机**任务调度、跨节点租约与容器级硬隔离；单机独立 Worker、RabbitMQ/Outbox 和单槽 GPU 租约已在 R4 实现（默认 `dispatch.mode=db`，实现验收通过/部署验收未执行）。
 - 容器级 CPU/内存/GPU 硬隔离。
 - 将清洗子集自动衔接后续模型训练。
 - 论文正式实验结论。已记录的工程验证用于验证系统链路，不替代正式实验。
