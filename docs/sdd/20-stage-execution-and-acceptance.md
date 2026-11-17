@@ -323,7 +323,7 @@ R3-01/02/03/05/06/07/08/09/10 必须含真实 MySQL 证据；R3-04 包含短进�
 | R7-06 | 模型线程池有界、总预算/工具预算、超时取消；核心 API 不共享失败 | `AssistantChatServiceTest`、`AssistantConfirmationEndToEndIT` | `tmp/round2-r7-a.log` | 通过（隔离） | 未执行 | 底层 JDBC 物理终止不保证 |
 | R7-07 | 审计只存工具名/operator/target/resultCode/duration；请求体脱敏 | `AssistantOutboundPrivacyTest`、`AssistantConfirmationEndToEndIT` | `tmp/round2-p1-final.log`、`tmp/round2-r7-a.log` | 通过（隔离） | 未执行 | 无 |
 
-**2026-11-17 三场景契约与配置缺失边界（质量改进）**：`AssistantScenarioCatalog`/`GET /api/assistant/scenarios` 固化 LDD 参数校验、任务预检、结果解释的输入、工具白名单、返回字段、引用与失败降级；`DispatchConfigBoundaryIT` 2/2 覆盖启动恢复 `replayPending` 与 Rabbit Worker 消费在空白执行器脚本下返回 `EXECUTOR_NOT_CONFIGURED`、intent `abandoned`、租约释放且 `blocked_at` 为空、无本地 accepted、重复投递不重复执行。写工具仍走“预览→确认→后端授权与状态机”，`AssistantConfirmationEndToEndIT` 22 项仍是确认前零副作用、资源变化拒绝、重复确认不重复执行的基线；本轮未新增真实模型故障注入的端到端项，因此 R7-06 仍按原证据判定。
+**2026-11-17 三场景契约与配置缺失边界（质量改进）**：`AssistantScenarioCatalog`/`GET /api/assistant/scenarios` 固化 LDD 参数校验、任务预检、结果解释的输入、工具白名单、返回字段、引用与失败降级；`DispatchConfigBoundaryIT` 2/2 覆盖启动恢复 `replayPending` 与 Rabbit Worker 消费在空白执行器脚本下返回 `EXECUTOR_NOT_CONFIGURED`、intent `abandoned`、租约释放且 `blocked_at` 为空、无本地 accepted、重复投递不重复执行。写工具仍走“预览→确认→后端授权与状态机”，`AssistantConfirmationEndToEndIT` 22 项仍是确认前零副作用、资源变化拒绝、重复确认不重复执行的基线，其中 `modelDisabledReturnsExplicitStatusAndCoreApiStillWorks` 验证模型不可用时助手显式返回 `model_disabled`、工具调用为 0，任务读取 API 仍为 200；本轮未新增真实外部模型故障注入的端到端项。
 
 #### R4 单机可靠派发（真实 Broker 双 JVM 已执行，仍有未执行边界）
 
