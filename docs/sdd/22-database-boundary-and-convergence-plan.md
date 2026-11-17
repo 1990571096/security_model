@@ -172,7 +172,7 @@ SECURITY_MODEL_JWT_SECRET=<至少 32 字节>
 | `application.yml` 默认库 | 未改 | 仍为 `DB_NAME=eladmin` |
 | Tag `migration-r4-verified` | 已执行（2026-11-17） | annotated Tag 已推送，指向归档前提交 `4dd8005` |
 | `legacy` 分支/归档仓库 | 已执行（2026-11-17） | `legacy` 分支已推送，含 `eladmin/`、`eladmin-web/` 完整 685 文件；主分支已删除两目录 |
-| 旧工程干净检出验证 | 待执行（归档提交后） | 从 `legacy`/Tag 可检出源码；主分支工作树验证见后续记录 |
+| 旧工程干净检出验证 | 已执行（2026-11-17） | 在归档提交 `7e31b3f` 的 detached worktree：旧目录不存在、`sql/eladmin.sql` 存在；`verify -Pmysql-it` 306 单测 + 111 IT 通过，guard 与完整初始化幂等通过，隔离 schema 启动 `/actuator/health=UP`；证据 `tmp/archive-clean-*.log` 与 `tmp/archive-clean-verification.txt`；归档提交 CI run `44035312196` 四 job 全绿 |
 | 阶段 3 监控页面 | 实现完成，已通过本机全量与 CI | 后端五组字段 + 前端五组卡片；本机 `verify -Pmysql-it` 289 单测 + 106 IT（0 失败/9 环境跳过），前端 `vite build` 通过；提交 `f70711f`，CI run `43995845889` 全绿 |
 | 干净库启动手册 | 已形成，部分验收 | `06-mvp-runbook.md` 已补“干净库启动手册”；第 7 节第 3、5 项尚未逐项执行 |
 
