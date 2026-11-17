@@ -167,7 +167,7 @@ SECURITY_MODEL_JWT_SECRET=<至少 32 字节>
 | `application.yml` 默认库 | 未改 | 仍为 `DB_NAME=eladmin` |
 | Tag `migration-r4-verified` | 未执行 | 尚未创建 |
 | `legacy` 分支/归档仓库 | 未执行 | 旧目录仍在主分支 |
-| 阶段 3 监控页面 | 实现完成，待全量验证 | 后端五组字段 + 前端五组卡片；单测 2/2，前端 `vite build` 通过；未跑全量测试与 CI |
+| 阶段 3 监控页面 | 实现完成，已通过本机全量与 CI | 后端五组字段 + 前端五组卡片；本机 `verify -Pmysql-it` 289 单测 + 106 IT（0 失败/9 环境跳过），前端 `vite build` 通过；提交 `f70711f`，CI run `43995845889` 全绿 |
 | 干净库启动手册 | 已形成，部分验收 | `06-mvp-runbook.md` 已补“干净库启动手册”；第 7 节第 3、5 项尚未逐项执行 |
 
 执行后应在 `09-project-status.md` 和本表同步写入真实命令、日志路径、库名、Tag、分支和 run 记录；未执行项不得改成“通过”。
