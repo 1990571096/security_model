@@ -119,7 +119,7 @@ class OwnershipHttpContractTest {
     void ownerReadsOwnTaskOverHttp() throws Exception {
         mockMvc.perform(get("/api/pre-defense/100").header("Authorization", bearer(ALICE)))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.taskId").value(100));
+                .andExpect(jsonPath("$.taskId").value("100"));
     }
 
     @Test

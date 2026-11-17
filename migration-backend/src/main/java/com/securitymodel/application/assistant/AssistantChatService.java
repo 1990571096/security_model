@@ -479,7 +479,7 @@ public class AssistantChatService {
                     evidence.set("catalog", data);
                     ArrayNode findings = evidence.putArray("findings");
                     for (JsonNode algorithm : data.path("algorithms")) {
-                        findings.addObject().put("algorithmId", algorithm.path("algorithmId").asLong())
+                        findings.addObject().put("algorithmId", algorithm.path("algorithmId").asText())
                                 .put("name", algorithm.path("name").asText())
                                 .put("type", algorithm.path("type").asText());
                     }
@@ -499,7 +499,7 @@ public class AssistantChatService {
                     }
                 }
                 case "get_my_report_summary" -> {
-                    evidence.put("taskId", data.path("taskId").asLong());
+                    evidence.put("taskId", data.path("taskId").asText());
                     evidence.put("taskStatus", data.path("status").asText());
                     ObjectNode metrics = evidence.putObject("metrics");
                     if (data.has("cleanPurityPercentByIsolationRatio")) {
@@ -592,7 +592,7 @@ public class AssistantChatService {
         if (!task.isObject()) {
             return "未取得任务摘要证据，不能判断任务是否可启动。";
         }
-        StringBuilder answer = new StringBuilder("任务 #").append(task.path("taskId").asLong())
+        StringBuilder answer = new StringBuilder("任务 #").append(task.path("taskId").asText())
                 .append("「").append(task.path("taskName").asText("")).append("」当前状态 ")
                 .append(task.path("status").asText("unknown"))
                 .append("，进度 ").append(task.path("progress").asInt(0)).append("%。");
@@ -611,7 +611,7 @@ public class AssistantChatService {
 
     private String reportAnswer(JsonNode evidence) {
         JsonNode metrics = evidence.path("metrics");
-        StringBuilder answer = new StringBuilder("任务 #").append(evidence.path("taskId").asLong())
+        StringBuilder answer = new StringBuilder("任务 #").append(evidence.path("taskId").asText())
                 .append(" 当前状态 ").append(evidence.path("taskStatus").asText("unknown")).append("。");
         if (metrics.isObject() && "unavailable".equals(metrics.path("state").asText())) {
             answer.append("服务端未取得可用指标，不能给出纯度或样本数量结论。");

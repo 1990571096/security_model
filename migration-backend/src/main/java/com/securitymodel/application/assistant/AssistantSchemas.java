@@ -35,6 +35,19 @@ public final class AssistantSchemas {
         required(schema, name, required);
     }
 
+    /**
+     * Identifier schema uses a decimal string so a 19-digit snowflake ID survives a
+     * JavaScript or model round trip. The parser also accepts a legacy integer value.
+     */
+    public static void identifier(ObjectNode schema, String name, String description, boolean required) {
+        ObjectNode property = properties(schema).putObject(name);
+        property.put("type", "string");
+        property.put("description", description + "（十进制字符串）");
+        property.put("pattern", "^[0-9]{1,19}$");
+        property.put("maxLength", 19);
+        required(schema, name, required);
+    }
+
     public static void object(ObjectNode schema, String name, String description, boolean required) {
         ObjectNode property = properties(schema).putObject(name);
         property.put("type", "object");

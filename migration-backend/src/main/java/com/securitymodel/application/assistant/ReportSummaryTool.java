@@ -33,7 +33,7 @@ public class ReportSummaryTool implements AssistantTool {
     @Override
     public AssistantToolDescriptor descriptor() {
         ObjectNode schema = AssistantSchemas.object();
-        AssistantSchemas.integer(schema, "taskId", "当前用户自己的任务 ID", true);
+        AssistantSchemas.identifier(schema, "taskId", "当前用户自己的任务 ID", true);
         return new AssistantToolDescriptor("get_my_report_summary",
                 "读取当前用户自己的报告摘要、真实清洗纯度和可导出状态；不返回路径、日志或原始结果",
                 false, schema);
@@ -46,7 +46,7 @@ public class ReportSummaryTool implements AssistantTool {
         PreDefenseTask task = taskAccessGuard.requireOwned(taskId);
 
         ObjectNode data = objectMapper.createObjectNode();
-        data.put("taskId", task.getTaskId());
+        data.put("taskId", String.valueOf(task.getTaskId()));
         data.put("taskIdText", String.valueOf(task.getTaskId()));
         data.put("taskName", KnowledgeSanitizer.forModel(task.getTaskName(), 120));
         data.put("status", task.getStatus());

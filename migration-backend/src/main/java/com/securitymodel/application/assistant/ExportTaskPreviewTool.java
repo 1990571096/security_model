@@ -30,7 +30,7 @@ public class ExportTaskPreviewTool implements AssistantTool {
     @Override
     public AssistantToolDescriptor descriptor() {
         ObjectNode schema = AssistantSchemas.object();
-        AssistantSchemas.integer(schema, "taskId", "当前用户自己的成功任务 ID", true);
+        AssistantSchemas.identifier(schema, "taskId", "当前用户自己的成功任务 ID", true);
         AssistantSchemas.integer(schema, "isolationRatio", "可选隔离比例；不传时使用报告默认比例", false);
         return new AssistantToolDescriptor("preview_export_task",
                 "预览清洗子集导出；只校验报告和比例，不创建导出任务、不写 ZIP", true, schema);
@@ -61,7 +61,7 @@ public class ExportTaskPreviewTool implements AssistantTool {
         }
 
         ObjectNode request = objectMapper.createObjectNode();
-        request.put("taskId", task.getTaskId());
+        request.put("taskId", String.valueOf(task.getTaskId()));
         request.put("isolationRatio", ratio);
         ObjectNode data = request.deepCopy();
         data.put("operation", "export");

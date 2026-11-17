@@ -15,9 +15,9 @@ R7 助手已完成“参数策略—模型证据—隔离后端/真实前端/脚
 
 - `dataset`/`trigger_type` 已要求文本类型并校验支持集合，错误码区分 `PARAMETER_REQUIRED`、`PARAMETER_TYPE_INVALID`、`PARAMETER_VALUE_INVALID`、`PARAMETER_OUT_OF_RANGE`；种子 `config_schema` 与 Java 集合一致。
 - `AssistantModelEvidence` 已为校验与预检增加有限量、脱敏投影；本地假 HTTP 捕获确认 `valid/code/message/configFingerprint/normalizedParameters`、`executorConfiguration/blockers/warnings` 进入第二轮请求，且无绝对路径、`data_path` 或原始日志。
-- 浏览器已实测合法参数、未知 dataset/trigger、数字/布尔/对象类型错误、结果未采集、Worker 未知、越界 403、模型故障与确认卡片；任务 ID 精度用 `taskIdText` 修正，800px 与 390px 视口无横向溢出。
-- 全量门禁为 **337 单测 + 123 IT，0 失败/0 错误/0 跳过**，前端构建成功；日志 `tmp/stage9-full-verify-retry.log`、`tmp/stage9-frontend-build.log`。
-- 本轮仍未运行真实 LDD/GPU、未调用真实外部模型、未迁移或操作原 `eladmin`；确认卡片只验证出现，未点击执行。参数校验通过不等于任务可执行，`worker_unknown` 仍按“运行环境尚未验证”展示。
+- 浏览器已实测合法参数、未知 dataset/trigger、数字/布尔/对象类型错误、结果未采集、Worker 未知、越界 403、模型故障与确认卡片；任务 ID 精度已改为 API 边界统一十进制字符串，入参兼容 JSON 整数与字符串，嵌套 `dataset/algorithm` ID 同样字符串化。浏览器在隔离库和本地假模型下实际点击确认并启动 `9007199254740993`；重新打包后的点击同样发出确认请求，因当前用户已有 2 个 running 任务返回 400 `TASK_USER_QUOTA_EXCEEDED`，未误启动任务。800px 与 390px 视口无横向溢出。
+- 全量门禁为 **343 单测 + 126 IT，0 失败/0 错误/0 跳过**，聚焦确认/归属 IT 为 **39 项通过**，前端生产构建成功；日志 `tmp/stage10-full-verify-2.log`、`tmp/stage10-focused-tests-3.log`、`tmp/stage10-frontend-build.log`。
+- 本轮仍未运行真实 LDD/GPU、未调用真实外部模型、未迁移或操作原 `eladmin`；确认卡片已在旧 jar 上实际点击执行，重复/过期/越权边界由隔离库直连 API 与聚焦 IT 覆盖，未在 UI 中逐项复现。参数校验通过不等于任务可执行，`worker_unknown` 仍按“运行环境尚未验证”展示。
 
 
 R0 已完成一次以源码为准的事实审计（2026-11-13）：修正了 7 处与代码冲突的文档表述（清单见

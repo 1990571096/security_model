@@ -9,7 +9,7 @@
 | 参数策略 | LDD `dataset` / `trigger_type` 增加文本类型与支持集合校验；缺失、类型错误、未知枚举分别返回稳定错误码。 |
 | 模型证据 | 为 `validate_ldd_parameters`、`get_my_task_summary` 增加专用、有限量、脱敏投影。 |
 | 浏览器验收 | 隔离 MySQL + 8100 后端 + 8090 脚本化假模型 + 8014 真实 Vite 前端。 |
-| 任务 ID | 增加 `taskIdText`，避免 19 位雪花 ID 在 JavaScript `Number` 中丢失精度。 |
+| 任务 ID | R7 当时增加 `taskIdText`，避免 19 位雪花 ID 在 JavaScript `Number` 中丢失精度；阶段 1 后续已将 HTTP 边界统一为十进制字符串，见 §9。 |
 | 布局 | 修正助手双栏在 800px 视口的挤压，改为单栏；检查 390px 手机宽度无横向溢出。 |
 | 文档 | 明确“工具执行失败 / 校验执行成功但参数无效 / 运行环境尚未验证”三态。 |
 | 真实边界 | 未运行真实 LDD/GPU；未迁移或操作原 `eladmin`；未调用真实外部模型。 |
@@ -129,5 +129,16 @@ python scripts/dev/assistant_browser_fake_model.py --port 8090
 - 未运行真实 LDD/GPU；确认卡片只验证出现，未点击“确认执行”，未领取 GPU 槽。
 - 未迁移或操作原 `eladmin`；浏览器使用 `security_model_browser` 隔离克隆库。
 - 未验证生产部署、长期故障压测、真实导出中断或跨机 Worker。
-- `taskIdText` 是兼容性修正；其他接口的 19 位 ID 是否统一改为字符串，仍待单独决策。
+- R7 当时 `taskIdText` 是兼容性修正；阶段 1 已把 HTTP 边界的 `*Id` 字段统一为十进制字符串，并保留数字入参兼容，其他接口不再待决策，见 §9。
 - 支持集合以种子 `badnet` 为准；历史测试夹具中的 `badnets` 已改为 `badnet`。未审计隔离库之外是否存在使用旧别名的任务配置；若存在，需单独做数据核对/迁移，不在本轮操作原 `eladmin` 范围。
+
+## 9. 阶段 1 ID 与确认收口后续（2026-11-17）
+
+本节记录 R7 收口之后新增的事实，覆盖本文 §8 中“未点击确认”的 R7 当时状态。
+
+- HTTP 边界的 `*Id` 字段（含嵌套 `dataset`/`algorithm`）输出十进制字符串；助手工具入参同时接受 JSON 整数和 1–19 位十进制字符串，超长/非数字返回 `ASSISTANT_TOOL_ARGUMENTS_INVALID`。
+- 聚焦 `AssistantConfirmationEndToEndIT` 25/25、`OwnershipEndToEndIT` 10/10、`OwnershipEndToEndCrossReadIT` 4/4，共 39 项通过；覆盖超大 ID 列表/详情/预览/确认/重复确认/越权、过期确认 410、超大导出 ID 查询与下载越权。全量门禁为 **343 单测 + 126 IT，0 失败/0 错误/0 跳过**。
+- 浏览器在隔离库、本地假模型和短协议桩下实际点击“确认执行”并启动任务 `9007199254740993`，数据库状态为 `running`。重新打包后的页面点击同样发出 `POST /api/assistant/confirmations/confirm`，因当前用户已有 2 个 running 任务返回 400 `TASK_USER_QUOTA_EXCEEDED`，任务未被误启动。
+- 重复确认返回 `confirmationReplayed=true`；过期凭据返回 410 `ASSISTANT_CONFIRMATION_EXPIRED`；另一用户确认返回 403 `ASSISTANT_CONFIRMATION_FORBIDDEN`。这些边界由隔离库直连 API 与聚焦 IT 覆盖，未在 UI 中逐项复现。
+- 跨轮会话已明确限制：`summaryJson` 只用于会话列表/历史恢复/审计/配额与清理，不进入模型消息；前端“继续会话”只恢复 `sessionId` 绑定。
+- 仍未运行真实 LDD/GPU、未调用真实外部模型、未执行部署环境验收。

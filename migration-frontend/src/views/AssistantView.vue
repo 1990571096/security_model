@@ -272,7 +272,7 @@
       <el-card shadow="never">
         <template #header>
           <div class="card-heading">
-            <div><strong>我的会话</strong><span class="table-caption">仅本人可见，7 天后清理</span></div>
+            <div><strong>我的会话</strong><span class="table-caption">仅本人可见，7 天后清理；摘要用于界面恢复与审计，不进入模型上下文</span></div>
             <el-button text :loading="loadingSessions" @click="loadSessions">刷新</el-button>
           </div>
         </template>
@@ -469,7 +469,7 @@ async function removeSession(session) {
 function useSession(session) {
   sessionId.value = session.sessionId
   result.value = null
-  ElMessage.info(`已切换到会话 #${session.sessionId}，之后的问题会延续该摘要`)
+  ElMessage.info(`已切换到会话 #${session.sessionId}；历史摘要不会作为模型上下文，本轮问题仍需完整描述`)
 }
 
 function clearResult() {

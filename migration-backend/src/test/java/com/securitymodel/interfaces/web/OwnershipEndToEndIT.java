@@ -62,7 +62,7 @@ class OwnershipEndToEndIT {
         mockMvc.perform(get("/api/pre-defense/" + OwnershipE2ESupport.ALICE_TASK)
                         .header("Authorization", alice))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.taskId").value((int) OwnershipE2ESupport.ALICE_TASK));
+                .andExpect(jsonPath("$.taskId").value(String.valueOf(OwnershipE2ESupport.ALICE_TASK)));
 
         mockMvc.perform(get("/api/pre-defense/" + OwnershipE2ESupport.ALICE_TASK)
                         .header("Authorization", bob))
@@ -177,7 +177,7 @@ class OwnershipEndToEndIT {
         mockMvc.perform(get("/api/pre-defense/cleaned-dataset/exports/" + OwnershipE2ESupport.EXPORT_ID)
                         .header("Authorization", alice))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.exportId").value((int) OwnershipE2ESupport.EXPORT_ID));
+                .andExpect(jsonPath("$.exportId").value(String.valueOf(OwnershipE2ESupport.EXPORT_ID)));
 
         mockMvc.perform(get("/api/pre-defense/cleaned-dataset/exports/" + OwnershipE2ESupport.EXPORT_ID + "/download")
                         .header("Authorization", alice))

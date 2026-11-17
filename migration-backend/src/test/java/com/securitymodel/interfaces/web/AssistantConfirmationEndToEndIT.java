@@ -79,6 +79,9 @@ class AssistantConfirmationEndToEndIT {
     private static final long ALICE_PENDING_TASK = 701L;
     private static final long ALICE_FAILED_TASK = 702L;
     private static final long ALICE_EXPORT_TASK = 703L;
+    private static final long LARGE_PENDING_TASK = 9007199254740993L;
+    private static final long LARGE_EXPIRED_TASK = 9007199254740994L;
+    private static final long LARGE_EXPORT_TASK = 9007199254740995L;
     private static final String RUN_ID = "assistant-e2e-run";
 
     static {
@@ -128,6 +131,10 @@ class AssistantConfirmationEndToEndIT {
         jdbc.update("DELETE FROM sys_pre_defense WHERE task_id = ?", ALICE_FAILED_TASK);
         jdbc.update("DELETE FROM sys_pre_defense_export WHERE task_id = ?", ALICE_EXPORT_TASK);
         jdbc.update("DELETE FROM sys_pre_defense WHERE task_id = ?", ALICE_EXPORT_TASK);
+        jdbc.update("DELETE FROM sys_pre_defense WHERE task_id = ?", LARGE_PENDING_TASK);
+        jdbc.update("DELETE FROM sys_pre_defense WHERE task_id = ?", LARGE_EXPIRED_TASK);
+        jdbc.update("DELETE FROM sys_pre_defense_export WHERE task_id = ?", LARGE_EXPORT_TASK);
+        jdbc.update("DELETE FROM sys_pre_defense WHERE task_id = ?", LARGE_EXPORT_TASK);
         jdbc.update("DELETE FROM sys_assistant_confirmation");
         jdbc.update("DELETE FROM sys_assistant_session");
         jdbc.update("DELETE FROM sys_assistant_tool_audit");
@@ -159,6 +166,10 @@ class AssistantConfirmationEndToEndIT {
         jdbc.update("DELETE FROM sys_pre_defense WHERE task_id = ?", ALICE_FAILED_TASK);
         jdbc.update("DELETE FROM sys_pre_defense_export WHERE task_id = ?", ALICE_EXPORT_TASK);
         jdbc.update("DELETE FROM sys_pre_defense WHERE task_id = ?", ALICE_EXPORT_TASK);
+        jdbc.update("DELETE FROM sys_pre_defense WHERE task_id = ?", LARGE_PENDING_TASK);
+        jdbc.update("DELETE FROM sys_pre_defense WHERE task_id = ?", LARGE_EXPIRED_TASK);
+        jdbc.update("DELETE FROM sys_pre_defense_export WHERE task_id = ?", LARGE_EXPORT_TASK);
+        jdbc.update("DELETE FROM sys_pre_defense WHERE task_id = ?", LARGE_EXPORT_TASK);
         jdbc.update("DELETE FROM sys_assistant_confirmation");
         jdbc.update("DELETE FROM sys_assistant_session");
         jdbc.update("DELETE FROM sys_assistant_tool_audit");
@@ -187,14 +198,15 @@ class AssistantConfirmationEndToEndIT {
                 WHERE user_id = 2 AND tool_name = 'preview_cancel_task' AND result_code = 'PREVIEWED'
                 """, Integer.class));
 
-        long confirmationId = objectMapper.readTree(preview).path("confirmationId").asLong();
+        long confirmationId = Long.parseLong(objectMapper.readTree(preview).path("confirmationId").asText());
         String token = objectMapper.readTree(preview).path("token").asText();
 
+        // The frontend sends confirmationId as an exact decimal string; the numeric form stays accepted.
         mockMvc.perform(post("/api/assistant/confirmations/confirm")
                         .header("Authorization", alice)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(Map.of(
-                                "confirmationId", confirmationId, "token", token))))
+                                "confirmationId", String.valueOf(confirmationId), "token", token))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.confirmationReplayed").value(false));
 
@@ -229,7 +241,7 @@ class AssistantConfirmationEndToEndIT {
                         .content("{\"taskId\":" + ALICE_RUNNING_TASK + "}"))
                 .andExpect(status().isOk())
                 .andReturn().getResponse().getContentAsString();
-        long confirmationId = objectMapper.readTree(preview).path("confirmationId").asLong();
+        long confirmationId = Long.parseLong(objectMapper.readTree(preview).path("confirmationId").asText());
         String token = objectMapper.readTree(preview).path("token").asText();
 
         // A concurrent run started/changed after the user previewed: the previewed parameters
@@ -290,14 +302,14 @@ class AssistantConfirmationEndToEndIT {
                             .content("{\"question\":\"查看我的任务 700\"}"))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.status").value("answered"))
-                    .andExpect(jsonPath("$.toolResults[0].data.taskId").value(700));
+                    .andExpect(jsonPath("$.toolResults[0].data.taskId").value("700"));
             mockMvc.perform(post("/api/assistant/chat")
                             .header("Authorization", bob)
                             .contentType(MediaType.APPLICATION_JSON)
                             .content("{\"question\":\"查看我的任务 300\"}"))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.status").value("answered"))
-                    .andExpect(jsonPath("$.toolResults[0].data.taskId").value(300));
+                    .andExpect(jsonPath("$.toolResults[0].data.taskId").value("300"));
         }
     }
 
@@ -326,7 +338,7 @@ class AssistantConfirmationEndToEndIT {
                                 .contentType(MediaType.APPLICATION_JSON)
                                 .content("{\"question\":\"查看我的任务 700\"}"))
                         .andExpect(status().isOk())
-                        .andExpect(jsonPath("$.toolResults[0].data.taskId").value(700))
+                        .andExpect(jsonPath("$.toolResults[0].data.taskId").value("700"))
                         .andReturn().getResponse().getContentAsString();
             });
             Future<String> bobResult = pool.submit(() -> {
@@ -336,12 +348,12 @@ class AssistantConfirmationEndToEndIT {
                                 .contentType(MediaType.APPLICATION_JSON)
                                 .content("{\"question\":\"查看我的任务 300\"}"))
                         .andExpect(status().isOk())
-                        .andExpect(jsonPath("$.toolResults[0].data.taskId").value(300))
+                        .andExpect(jsonPath("$.toolResults[0].data.taskId").value("300"))
                         .andReturn().getResponse().getContentAsString();
             });
             start.countDown();
-            assertTrue(aliceResult.get(20, TimeUnit.SECONDS).contains("\"taskId\":700"));
-            assertTrue(bobResult.get(20, TimeUnit.SECONDS).contains("\"taskId\":300"));
+            assertTrue(aliceResult.get(20, TimeUnit.SECONDS).contains("\"taskId\":\"700\""));
+            assertTrue(bobResult.get(20, TimeUnit.SECONDS).contains("\"taskId\":\"300\""));
         } finally {
             pool.shutdownNow();
         }
@@ -392,7 +404,7 @@ class AssistantConfirmationEndToEndIT {
                         .content("{\"taskId\":" + ALICE_RUNNING_TASK + "}"))
                 .andExpect(status().isOk())
                 .andReturn().getResponse().getContentAsString();
-        long confirmationId = objectMapper.readTree(preview).path("confirmationId").asLong();
+        long confirmationId = Long.parseLong(objectMapper.readTree(preview).path("confirmationId").asText());
         String token = objectMapper.readTree(preview).path("token").asText();
         String tampered = (token.charAt(0) == 'A' ? "B" : "A") + token.substring(1);
 
@@ -496,7 +508,7 @@ class AssistantConfirmationEndToEndIT {
         assertEquals(0, jdbc.queryForObject(
                 "SELECT COUNT(*) FROM sys_pre_defense WHERE task_name = ?", Integer.class, taskName));
 
-        long confirmationId = objectMapper.readTree(preview).path("confirmationId").asLong();
+        long confirmationId = Long.parseLong(objectMapper.readTree(preview).path("confirmationId").asText());
         String token = objectMapper.readTree(preview).path("token").asText();
         mockMvc.perform(post("/api/assistant/confirmations/confirm")
                         .header("Authorization", alice)
@@ -526,7 +538,7 @@ class AssistantConfirmationEndToEndIT {
                 .andExpect(jsonPath("$.operation").value("start"))
                 .andReturn().getResponse().getContentAsString();
 
-        long confirmationId = objectMapper.readTree(preview).path("confirmationId").asLong();
+        long confirmationId = Long.parseLong(objectMapper.readTree(preview).path("confirmationId").asText());
         String token = objectMapper.readTree(preview).path("token").asText();
         mockMvc.perform(post("/api/assistant/confirmations/confirm")
                         .header("Authorization", alice)
@@ -561,7 +573,7 @@ class AssistantConfirmationEndToEndIT {
                         .content(createArgs.toString()))
                 .andExpect(status().isOk())
                 .andReturn().getResponse().getContentAsString();
-        long confirmationId = objectMapper.readTree(preview).path("confirmationId").asLong();
+        long confirmationId = Long.parseLong(objectMapper.readTree(preview).path("confirmationId").asText());
         String token = objectMapper.readTree(preview).path("token").asText();
 
         CountDownLatch ready = new CountDownLatch(2);
@@ -595,7 +607,7 @@ class AssistantConfirmationEndToEndIT {
                         .content("{\"taskId\":" + ALICE_PENDING_TASK + "}"))
                 .andExpect(status().isOk())
                 .andReturn().getResponse().getContentAsString();
-        long confirmationId = objectMapper.readTree(preview).path("confirmationId").asLong();
+        long confirmationId = Long.parseLong(objectMapper.readTree(preview).path("confirmationId").asText());
         String token = objectMapper.readTree(preview).path("token").asText();
 
         twoConfirms(alice, confirmationId, token);
@@ -624,7 +636,7 @@ class AssistantConfirmationEndToEndIT {
                         .content("{\"taskId\":" + ALICE_FAILED_TASK + "}"))
                 .andExpect(status().isOk())
                 .andReturn().getResponse().getContentAsString();
-        long confirmationId = objectMapper.readTree(preview).path("confirmationId").asLong();
+        long confirmationId = Long.parseLong(objectMapper.readTree(preview).path("confirmationId").asText());
         String token = objectMapper.readTree(preview).path("token").asText();
 
         twoConfirms(alice, confirmationId, token);
@@ -646,7 +658,7 @@ class AssistantConfirmationEndToEndIT {
                         .content("{\"taskId\":" + ALICE_RUNNING_TASK + "}"))
                 .andExpect(status().isOk())
                 .andReturn().getResponse().getContentAsString();
-        long confirmationId = objectMapper.readTree(preview).path("confirmationId").asLong();
+        long confirmationId = Long.parseLong(objectMapper.readTree(preview).path("confirmationId").asText());
         String token = objectMapper.readTree(preview).path("token").asText();
 
         twoConfirms(alice, confirmationId, token);
@@ -675,7 +687,7 @@ class AssistantConfirmationEndToEndIT {
                                 + OwnershipE2ESupport.EXPORT_RATIO + "}"))
                 .andExpect(status().isOk())
                 .andReturn().getResponse().getContentAsString();
-        long confirmationId = objectMapper.readTree(preview).path("confirmationId").asLong();
+        long confirmationId = Long.parseLong(objectMapper.readTree(preview).path("confirmationId").asText());
         String token = objectMapper.readTree(preview).path("token").asText();
 
         twoConfirms(alice, confirmationId, token);
@@ -729,7 +741,7 @@ class AssistantConfirmationEndToEndIT {
                 .andReturn().getResponse().getContentAsString();
 
         when(resourceQueryService.findAlgorithmAuthoritative(1L)).thenReturn(changedAlgorithm());
-        long confirmationId = objectMapper.readTree(preview).path("confirmationId").asLong();
+        long confirmationId = Long.parseLong(objectMapper.readTree(preview).path("confirmationId").asText());
         String token = objectMapper.readTree(preview).path("token").asText();
         mockMvc.perform(post("/api/assistant/confirmations/confirm")
                         .header("Authorization", alice)
@@ -763,7 +775,7 @@ class AssistantConfirmationEndToEndIT {
                 .andReturn().getResponse().getContentAsString();
 
         when(resourceQueryService.findAlgorithmAuthoritative(1L)).thenReturn(changedAlgorithm());
-        long confirmationId = objectMapper.readTree(preview).path("confirmationId").asLong();
+        long confirmationId = Long.parseLong(objectMapper.readTree(preview).path("confirmationId").asText());
         String token = objectMapper.readTree(preview).path("token").asText();
         mockMvc.perform(post("/api/assistant/confirmations/confirm")
                         .header("Authorization", alice)
@@ -795,7 +807,7 @@ class AssistantConfirmationEndToEndIT {
                 .andExpect(jsonPath("$.operation").value("retry"))
                 .andReturn().getResponse().getContentAsString();
 
-        long confirmationId = objectMapper.readTree(preview).path("confirmationId").asLong();
+        long confirmationId = Long.parseLong(objectMapper.readTree(preview).path("confirmationId").asText());
         String token = objectMapper.readTree(preview).path("token").asText();
         mockMvc.perform(post("/api/assistant/confirmations/confirm")
                         .header("Authorization", alice)
@@ -833,7 +845,7 @@ class AssistantConfirmationEndToEndIT {
                 .andExpect(jsonPath("$.operation").value("export"))
                 .andReturn().getResponse().getContentAsString();
 
-        long confirmationId = objectMapper.readTree(preview).path("confirmationId").asLong();
+        long confirmationId = Long.parseLong(objectMapper.readTree(preview).path("confirmationId").asText());
         String token = objectMapper.readTree(preview).path("token").asText();
         mockMvc.perform(post("/api/assistant/confirmations/confirm")
                         .header("Authorization", alice)
@@ -849,6 +861,146 @@ class AssistantConfirmationEndToEndIT {
                 "SELECT export_id FROM sys_pre_defense_export WHERE task_id = ?",
                 Long.class, ALICE_EXPORT_TASK);
         mockMvc.perform(get("/api/pre-defense/cleaned-dataset/exports/" + exportId + "/download")
+                        .header("Authorization", login("bob")))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void oversizedTaskIdSurvivesListDetailPreviewConfirmReplayAndCrossUserBoundary() throws Exception {
+        String alice = login("alice");
+        String bob = login("bob");
+        String largeId = String.valueOf(LARGE_PENDING_TASK);
+        insertTask(LARGE_PENDING_TASK, "assistant-large", "pending", null, 1, null);
+
+        mockMvc.perform(get("/api/task-progress")
+                        .header("Authorization", alice)
+                        .param("status", "pending")
+                        .param("blurry", "assistant-large"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].taskId").value(largeId));
+        mockMvc.perform(get("/api/task-progress/pre_defense/" + largeId)
+                        .header("Authorization", alice))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.taskId").value(largeId));
+        mockMvc.perform(get("/api/pre-defense/" + largeId)
+                        .header("Authorization", alice))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.taskId").value(largeId));
+
+        String preview = mockMvc.perform(post("/api/assistant/tools/preview_start_task/preview")
+                        .header("Authorization", alice)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"taskId\":\"" + largeId + "\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.preview.taskId").value(largeId))
+                .andExpect(jsonPath("$.preview.dataset.datasetId").value("1"))
+                .andExpect(jsonPath("$.preview.algorithm.algorithmId").value("1"))
+                .andReturn().getResponse().getContentAsString();
+        long confirmationId = Long.parseLong(objectMapper.readTree(preview).path("confirmationId").asText());
+        String token = objectMapper.readTree(preview).path("token").asText();
+
+        mockMvc.perform(post("/api/assistant/confirmations/confirm")
+                        .header("Authorization", alice)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(Map.of(
+                                "confirmationId", confirmationId, "token", token))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.confirmationReplayed").value(false));
+        assertEquals("running", jdbc.queryForObject(
+                "SELECT status FROM sys_pre_defense WHERE task_id = ?", String.class, LARGE_PENDING_TASK));
+
+        mockMvc.perform(post("/api/assistant/confirmations/confirm")
+                        .header("Authorization", alice)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(Map.of(
+                                "confirmationId", confirmationId, "token", token))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.confirmationReplayed").value(true));
+        verify(dispatchCoordinator, times(1)).dispatchAfterCommit(any());
+
+        mockMvc.perform(post("/api/assistant/confirmations/confirm")
+                        .header("Authorization", bob)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(Map.of(
+                                "confirmationId", confirmationId, "token", token))))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("ASSISTANT_CONFIRMATION_FORBIDDEN"));
+    }
+
+    @Test
+    void oversizedTaskIdExpiredConfirmationReturnsGone() throws Exception {
+        String alice = login("alice");
+        String largeId = String.valueOf(LARGE_EXPIRED_TASK);
+        insertTask(LARGE_EXPIRED_TASK, "assistant-large-expired", "pending", null, 1, null);
+
+        String preview = mockMvc.perform(post("/api/assistant/tools/preview_start_task/preview")
+                        .header("Authorization", alice)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"taskId\":\"" + largeId + "\"}"))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        long confirmationId = Long.parseLong(objectMapper.readTree(preview).path("confirmationId").asText());
+        String token = objectMapper.readTree(preview).path("token").asText();
+        jdbc.update("UPDATE sys_assistant_confirmation SET expires_at = DATE_SUB(NOW(3), INTERVAL 1 MINUTE) "
+                + "WHERE confirmation_id = ?", confirmationId);
+
+        mockMvc.perform(post("/api/assistant/confirmations/confirm")
+                        .header("Authorization", alice)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(Map.of(
+                                "confirmationId", confirmationId, "token", token))))
+                .andExpect(status().isGone())
+                .andExpect(jsonPath("$.code").value("ASSISTANT_CONFIRMATION_EXPIRED"));
+        assertEquals("pending", jdbc.queryForObject(
+                "SELECT status FROM sys_pre_defense WHERE task_id = ?", String.class, LARGE_EXPIRED_TASK));
+    }
+
+    @Test
+    void oversizedExportIdIsExactAcrossLookupAndDownloadAuthorization() throws Exception {
+        String alice = login("alice");
+        String largeId = String.valueOf(LARGE_EXPORT_TASK);
+        jdbc.update("""
+                INSERT INTO sys_pre_defense (
+                    task_id, task_name, status, dataset_id, algorithm_id, cleaning_result,
+                    progress, create_by, create_time, owner_user_id, data_origin
+                )
+                SELECT ?, 'assistant-large-export', status, dataset_id, algorithm_id, cleaning_result,
+                       progress, 'alice', NOW(), 2, 'user'
+                FROM sys_pre_defense WHERE task_id = 500
+                """, LARGE_EXPORT_TASK);
+
+        String preview = mockMvc.perform(post("/api/assistant/tools/preview_export_task/preview")
+                        .header("Authorization", alice)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"taskId\":\"" + largeId + "\",\"isolationRatio\":"
+                                + OwnershipE2ESupport.EXPORT_RATIO + "}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.preview.taskId").value(largeId))
+                .andReturn().getResponse().getContentAsString();
+        long confirmationId = Long.parseLong(objectMapper.readTree(preview).path("confirmationId").asText());
+        String token = objectMapper.readTree(preview).path("token").asText();
+        mockMvc.perform(post("/api/assistant/confirmations/confirm")
+                        .header("Authorization", alice)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(Map.of(
+                                "confirmationId", confirmationId, "token", token))))
+                .andExpect(status().isOk());
+
+        long exportId = jdbc.queryForObject(
+                "SELECT export_id FROM sys_pre_defense_export WHERE task_id = ?",
+                Long.class, LARGE_EXPORT_TASK);
+        String exportIdText = String.valueOf(exportId);
+        mockMvc.perform(get("/api/pre-defense/cleaned-dataset/exports/task/" + largeId)
+                        .header("Authorization", alice))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].taskId").value(largeId))
+                .andExpect(jsonPath("$[0].exportId").value(exportIdText));
+        mockMvc.perform(get("/api/pre-defense/cleaned-dataset/exports/" + exportIdText)
+                        .header("Authorization", alice))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.taskId").value(largeId))
+                .andExpect(jsonPath("$.exportId").value(exportIdText));
+        mockMvc.perform(get("/api/pre-defense/cleaned-dataset/exports/" + exportIdText + "/download")
                         .header("Authorization", login("bob")))
                 .andExpect(status().isForbidden());
     }

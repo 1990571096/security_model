@@ -59,22 +59,48 @@ public final class AssistantArgs {
     }
 
     public static Long requireLong(JsonNode arguments, String field) {
-        JsonNode value = arguments.get(field);
-        if (value == null || !value.isIntegralNumber()) {
-            throw invalid("缺少整数参数: " + field);
+        Long value = readLong(arguments.get(field), field, false);
+        if (value == null) {
+            throw invalid("缺少整数或字符串 ID 参数: " + field);
         }
-        return value.asLong();
+        return value;
     }
 
     public static Long optionalLong(JsonNode arguments, String field) {
-        JsonNode value = arguments.get(field);
+        return readLong(arguments.get(field), field, true);
+    }
+
+    /**
+     * Accepts an integral JSON number for existing callers and a decimal string for
+     * precision-sensitive clients. Strings are parsed with Long.parseLong, so a value
+     * beyond 2^53 is not rounded through a JavaScript number first.
+     */
+    private static Long readLong(JsonNode value, String field, boolean nullable) {
         if (value == null || value.isNull()) {
-            return null;
+            if (nullable) {
+                return null;
+            }
+            throw invalid("缺少整数或字符串 ID 参数: " + field);
         }
-        if (!value.isIntegralNumber()) {
-            throw invalid("参数类型错误: " + field);
+        if (value.isIntegralNumber()) {
+            if (!value.canConvertToLong()) {
+                throw invalid("参数超出 64 位整数范围: " + field);
+            }
+            return value.asLong();
         }
-        return value.asLong();
+        if (value.isTextual()) {
+            String text = value.asText().trim();
+            if (text.isEmpty() || text.length() > 19
+                    || !text.chars().allMatch(Character::isDigit)) {
+                throw invalid("参数必须是十进制整数 ID: " + field);
+            }
+            try {
+                return Long.parseLong(text);
+            } catch (NumberFormatException exception) {
+                throw invalid("参数超出 64 位整数范围: " + field);
+            }
+        }
+        throw invalid("参数必须是整数或十进制字符串 ID: " + field);
     }
 
     public static ObjectNode requireObjectArgument(JsonNode arguments, String field) {

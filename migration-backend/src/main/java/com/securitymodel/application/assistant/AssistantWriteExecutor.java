@@ -37,8 +37,7 @@ public class AssistantWriteExecutor {
     }
 
     public IdempotencyResult execute(String operation, Long confirmationId, JsonNode request) {
-        Long taskId = request.has("taskId") && request.get("taskId").isIntegralNumber()
-                ? request.get("taskId").asLong() : null;
+        Long taskId = request.has("taskId") ? AssistantArgs.requireLong(request, "taskId") : null;
         String idempotencyKey = "assistant-confirm-" + confirmationId;
         return idempotencyService.execute("assistant." + operation, idempotencyKey, request, taskId,
                 () -> switch (operation) {
@@ -56,10 +55,9 @@ public class AssistantWriteExecutor {
         PreDefenseTaskCommand command = new PreDefenseTaskCommand();
         command.setTaskName(request.path("taskName").asText());
         command.setDescription(request.has("description") ? request.path("description").asText() : null);
-        command.setDatasetId(request.path("datasetId").asLong());
-        command.setAlgorithmId(request.path("algorithmId").asLong());
-        command.setHyperId(request.has("hyperId") && request.get("hyperId").isIntegralNumber()
-                ? request.get("hyperId").asLong() : null);
+        command.setDatasetId(AssistantArgs.requireLong(request, "datasetId"));
+        command.setAlgorithmId(AssistantArgs.requireLong(request, "algorithmId"));
+        command.setHyperId(AssistantArgs.optionalLong(request, "hyperId"));
         command.setCustomParams(request.path("customParams").isObject()
                 ? request.path("customParams").toString() : "{}");
         PreDefenseTask task = commandService.create(command,
@@ -72,7 +70,7 @@ public class AssistantWriteExecutor {
     }
 
     private IdempotencyResult taskAction(String operation, JsonNode request) {
-        Long taskId = request.path("taskId").asLong();
+        Long taskId = AssistantArgs.requireLong(request, "taskId");
         String expectedFingerprint = request.path("expectedConfigFingerprint").asText(null);
         Map<String, Object> result = switch (operation) {
             case "start" -> commandService.start(taskId, expectedFingerprint);
@@ -85,7 +83,7 @@ public class AssistantWriteExecutor {
     }
 
     private IdempotencyResult export(JsonNode request) {
-        Long taskId = request.path("taskId").asLong();
+        Long taskId = AssistantArgs.requireLong(request, "taskId");
         Integer ratio = request.has("isolationRatio") && request.get("isolationRatio").isIntegralNumber()
                 ? request.get("isolationRatio").asInt() : null;
         CleanSubsetExportTask task = exportService.submit(taskId, ratio);

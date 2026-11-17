@@ -77,20 +77,34 @@ def last_tool_name(body):
     return ""
 
 
+def requested_task_id(text, default=2121793576624254978):
+    """Use the oversized fixture ID named anywhere in the request, if any."""
+    match = re.search(r"\b(9\d{15})\b", text)
+    return int(match.group(1)) if match else default
+
+
+def all_text(body):
+    return "\n".join(str(message.get("content") or "") for message in body.get("messages", []))
+
+
 def choose_reply(body):
     question = last_user_text(body)
     names = tool_names(body)
+    task_id = requested_task_id(all_text(body))
     if "模型故障" in question:
         return 503, {"error": "scripted model outage"}
     if has_tool_result(body):
         if ("确认" in question or "预览启动" in question) and "preview_start_task" in names:
             last_tool = last_tool_name(body)
             if last_tool != "preview_start_task":
-                return 200, tool_call("preview_start_task", {"taskId": 2121793576624254978})
+                return 200, tool_call("preview_start_task", {"taskId": task_id})
         return 200, answer("已根据服务端工具证据完成本轮说明。")
 
     if "越界" in question or "越权" in question:
         return 200, tool_call("get_my_report_summary", {"taskId": 1})
+
+    if "get_my_task_summary" in names and "查看任务" in question:
+        return 200, tool_call("get_my_task_summary", {"taskId": task_id})
 
     if "validate_ldd_parameters" in names:
         custom = {}
@@ -115,12 +129,12 @@ def choose_reply(body):
     if "get_my_task_summary" in names:
         # The seeded pending task is owned by admin. Its executor state is unknown in
         # rabbit/api mode, which is exactly the worker_unknown case under test.
-        return 200, tool_call("get_my_task_summary", {"taskId": 2121793576624254978})
+        return 200, tool_call("get_my_task_summary", {"taskId": task_id})
 
     if "get_my_report_summary" in names:
         # The pending, admin-owned task has no cleaning_result; this exercises the
         # "metrics unavailable" path without touching a demo/foreign row.
-        return 200, tool_call("get_my_report_summary", {"taskId": 2121793576624254978})
+        return 200, tool_call("get_my_report_summary", {"taskId": task_id})
 
     return 200, answer("脚本化模型没有匹配到可调用工具。")
 

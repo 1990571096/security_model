@@ -29,7 +29,7 @@ public class RetryTaskPreviewTool implements AssistantTool {
     @Override
     public AssistantToolDescriptor descriptor() {
         ObjectNode schema = AssistantSchemas.object();
-        AssistantSchemas.integer(schema, "taskId", "当前用户自己的 failed 任务 ID", true);
+        AssistantSchemas.identifier(schema, "taskId", "当前用户自己的 failed 任务 ID", true);
         return new AssistantToolDescriptor("preview_retry_task",
                 "预览重试失败任务；只校验状态和参数，不重置任务、不启动训练", true, schema);
     }
@@ -55,7 +55,7 @@ public class RetryTaskPreviewTool implements AssistantTool {
         var plan = commandService.plan(task);
 
         ObjectNode request = objectMapper.createObjectNode();
-        request.put("taskId", task.getTaskId());
+        request.put("taskId", String.valueOf(task.getTaskId()));
         request.put("expectedConfigFingerprint", plan.fingerprint());
         ObjectNode data = request.deepCopy();
         data.put("operation", "retry");

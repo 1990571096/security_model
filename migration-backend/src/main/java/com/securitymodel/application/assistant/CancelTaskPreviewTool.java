@@ -24,7 +24,7 @@ public class CancelTaskPreviewTool implements AssistantTool {
     @Override
     public AssistantToolDescriptor descriptor() {
         ObjectNode schema = AssistantSchemas.object();
-        AssistantSchemas.integer(schema, "taskId", "当前用户自己的运行中任务 ID", true);
+        AssistantSchemas.identifier(schema, "taskId", "当前用户自己的运行中任务 ID", true);
         return new AssistantToolDescriptor("preview_cancel_task",
                 "预览取消任务；只生成确认凭据，不终止进程", true, schema);
     }
@@ -43,7 +43,7 @@ public class CancelTaskPreviewTool implements AssistantTool {
                     org.springframework.http.HttpStatus.CONFLICT, "任务缺少当前运行标识，无法安全取消");
         }
         ObjectNode request = objectMapper.createObjectNode();
-        request.put("taskId", task.getTaskId());
+        request.put("taskId", String.valueOf(task.getTaskId()));
         ObjectNode data = request.deepCopy();
         data.put("operation", "cancel");
         data.put("taskName", task.getTaskName());

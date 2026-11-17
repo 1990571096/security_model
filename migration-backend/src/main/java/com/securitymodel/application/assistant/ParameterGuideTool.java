@@ -35,7 +35,7 @@ public class ParameterGuideTool implements AssistantTool {
     @Override
     public AssistantToolDescriptor descriptor() {
         ObjectNode schema = AssistantSchemas.object();
-        AssistantSchemas.integer(schema, "algorithmId", "可选，限定某个算法", false);
+        AssistantSchemas.identifier(schema, "algorithmId", "可选，限定某个算法", false);
         return new AssistantToolDescriptor("get_parameter_guide",
                 "读取已启用算法、默认参数、参数 schema 和可用数据集元数据；不读取文件路径",
                 false, schema);

@@ -32,9 +32,9 @@ public class ValidateLddParametersTool implements AssistantTool {
     @Override
     public AssistantToolDescriptor descriptor() {
         ObjectNode schema = AssistantSchemas.object();
-        AssistantSchemas.integer(schema, "datasetId", "可用数据集 ID", true);
-        AssistantSchemas.integer(schema, "algorithmId", "已启用的 LDD 算法 ID", true);
-        AssistantSchemas.integer(schema, "hyperId", "可选超参数模板 ID", false);
+        AssistantSchemas.identifier(schema, "datasetId", "可用数据集 ID", true);
+        AssistantSchemas.identifier(schema, "algorithmId", "已启用的 LDD 算法 ID", true);
+        AssistantSchemas.identifier(schema, "hyperId", "可选超参数模板 ID", false);
         AssistantSchemas.object(schema, "customParams",
                 "待校验的 LDD 参数对象，例如 batch_size、num_epochs；未知键会被拒绝", false);
         return new AssistantToolDescriptor("validate_ldd_parameters",
@@ -104,13 +104,13 @@ public class ValidateLddParametersTool implements AssistantTool {
         data.put("code", code);
         data.put("message", message);
         if (command.getDatasetId() != null) {
-            data.put("datasetId", command.getDatasetId());
+            data.put("datasetId", String.valueOf(command.getDatasetId()));
         }
         if (command.getAlgorithmId() != null) {
-            data.put("algorithmId", command.getAlgorithmId());
+            data.put("algorithmId", String.valueOf(command.getAlgorithmId()));
         }
         if (command.getHyperId() != null) {
-            data.put("hyperId", command.getHyperId());
+            data.put("hyperId", String.valueOf(command.getHyperId()));
         }
         data.put("parameterSource", "LDD_CONFIGURATION_POLICY");
         return data;
@@ -124,14 +124,14 @@ public class ValidateLddParametersTool implements AssistantTool {
         JsonNode datasetId = arguments == null ? null : arguments.get("datasetId");
         JsonNode algorithmId = arguments == null ? null : arguments.get("algorithmId");
         JsonNode hyperId = arguments == null ? null : arguments.get("hyperId");
-        if (datasetId != null && datasetId.isIntegralNumber()) {
-            data.put("datasetId", datasetId.asLong());
+        if (datasetId != null && (datasetId.isIntegralNumber() || datasetId.isTextual())) {
+            data.put("datasetId", datasetId.asText());
         }
-        if (algorithmId != null && algorithmId.isIntegralNumber()) {
-            data.put("algorithmId", algorithmId.asLong());
+        if (algorithmId != null && (algorithmId.isIntegralNumber() || algorithmId.isTextual())) {
+            data.put("algorithmId", algorithmId.asText());
         }
-        if (hyperId != null && hyperId.isIntegralNumber()) {
-            data.put("hyperId", hyperId.asLong());
+        if (hyperId != null && (hyperId.isIntegralNumber() || hyperId.isTextual())) {
+            data.put("hyperId", hyperId.asText());
         }
         data.put("parameterSource", "LDD_CONFIGURATION_POLICY");
         return data;

@@ -159,16 +159,16 @@ public class AssistantConfirmationService {
             return false;
         }
         PreDefenseTaskCommand command = new PreDefenseTaskCommand();
-        command.setTaskName(request.path("taskName").asText());
-        command.setDescription(request.has("description") ? request.path("description").asText() : null);
-        command.setDatasetId(request.path("datasetId").asLong());
-        command.setAlgorithmId(request.path("algorithmId").asLong());
-        command.setHyperId(request.has("hyperId") ? request.path("hyperId").asLong() : null);
-        command.setCustomParams(request.path("customParams").isObject()
-                ? request.path("customParams").toString() : "{}");
         try {
+            command.setTaskName(request.path("taskName").asText());
+            command.setDescription(request.has("description") ? request.path("description").asText() : null);
+            command.setDatasetId(AssistantArgs.requireLong(request, "datasetId"));
+            command.setAlgorithmId(AssistantArgs.requireLong(request, "algorithmId"));
+            command.setHyperId(AssistantArgs.optionalLong(request, "hyperId"));
+            command.setCustomParams(request.path("customParams").isObject()
+                    ? request.path("customParams").toString() : "{}");
             return expected.equals(commandService.plan(command).fingerprint());
-        } catch (TaskCommandException exception) {
+        } catch (TaskCommandException | AssistantException exception) {
             return false;
         }
     }

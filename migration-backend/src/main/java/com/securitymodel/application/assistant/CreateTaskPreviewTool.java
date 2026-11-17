@@ -26,9 +26,9 @@ public class CreateTaskPreviewTool implements AssistantTool {
         ObjectNode schema = AssistantSchemas.object();
         AssistantSchemas.text(schema, "taskName", "任务名称，最多 100 字", 100, true);
         AssistantSchemas.text(schema, "description", "任务说明，最多 500 字", 500, false);
-        AssistantSchemas.integer(schema, "datasetId", "可用数据集 ID", true);
-        AssistantSchemas.integer(schema, "algorithmId", "已启用的 LDD 算法 ID", true);
-        AssistantSchemas.integer(schema, "hyperId", "可选超参数模板 ID", false);
+        AssistantSchemas.identifier(schema, "datasetId", "可用数据集 ID", true);
+        AssistantSchemas.identifier(schema, "algorithmId", "已启用的 LDD 算法 ID", true);
+        AssistantSchemas.identifier(schema, "hyperId", "可选超参数模板 ID", false);
         AssistantSchemas.object(schema, "customParams", "可选自定义参数对象；不会自动改写 epochs 等既有值", false);
         return new AssistantToolDescriptor("preview_create_task",
                 "校验并预览创建任务；只生成预览和确认凭据，不写库、不启动训练",
@@ -54,10 +54,10 @@ public class CreateTaskPreviewTool implements AssistantTool {
         if (command.getDescription() != null) {
             request.put("description", command.getDescription());
         }
-        request.put("datasetId", command.getDatasetId());
-        request.put("algorithmId", command.getAlgorithmId());
+        request.put("datasetId", String.valueOf(command.getDatasetId()));
+        request.put("algorithmId", String.valueOf(command.getAlgorithmId()));
         if (command.getHyperId() != null) {
-            request.put("hyperId", command.getHyperId());
+            request.put("hyperId", String.valueOf(command.getHyperId()));
         }
         request.set("customParams", parseObject(command.getCustomParams()));
         request.put("expectedConfigFingerprint", plan.fingerprint());

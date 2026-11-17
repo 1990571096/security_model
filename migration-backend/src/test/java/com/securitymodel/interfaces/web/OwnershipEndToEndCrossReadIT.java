@@ -57,7 +57,7 @@ class OwnershipEndToEndCrossReadIT {
         mockMvc.perform(get("/api/pre-defense/" + OwnershipE2ESupport.ALICE_TASK)
                         .header("Authorization", admin))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.taskId").value((int) OwnershipE2ESupport.ALICE_TASK));
+                .andExpect(jsonPath("$.taskId").value(String.valueOf(OwnershipE2ESupport.ALICE_TASK)));
 
         mockMvc.perform(get("/api/task-progress/statistics").header("Authorization", admin))
                 .andExpect(status().isOk())
