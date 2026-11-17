@@ -50,11 +50,11 @@ security_model
 ├── migration-backend/               Spring Boot 3 / Java 17 后端
 ├── migration-frontend/              Vue 3 / Vite 前端
 ├── algorithm-runtime/vab/           VaB 外部算法适配器
-├── eladmin/                         旧后端回退基线
-├── eladmin-web/                     旧前端回退基线
 ├── docs/sdd/                        SDD 设计与运行文档
-└── sql/                             数据库初始化和演示数据脚本
+└── sql/                             数据库初始化和演示数据脚本（含保留的 eladmin.sql）
 ```
+
+旧 `eladmin/`、`eladmin-web/` 已归档到 Tag `migration-r4-verified` 与 `legacy` 分支，不在主分支。
 
 ### 3.3 演示页面结构
 

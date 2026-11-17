@@ -2,7 +2,7 @@
 
 更新时间：2026-11-17
 
-状态：**部分执行（2026-11-17）**。已创建并从空库初始化 `security_model`（48 表），已用该库启动后端并验证登录、执行池、知识索引与检索；未迁移旧 `eladmin`、未给仓库打 Tag、未创建 `legacy` 分支、未移动或删除 `eladmin/` 与 `eladmin-web/`。阶段 3 五组监控的后端字段与前端页面已实现，尚待全量测试与 CI。
+状态：**初始化链路已收口、旧工程已归档（2026-11-17）**。已创建并从空库初始化 `security_model`（48 表），已用该库启动后端并验证登录、执行池、知识索引与检索；未迁移旧 `eladmin` 数据库。旧 `eladmin/`、`eladmin-web/` 源码已归档到 Tag `migration-r4-verified` 与 `legacy` 分支并从主分支删除，`sql/eladmin.sql` 保留。阶段 3 五组监控的后端字段与前端页面已实现。
 
 ## 1. “生产库迁移”的含义
 
@@ -108,20 +108,20 @@ SECURITY_MODEL_JWT_SECRET=<至少 32 字节>
 
 未完成上述步骤前，文档只能写“生产库未迁移”，不能写“权限体系生产完成”或“部署验收通过”。
 
-## 5. 旧工程归档方案
+## 5. 旧工程归档方案（已执行）
 
-当前新后端运行主链路是 `migration-backend`、`migration-frontend`、`algorithm-runtime/vab` 和 `sql`，不依赖旧 `eladmin` Java 工程或 `eladmin-web` 的运行时。旧工程仍作为历史基线、对照工程和回退依据保留。
+当前新后端运行主链路是 `migration-backend`、`migration-frontend`、`algorithm-runtime/vab` 和 `sql`，不依赖旧 `eladmin` Java 工程或 `eladmin-web` 的运行时。旧工程源码已归档到 Tag `migration-r4-verified` 与 `legacy` 分支，主分支只删除目录，不删除历史；`sql/eladmin.sql` 保留。
 
-推荐顺序：
+执行记录：
 
-1. 在当前已验证提交上打 Tag：`migration-r4-verified`。
-2. 创建独立 `legacy` 分支或归档仓库，保存 `eladmin/`、`eladmin-web/` 的完整源码。
-3. 保留 `sql/eladmin.sql`：MySQL 集成测试和新库初始化仍依赖它作为基础 schema，不能随旧 Java 工程一起删除。
-4. 只有在 Tag 和归档分支都确认可推送、可检出后，才从主分支删除 `eladmin/`、`eladmin-web/`。
-5. 同步修改 `README.md`、`02-current-state.md`、`14-framework-migration-plan.md`、项目解析文档和旧版测试命令，明确旧工程已移至 `legacy`。
-6. 重新执行后端全量测试、前端构建、Python 测试和 Markdown 链接检查。
+1. 在初始化链路 CI 全绿的提交 `4dd8005` 上创建并推送 annotated Tag `migration-r4-verified`。
+2. 创建并推送 `legacy` 分支，保存 `eladmin/`、`eladmin-web/` 的完整源码。
+3. 保留 `sql/eladmin.sql`：MySQL 集成测试和新库初始化仍依赖它作为基础 schema。
+4. 确认 Tag 和 `legacy` 分支可推送后，用独立提交从主分支删除 `eladmin/`、`eladmin-web/`（685 个文件）。
+5. 同步修改 `README.md`、`02-current-state.md`、`06-mvp-runbook.md`、`11-platform-implementation.md`、`14-framework-migration-plan.md`、项目解析文档和旧版测试命令，明确旧工程已移至 `legacy`。
+6. 归档提交后从干净 worktree 重新执行后端测试、初始化幂等与保护脚本；前端和 Python 源码未改动，沿用同一提交前的通过记录。
 
-删除旧目录属于影响面较大的操作。执行前必须确认没有未提交改动、Tag 和归档分支已可恢复，并在提交说明中记录“源码已归档，不是功能删除”。
+删除旧目录属于影响面较大的操作。本次提交说明记录“源码已归档，不是功能删除”；Tag 与 `legacy` 分支均已在远端可检出。
 
 ## 6. 阶段 3 运行监控页面
 
@@ -170,8 +170,9 @@ SECURITY_MODEL_JWT_SECRET=<至少 32 字节>
 | 新库启动验证 | 部分完成 | `DB_NAME=security_model` 在 18102 启动，健康检查 UP、管理员登录成功、执行池与 GPU 读取正常；知识索引 23 文档 / 574 chunks，检索返回 5 条引用；导出恢复用注入的 running/pending 行实测收敛为 failed（`scanned=2, recovered=2`）。真实导出进程中断、任务创建/取消/报告读取未在本轮逐项执行 |
 | 旧 `eladmin` 迁移 | 未执行 | 未改表、未回填、未备份 |
 | `application.yml` 默认库 | 未改 | 仍为 `DB_NAME=eladmin` |
-| Tag `migration-r4-verified` | 未执行 | 尚未创建 |
-| `legacy` 分支/归档仓库 | 未执行 | 旧目录仍在主分支 |
+| Tag `migration-r4-verified` | 已执行（2026-11-17） | annotated Tag 已推送，指向归档前提交 `4dd8005` |
+| `legacy` 分支/归档仓库 | 已执行（2026-11-17） | `legacy` 分支已推送，含 `eladmin/`、`eladmin-web/` 完整 685 文件；主分支已删除两目录 |
+| 旧工程干净检出验证 | 待执行（归档提交后） | 从 `legacy`/Tag 可检出源码；主分支工作树验证见后续记录 |
 | 阶段 3 监控页面 | 实现完成，已通过本机全量与 CI | 后端五组字段 + 前端五组卡片；本机 `verify -Pmysql-it` 289 单测 + 106 IT（0 失败/9 环境跳过），前端 `vite build` 通过；提交 `f70711f`，CI run `43995845889` 全绿 |
 | 干净库启动手册 | 已形成，部分验收 | `06-mvp-runbook.md` 已补“干净库启动手册”；第 7 节第 3、5 项尚未逐项执行 |
 

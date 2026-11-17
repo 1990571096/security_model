@@ -2,6 +2,7 @@
 
 > 本文记录的是旧 ELADMIN 工程的历史基线，不代表迁移版当前运行技术栈。迁移版现状以
 > [09-project-status.md](09-project-status.md) 和 [11-platform-implementation.md](11-platform-implementation.md) 为准。
+> 旧工程源码已归档到 Tag `migration-r4-verified` 与 `legacy` 分支；主分支保留 `sql/eladmin.sql`，但不再包含 `eladmin/`、`eladmin-web/`。
 
 ## 技术栈
 
@@ -9,7 +10,9 @@
 - 前端：Vue 2.7、Vue CLI 3、Element UI、Vuex、Axios、ECharts。
 - 项目基座：ELADMIN 后台管理系统。
 
-## 目录结构
+## 目录结构（归档基线）
+
+以下模块原位于 `eladmin/` 与 `eladmin-web/`，现只存在于 Tag `migration-r4-verified` / `legacy` 分支：
 
 - `eladmin/eladmin-common`：通用配置、异常、工具、基础实体。
 - `eladmin/eladmin-logging`：系统日志。
@@ -17,7 +20,7 @@
 - `eladmin/eladmin-tools`：邮件、支付、对象存储、本地存储等第三方工具。
 - `eladmin/eladmin-generator`：CRUD 代码生成器。
 - `eladmin-web`：Vue 前端。
-- `sql`：初始化 SQL。
+- 主分支仅保留 `sql/eladmin.sql` 作为初始化与 MySQL IT 的基础 schema。
 
 ## 可复用业务模块
 

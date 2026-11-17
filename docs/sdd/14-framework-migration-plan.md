@@ -28,7 +28,7 @@ LDD 任务中心和训练中防御演示页面。R4 的 RabbitMQ、Transactional
 消费账本与死信重放已实现，默认仍为 `dispatch.mode=db`；实现验收在隔离真实 Broker 环境通过，
 部署验收未执行（见 `21` §16、`20` §6.8）。
 
-旧 `eladmin` 和 `eladmin-web` 不删除，继续作为业务回归和回滚基线。新后端默认使用
+旧 `eladmin` 和 `eladmin-web` 已归档到 Tag `migration-r4-verified` 与 `legacy` 分支，主分支不再包含；需要回退或对照时从该 Tag/分支检出。新后端默认使用
 `8100` 端口，新前端默认使用 `8014` 端口。
 
 ## 3. 迁移阶段与当前结果
@@ -61,8 +61,8 @@ LDD 任务创建、启动、取消、重试、报告、日志、PNG 预览和按
 
 ### R3：旧模块隔离
 
-旧 `eladmin` 和 `eladmin-web` 暂不物理删除，作为回退和对照工程保留；迁移版主流程
-不依赖旧业务控制器。它们不是“未实现能力”的证据，后续是否裁剪取决于论文答辩、部署和归档需求。
+旧 `eladmin` 和 `eladmin-web` 已归档到 Tag `migration-r4-verified` 与 `legacy` 分支；迁移版主流程
+不依赖旧业务控制器，主分支也不再保留旧目录。归档只保存源码，不是功能删除；`sql/eladmin.sql` 仍保留供初始化和 MySQL IT 使用。
 
 ### R4：可靠性调度迁移
 

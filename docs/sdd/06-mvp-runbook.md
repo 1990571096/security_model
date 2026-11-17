@@ -37,31 +37,25 @@ SOURCE sql/security_model_knowledge_vector_reconcile.sql;
 SOURCE sql/security_model_assistant.sql;
 ```
 
-seed 脚本不删除历史表和权限数据，只隐藏训练中、训练后及无关后台菜单，并禁用历史 mock baseline。当前展示算法为 `LDD`。
+MVP seed 只补缺失的算法/模板，不再在每次初始化时禁用历史算法或改写菜单显隐；原历史副作用在 `sql/security_model_mvp_legacy_convergence.sql`，该文件不自动执行。当前目录仍展示 builtin 算法，但创建/启动只接受 `vab://pre-defense/ldd`，其他算法由执行能力校验拒绝。
 
 ## 后端验证
 
 ```powershell
-cd F:\Study\postgraduate\毕业论文\security_model\eladmin
-mvn -pl eladmin-system -am compile '-Denforcer.skip=true'
+cd F:\Study\postgraduate\毕业论文\security_model
+mvn -B -f migration-backend/pom.xml test
 ```
 
-当前后端仍基于 Spring Boot 2.7 和 Java 8。跳过 Maven Enforcer 是因为原项目存在既有循环依赖检查问题。
+迁移版使用 Java 17 / Spring Boot 3.5；单元测试不依赖 MySQL/Redis。
 
 ## 前端验证
 
 ```powershell
-cd F:\Study\postgraduate\毕业论文\security_model\eladmin-web
-$env:NODE_OPTIONS='--openssl-legacy-provider'
-npm run build:prod
+cd F:\Study\postgraduate\毕业论文\security_model
+npm --prefix migration-frontend run build
 ```
 
-当前前端仍基于 Vue 2 和 Vue CLI。构建中的 asset size 与 Browserslist 提示属于旧前端栈已知警告。
-
-2026-09-10 旧 ELADMIN 验证记录：定向测试 42 项、Python 适配器语法检查均通过。该记录属于旧后端历史基线，不计入迁移版覆盖。前端生产构建命令已执行，
-但当前 Windows 环境对旧版 Vue CLI 的 `node_modules/.cache` 和构建输出目录写入返回 `EPERM`，
-因此本轮不能把前端构建记为通过；该问题属于本地依赖目录权限或文件占用，不是业务编译错误。
-本轮验证不启动真实 LDD 训练，也不产生新的论文实验结果。
+迁移版前端使用 Vue 3 / Vite。旧 ELADMIN 的 Spring Boot 2.7 / Vue 2 工程已归档到 Tag `migration-r4-verified` 与 `legacy` 分支，主分支不再提供旧构建命令。2026-09-10 的旧 ELADMIN 定向测试 42 项记录只属于归档基线，不计入迁移版覆盖。
 
 ## 迁移版 MySQL 集成测试
 
@@ -76,12 +70,6 @@ mvn -B -f migration-backend/pom.xml verify -Pmysql-it
 
 默认连接本机 `localhost:3306`，用户名 `root`。本机如使用非空密码，通过
 `MYSQL_IT_PASSWORD` 环境变量提供。普通迁移版 `mvn verify` 只执行单元测试，不依赖 MySQL。
-
-后端测试默认由原项目配置跳过，需要显式使用：
-
-```powershell
-mvn -pl eladmin-system -am test "-Denforcer.skip=true" "-Dsecurity-model.skip-tests=false" "-Dtest=CleanSubsetExportTaskServiceImplTest,PreDefenseControllerTest,LddConfigurationPolicyTest,PreDefenseTaskStatePolicyTest,ExecutionFingerprintServiceTest,CleanSubsetExportServiceImplTest,AfterCommitTaskDispatcherTest" "-Dsurefire.failIfNoSpecifiedTests=false"
-```
 
 ## LDD 任务验收
 

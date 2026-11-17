@@ -404,7 +404,7 @@ Vue 2 工程继续作为业务回归和回滚基线，不参与迁移版主流�
 | 完整初始化幂等 | 新增 `Test-InitializeSecurityModelDatabaseIdempotency.ps1`：隔离 schema 完整初始化两次，比较 `sys_dataset/sys_algorithm/sys_hyper/sys_pre_defense/sys_model/sys_menu/sys_dev_init_marker` 全部业务行（含 `update_time`）逐字一致；再修改数据集路径/统计、LDD 算法与模板参数/启用状态、builtin 启用状态、菜单显隐，插入未知 running 行，第三次初始化后上述修改和哨兵行全部保留，未知行仍 `running` 且只在审核输出出现 | 本机通过，schema `security_model_initidem_5424c303f986`、48 表；`tmp/stage5-init-idempotency.log`；脚本 `scripts/dev/Test-InitializeSecurityModelDatabaseIdempotency.ps1` |
 | 测试/门禁 | `VabSeedPortabilityTest` **6/6**（新增 MVP additive 与精确 legacy 断言，`tmp/stage5-init-portability-test.log`）；`VabSeedMySqlIT` **5/5**（legacy 用例改为精确种子 + 未知行不动，`tmp/stage5-init-mysql-it.log`）；全量 `verify -Pmysql-it`（`REDIS_IT=true`）**306 单测 + 111 IT，0 失败/0 错误/2 跳过（仅 Rabbit Broker）**，BUILD SUCCESS，`tmp/stage5-init-full-verify.log` | 同左 |
 | CI | workflow 触发范围加入 `scripts/dev/**`，新增 `init-scripts` job（MySQL 8.4 service + pwsh），依次运行保护测试与完整初始化幂等测试；run `44033400651`（head `61a32ad`）backend/frontend/python/init-scripts **四个 job 全部 success**。此前两次失败均为 Ubuntu 下 PowerShell 对长拒绝消息折行/插入管道符导致断言读不到 `已有 2 个表或视图`，已改为压缩空白后匹配 | `.github/workflows/migration-quality.yml`、`Test-InitializeSecurityModelDatabaseGuard.ps1` |
-| 边界 | `isConfigured()` 仍只判断脚本配置非空，不检查脚本文件是否存在或解释器可用；脚本存在/解释器错误仍由实际进程启动失败收敛。真实 LDD/GPU 未运行；未知历史行只输出审核清单，不自动重试；旧 `eladmin/`、`eladmin-web/` 归档尚未执行，留待独立提交 | `DefenseTaskExecutor`/`PythonLddTaskExecutor`、`06` §7、`10` |
+| 边界 | `isConfigured()` 仍只判断脚本配置非空，不检查脚本文件是否存在或解释器可用；脚本存在/解释器错误仍由实际进程启动失败收敛。真实 LDD/GPU 未运行；未知历史行只输出审核清单，不自动重试。旧 `eladmin/`、`eladmin-web/` 已归档到 Tag `migration-r4-verified` 与 `legacy` 分支，并以独立提交从主分支删除；`sql/eladmin.sql` 保留 | `DefenseTaskExecutor`/`PythonLddTaskExecutor`、`06` §7、`10`、`22` §5 |
 
 ### 5.16 2026-11-16 验收口径与 CI 覆盖收口
 
