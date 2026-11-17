@@ -27,7 +27,7 @@
 - 数据与运行：MySQL 是事实数据源；Redis 用于资源目录缓存；Python、PyTorch 执行 LDD；RabbitMQ 的 R4 单机派发代码已接入但默认关闭（`dispatch.mode=db`），真实 RabbitMQ 4.1.8 隔离环境已用于 R4-01（含回滚）/02/03/04（GPU_BUSY/毒消息/DB 中断）/05（运行中+完成后取消）/06（启动/drain/v2 旧队列隔离）/07/08（自然 dead 重放+replay/cancel 并发），未执行项见 `docs/sdd/09-project-status.md` §5.17。
 - 构建：Maven、npm。
 
-旧版 Spring Boot 2.7 + Vue 2 工程已归档到 Tag `migration-r4-verified` 与 `legacy` 分支，不再位于主分支，也不作为迁移版运行入口；`sql/eladmin.sql` 保留，仍是迁移版 MySQL IT 与初始化使用的基础 schema。需要回退或对照时从该 Tag/分支检出。
+旧版 Spring Boot 2.7 + Vue 2 工程已归档到 Tag `migration-r4-verified` 与 `legacy` 分支；归档提交 `7e31b3f` 已在当前开发分支 `feature/r3-dispatch-idempotency` 删除 `eladmin/`、`eladmin-web/`，本地 `main` 尚未合入，合并前仍可从历史提交或 Tag/分支检出。`sql/eladmin.sql` 保留，仍是迁移版 MySQL IT 与初始化使用的基础 schema。
 
 ## 项目结构
 
@@ -172,11 +172,9 @@ npm run dev -- --host 0.0.0.0
 
 - `admin / <初始化时设置的密码>`
 
-登录使用迁移版后端验证码与 JWT。真实数据只来自资源、任务、进度、报告、日志、导出和审计接口；
-工作台（`/dashboard`）、案例库（`/cases`）、接口扩展预览（`/training-defense`）三页仍是前端硬编码的
-演示内容，其中包含“累计任务 28”“攻击成功率 4.7%”、RTX 3090 节点以及虚构的实验配置清单，
-**不代表真实任务、真实实验指标或真实硬件状态**，演示时须口头说明。运行监控（`/runtime-monitor`）
-已改用真实任务统计、执行器线程池和 GPU 槽位接口；“运行中任务”取 MySQL `status=running` 统计（`runningTaskCount`），线程池 `activeCount` 只表示活动线程，不能等同于实验数。
+登录使用迁移版后端验证码与 JWT。真实数据只来自资源、任务、进度、报告、日志、导出和审计接口。
+工作台（`/dashboard`）已接 `GET /api/dashboard/overview` 真实聚合，任务计数、近 7 日趋势、数据集/算法登记数和最近任务来自数据库；攻击成功率、干净准确率与清洗保留率因未接入模型评估链路显示“未采集”。
+案例库（`/cases`）和接口扩展预览（`/training-defense`）仍是前端硬编码演示内容，其中包含虚构的案例编号、实验配置和演示指标，**不代表真实任务、真实实验指标或真实硬件状态**，页面已加“演示”标签，演示时须口头说明。运行监控（`/runtime-monitor`）已改用真实任务统计、执行器线程池和 GPU 槽位接口；“运行中任务”取 MySQL `status=running` 统计（`runningTaskCount`），线程池 `activeCount` 只表示活动线程，不能等同于实验数。
 
 ## 验证命令
 
@@ -195,7 +193,7 @@ npm ci
 npm run build
 ```
 
-旧 Vue CLI/Webpack 在 Node 17+ 环境下需要 `--openssl-legacy-provider`。构建时出现 asset size 或 Browserslist 过期提示属于当前旧前端栈的已知警告，不阻塞 MVP 联调。
+迁移版前端使用 Vue 3 / Vite，`npm run build` 不需要 `--openssl-legacy-provider`。
 
 迁移版后端通过 Maven `verify` 执行单元测试；使用 `-Pmysql-it` 可额外运行 MySQL 集成测试。
 集成测试覆盖并发原子领取、正常完成与恢复扫描的状态竞争、孤儿任务恢复边界、迁移脚本两段式行为，
@@ -218,11 +216,11 @@ python -m unittest discover -s algorithm-runtime/vab/tests
 npm --prefix migration-frontend run build
 ```
 
-本机 Temurin 17.0.21 在四项阻断修复后 **306 项单元测试 + 111 项 MySQL/Redis/RabbitMQ 集成测试**全绿（`tmp/stage5-init-full-verify.log`，0 失败/2 跳过（仅 Rabbit Broker 未设 `RABBIT_IT`），BUILD SUCCESS）；`WorkerConsumerLifecycleTest` 8/8、`KnowledgeIndexServiceTest` 11/11、`DispatchMessageHandlerTest` 12/12、`MySqlTaskPersistenceIT` 28/28、`KnowledgeRetrievalMySqlIT` 8/8。Python 11/11；前端构建历史通过。R4 已在真实 RabbitMQ 4.1.8 + 隔离 MySQL + 双 JVM + 短 Python 桩下完成 R4-01..08 实现验收（含 7s 延迟 confirm、db→rabbit→db 双向停机切换、旧 dead 与新 attempt 竞争）；R4-04 长期 DB 故障/多任务退避仍是压力边界，生产库未迁移、真实 LDD/GPU 未执行，因此结论是“实现验收通过（隔离）/部署验收未执行”，默认仍是 `db` 模式。
+本机 Temurin 17.0.21 在 2026-11-17 RAG/Agent 场景收口后 **312 项单元测试 + 113 项 MySQL/Redis/RabbitMQ 集成测试**全绿（`tmp/stage6-full-verify.log`，0 失败/2 跳过（仅 Rabbit Broker 未设 `RABBIT_IT`），BUILD SUCCESS）；`WorkerConsumerLifecycleTest` 8/8、`KnowledgeIndexServiceTest` 11/11、`DispatchMessageHandlerTest` 12/12、`MySqlTaskPersistenceIT` 28/28、`KnowledgeRetrievalMySqlIT` 8/8。Python 11/11；前端构建历史通过。R4 已在真实 RabbitMQ 4.1.8 + 隔离 MySQL + 双 JVM + 短 Python 桩下完成 R4-01..08 实现验收（含 7s 延迟 confirm、db→rabbit→db 双向停机切换、旧 dead 与新 attempt 竞争）；R4-04 长期 DB 故障/多任务退避仍是压力边界，生产库未迁移、真实 LDD/GPU 未执行，因此结论是“实现验收通过（隔离）/部署验收未执行”，默认仍是 `db` 模式。
 
 GitHub Actions 工作流配置了 MySQL 8.4、Redis 8.0 和 RabbitMQ 4.1 service；提交 `cd5a6ae` 的 run `43846823071` 与 `a677933` 的 run `43848567392` backend/python/frontend 全绿，backend 启用 `RABBIT_IT=true`，`RabbitDispatchBrokerIT` 纳入门禁。green CI 不等于生产部署或真实 LDD/GPU 验收通过。
 
-旧版 ELADMIN 工程源码已归档到 Tag `migration-r4-verified` 与 `legacy` 分支，主分支不再包含 `eladmin/`、`eladmin-web/`，也不再提供旧后端/旧前端构建命令。归档前的旧定向测试历史记录为 42 项通过；该记录只属于旧工程基线，不能代表迁移版测试数量或覆盖率。迁移版门禁统一使用 `migration-backend` 与 `migration-frontend` 的命令。
+旧版 ELADMIN 工程源码已归档到 Tag `migration-r4-verified` 与 `legacy` 分支；归档提交 `7e31b3f` 已在当前开发分支删除 `eladmin/`、`eladmin-web/`，本地 `main` 尚未合入，不再提供旧后端/旧前端构建命令。历史旧前端使用 Vue CLI/Webpack，在 Node 17+ 下曾需要 `--openssl-legacy-provider`；该提示只属于已归档的旧工程，不适用于迁移版 Vite 构建。归档前的旧定向测试历史记录为 42 项通过；该记录只属于旧工程基线，不能代表迁移版测试数量或覆盖率。迁移版门禁统一使用 `migration-backend` 与 `migration-frontend` 的命令。
 
 ## SDD 文档
 
@@ -252,11 +250,11 @@ GitHub Actions 工作流配置了 MySQL 8.4、Redis 8.0 和 RabbitMQ 4.1 service
 
 - 当前真实运行和答辩展示只覆盖 LDD 训练前数据清洗。
 - 训练中、训练后和其他对比算法暂不接入主流程。
-- **多用户隔离已在 R1 落地**：任务归属以 `owner_user_id` 为准，任务/报告/日志/产物/导出/审计均做 owner 校验；跨用户读对管理员默认关闭（`SECURITY_MODEL_ADMIN_CROSS_USER_READ`），且任何角色都不能跨用户写。R1 为**有条件通过**：隔离库迁移与双账号端到端验收已实跑通过（最新全量为 306 单测 + 111 项 MySQL/Redis/RabbitMQ IT，含 R3/R5/R6/R7），但生产库迁移尚未执行，不能表述为“生产级权限体系已完成”。
-- **恢复护栏（ADR-017）**：`process.json` 使用 `schema_version=2` 与临时文件原子替换；启动前写 `state:starting`，启动后写 pid/启动时间；无记录、旧协议、损坏或启动时间缺失一律 `UNKNOWN`，不误杀。执行器 `finally`、超时、取消、中断和导出超时都由 `ExecutorProcessGuard` 确认整棵树（含 `descendants()` 与 `python-children.json`）退出后才释放租约，否则 `markBlocked("EXECUTOR_TREE_ALIVE")`。隔离槽位 TTL 过期仍返回 `GPU_LEASE_BLOCKED`，60s 重探确认退出才解除；执行器状态 API 和前端展示槽位原因/时间/指引。恢复完成前 `launchTask` 返回 `SCHEDULING_NOT_READY`。Java 最新 287 单测（0 跳过）+ 106 项 MySQL/Redis/RabbitMQ IT 全绿，含独立 JVM 崩溃演练与真实执行器链路；未跑真实 LDD。R3 调度意图与幂等见 ADR-018，生产迁移未执行。
-- **R2 产物治理已落地**：attempt 目录内日志超过 `max-log-bytes`（默认 20 MiB）只在**执行结束后**保留尾部并写截断标记；每次执行写 `manifest.json`（文件名/字节数/SHA-256）；`retention-days` 默认 0（不删除），开启后只清理“终态任务 + 非当前 attempt + 超期 + real-path 在 workspace 内”的目录。日志截断只约束归档大小，**不限制运行期间的磁盘增长**。Java 最新 287 单测（0 跳过）+ 106 项 MySQL/Redis/RabbitMQ IT 全绿；未跑真实 LDD。
-- **R4 单机 Outbox/RabbitMQ 实现验收通过（隔离），部署验收未执行**：2026-11-16 本机真实 RabbitMQ 4.1.8 + 隔离 schema/vhost + 双 JVM + 短 Python 桩已完成 R4-01..08，包括 7s 延迟 confirm、db→rabbit→db 双向停机切换、旧 dead 与新 attempt 竞争；306 单测 + 111 IT 全绿。R4-04 长期 DB 故障/多任务退避仍是压力边界；默认 `dispatch.mode=db`，生产库未迁移。
-- **R5 观测与缓存护栏已落地（待外审）**：`TaskRuntimeMetrics` 采集任务状态、执行池、GPU 槽位、恢复与执行耗时，标签不含 taskId/userId；请求日志带 `X-Request-Id` 和执行 taskId/runId/attempt；Redis 增加 hit/miss/degraded 计数与 key 代际条件回填，避免提交后旧值回填；`/actuator/health` 匿名且隐藏详情，`/actuator/metrics` 与 `/api/observability/summary` 仅管理员；真实 HTTP 鉴权 IT 覆盖匿名 401、普通用户 403、管理员 200。统计页和运行监控页改为真实数据，不再展示硬编码 ASR、CPU/GPU 或节点数字。最新 306 单测 + 111 项 MySQL/Redis/RabbitMQ IT 本机通过，生产库未建表，Redis 宕机场景未执行。
+- **多用户隔离已在 R1 落地**：任务归属以 `owner_user_id` 为准，任务/报告/日志/产物/导出/审计均做 owner 校验；跨用户读对管理员默认关闭（`SECURITY_MODEL_ADMIN_CROSS_USER_READ`），且任何角色都不能跨用户写。R1 为**有条件通过**：隔离库迁移与双账号端到端验收已实跑通过（最新全量为 312 单测 + 113 项 MySQL/Redis/RabbitMQ IT，含 R3/R5/R6/R7），但生产库迁移尚未执行，不能表述为“生产级权限体系已完成”。
+- **恢复护栏（ADR-017）**：`process.json` 使用 `schema_version=2` 与临时文件原子替换；启动前写 `state:starting`，启动后写 pid/启动时间；无记录、旧协议、损坏或启动时间缺失一律 `UNKNOWN`，不误杀。执行器 `finally`、超时、取消、中断和导出超时都由 `ExecutorProcessGuard` 确认整棵树（含 `descendants()` 与 `python-children.json`）退出后才释放租约，否则 `markBlocked("EXECUTOR_TREE_ALIVE")`。隔离槽位 TTL 过期仍返回 `GPU_LEASE_BLOCKED`，60s 重探确认退出才解除；执行器状态 API 和前端展示槽位原因/时间/指引。恢复完成前 `launchTask` 返回 `SCHEDULING_NOT_READY`。Java 最新 312 单测（0 跳过）+ 113 项 MySQL/Redis/RabbitMQ IT（2 项仅 Rabbit Broker 跳过）全绿，含独立 JVM 崩溃演练与真实执行器链路；未跑真实 LDD。R3 调度意图与幂等见 ADR-018，生产迁移未执行。
+- **R2 产物治理已落地**：attempt 目录内日志超过 `max-log-bytes`（默认 20 MiB）只在**执行结束后**保留尾部并写截断标记；每次执行写 `manifest.json`（文件名/字节数/SHA-256）；`retention-days` 默认 0（不删除），开启后只清理“终态任务 + 非当前 attempt + 超期 + real-path 在 workspace 内”的目录。日志截断只约束归档大小，**不限制运行期间的磁盘增长**。Java 最新 312 单测（0 跳过）+ 113 项 MySQL/Redis/RabbitMQ IT（2 项仅 Rabbit Broker 跳过）全绿；未跑真实 LDD。
+- **R4 单机 Outbox/RabbitMQ 实现验收通过（隔离），部署验收未执行**：2026-11-16 本机真实 RabbitMQ 4.1.8 + 隔离 schema/vhost + 双 JVM + 短 Python 桩已完成 R4-01..08，包括 7s 延迟 confirm、db→rabbit→db 双向停机切换、旧 dead 与新 attempt 竞争；312 单测 + 113 IT 全绿。R4-04 长期 DB 故障/多任务退避仍是压力边界；默认 `dispatch.mode=db`，生产库未迁移。
+- **R5 观测与缓存护栏已落地（待外审）**：`TaskRuntimeMetrics` 采集任务状态、执行池、GPU 槽位、恢复与执行耗时，标签不含 taskId/userId；请求日志带 `X-Request-Id` 和执行 taskId/runId/attempt；Redis 增加 hit/miss/degraded 计数与 key 代际条件回填，避免提交后旧值回填；`/actuator/health` 匿名且隐藏详情，`/actuator/metrics` 与 `/api/observability/summary` 仅管理员；真实 HTTP 鉴权 IT 覆盖匿名 401、普通用户 403、管理员 200。统计页和运行监控页改为真实数据，不再展示硬编码 ASR、CPU/GPU 或节点数字。最新 312 单测 + 113 项 MySQL/Redis/RabbitMQ IT 本机通过，生产库未建表，Redis 宕机场景未执行。
 - 升级到 R1 必须执行 `sql/security_model_ownership.sql`（先跑只读段，审核后写入 `sys_pre_defense_ownership_decision` 决策行，再在同一 MySQL 会话里 `SET @apply_backfill = 1` 重跑）；未执行迁移时任务接口会显式失败。升级前签发的旧 token 没有 `userId`，需重新登录后才能执行任务写操作。
 - 令牌不可单独撤销，但每次请求都会回查 `sys_user.enabled` 与 `is_admin`：禁用账号或撤销管理员后，已签发 token 立即失去权限，无需等 8 小时过期；代价是每个认证请求一次主键查询。
 - 共享数据集/算法/超参数模板的写操作仅管理员；普通用户只读。数据集登记后需管理员调用 `POST /api/dataset/{id}/validate` 才会变为可用（`parse_status='success'`）。

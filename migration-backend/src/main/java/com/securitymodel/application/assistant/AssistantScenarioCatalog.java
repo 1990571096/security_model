@@ -1,0 +1,88 @@
+package com.securitymodel.application.assistant;
+
+import org.springframework.stereotype.Component;
+
+import java.util.List;
+import java.util.Set;
+
+/**
+ * Product-facing contract for the three assistant scenarios. The catalog is descriptive:
+ * it cannot execute tools and it is not a second tool registry. Every listed tool must exist
+ * in {@link AssistantToolRegistry}; write tools must still be preview-only.
+ */
+@Component
+public class AssistantScenarioCatalog {
+
+    public record Scenario(
+            String name,
+            String title,
+            String inputExample,
+            List<String> tools,
+            List<String> returnFields,
+            String citationPolicy,
+            String failureFallback,
+            String sideEffectPolicy) {
+    }
+
+    private final List<Scenario> scenarios;
+
+    public AssistantScenarioCatalog(AssistantToolRegistry registry) {
+        this.scenarios = List.of(
+                new Scenario(
+                        "ldd_parameter_validation",
+                        "LDD 参数校验",
+                        "创建 LDD 清洗任务，数据集 4、算法 14，batch_size 128、num_epochs 5，检查参数是否可执行",
+                        List.of("get_parameter_guide", "search_knowledge", "preview_create_task"),
+                        List.of("scenario", "status", "findings", "finalParameters", "configFingerprint",
+                                "citations", "pendingConfirmation", "failure"),
+                        "参数范围与默认值以 get_parameter_guide 的算法 schema 为准；解释依据引用本地知识时返回 citationId/sectionPath/startLine/endLine",
+                        "数据集/算法不可用、非 LDD 算法或参数非法时返回 status=refused 与稳定 errorCode；不生成创建确认",
+                        "preview_create_task 只生成预览，确认前零写入、零 GPU 领取"),
+                new Scenario(
+                        "task_preflight",
+                        "任务预检",
+                        "任务 500 现在能否启动？列出阻塞项",
+                        List.of("get_my_task_summary", "preview_start_task", "search_knowledge"),
+                        List.of("scenario", "status", "taskId", "taskStatus", "blockers", "warnings",
+                                "pendingConfirmation", "citations", "failure"),
+                        "任务状态以 get_my_task_summary 为准；调度/租约规则引用本地知识时返回 citationId 与行号",
+                        "任务不存在或不属于当前用户时拒绝；不可启动时返回 blockers，不领取 GPU、不改变任务状态",
+                        "preview_start_task 只校验并预览，确认前不领取租约、不启动 Python"),
+                new Scenario(
+                        "result_explanation",
+                        "结果解释",
+                        "解释任务 500 的清洗结果和失败原因",
+                        List.of("get_my_report_summary", "search_knowledge"),
+                        List.of("scenario", "status", "taskId", "taskStatus", "metrics", "failureSummary",
+                                "exportAvailability", "citations", "failure"),
+                        "指标只取自 get_my_report_summary 的白名单字段；方法/阈值解释引用本地知识时返回 citationId 与行号",
+                        "任务不存在或越权时拒绝；结果未解析或未采集时明确返回 metrics=unavailable，不编造数值",
+                        "只读；不返回原始结果、日志、文件路径或其他用户数据")
+        );
+        for (Scenario scenario : scenarios) {
+            Set<String> declared = Set.copyOf(scenario.tools());
+            if (!registry.descriptors().stream().map(AssistantToolDescriptor::name)
+                    .collect(java.util.stream.Collectors.toSet()).containsAll(declared)) {
+                throw new IllegalStateException("助手场景声明了未注册工具: " + scenario.name());
+            }
+            for (AssistantToolDescriptor descriptor : registry.descriptors()) {
+                if (declared.contains(descriptor.name()) && descriptor.write()
+                        && scenario.returnFields().stream().noneMatch("pendingConfirmation"::equals)) {
+                    throw new IllegalStateException("写工具场景必须返回 pendingConfirmation: " + scenario.name());
+                }
+            }
+            if (scenario.returnFields().stream().noneMatch("failure"::equals)) {
+                throw new IllegalStateException("助手场景必须声明 failure 降级字段: " + scenario.name());
+            }
+        }
+    }
+
+    public List<Scenario> scenarios() {
+        return scenarios;
+    }
+
+    public Scenario find(String name) {
+        return scenarios.stream().filter(scenario -> scenario.name().equals(name))
+                .findFirst().orElse(null);
+    }
+}

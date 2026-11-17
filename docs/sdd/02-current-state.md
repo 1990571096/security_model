@@ -2,7 +2,7 @@
 
 > 本文记录的是旧 ELADMIN 工程的历史基线，不代表迁移版当前运行技术栈。迁移版现状以
 > [09-project-status.md](09-project-status.md) 和 [11-platform-implementation.md](11-platform-implementation.md) 为准。
-> 旧工程源码已归档到 Tag `migration-r4-verified` 与 `legacy` 分支；主分支保留 `sql/eladmin.sql`，但不再包含 `eladmin/`、`eladmin-web/`。
+> 旧工程源码已归档到 Tag `migration-r4-verified` 与 `legacy` 分支；归档提交 `7e31b3f` 已在当前开发分支 `feature/r3-dispatch-idempotency` 删除 `eladmin/`、`eladmin-web/`，本地 `main` 尚未合入，合并前主分支历史仍保留。`sql/eladmin.sql` 保留。
 
 ## 技术栈
 
@@ -20,7 +20,7 @@
 - `eladmin/eladmin-tools`：邮件、支付、对象存储、本地存储等第三方工具。
 - `eladmin/eladmin-generator`：CRUD 代码生成器。
 - `eladmin-web`：Vue 前端。
-- 主分支仅保留 `sql/eladmin.sql` 作为初始化与 MySQL IT 的基础 schema。
+- 当前开发分支仅保留 `sql/eladmin.sql` 作为初始化与 MySQL IT 的基础 schema；`main` 待合入归档提交。
 
 ## 可复用业务模块
 

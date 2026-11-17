@@ -10,14 +10,20 @@ import com.securitymodel.domain.algorithm.Algorithm;
 import com.securitymodel.domain.dataset.Dataset;
 import org.springframework.stereotype.Component;
 
+import java.util.Iterator;
 import java.util.List;
 import java.util.Set;
+import java.util.regex.Pattern;
 
 /** Read-only parameter/catalog guidance; file paths are never copied into the tool result. */
 @Component
 public class ParameterGuideTool implements AssistantTool {
 
     private static final int MAX_ITEMS = 10;
+    private static final Pattern PATH_FIELD = Pattern.compile(
+            "(?i).*(path|script|dir|directory|file|log|workspace|root|executable).*");
+    private static final Pattern ABSOLUTE_PATH = Pattern.compile(
+            "^(?:[A-Za-z]:[\\\\/]|/|\\\\\\\\|~[\\\\/]).*");
     private final ResourceQueryService resourceQueryService;
     private final ObjectMapper objectMapper;
 
@@ -88,9 +94,39 @@ public class ParameterGuideTool implements AssistantTool {
         }
         try {
             JsonNode node = objectMapper.readTree(raw);
-            target.set(field, node);
+            target.set(field, redactCatalogJson(node));
         } catch (Exception ignored) {
             // Malformed catalog JSON is omitted instead of exposing a parser detail.
         }
+    }
+
+    /** Catalog JSON is untrusted input: path-like keys and absolute path values are dropped. */
+    private JsonNode redactCatalogJson(JsonNode node) {
+        if (node == null || node.isNull()) {
+            return objectMapper.getNodeFactory().nullNode();
+        }
+        if (node.isObject()) {
+            ObjectNode clean = objectMapper.createObjectNode();
+            Iterator<java.util.Map.Entry<String, JsonNode>> fields = node.fields();
+            while (fields.hasNext()) {
+                java.util.Map.Entry<String, JsonNode> entry = fields.next();
+                if (PATH_FIELD.matcher(entry.getKey()).matches()) {
+                    continue;
+                }
+                clean.set(entry.getKey(), redactCatalogJson(entry.getValue()));
+            }
+            return clean;
+        }
+        if (node.isArray()) {
+            ArrayNode clean = objectMapper.createArrayNode();
+            for (JsonNode element : node) {
+                clean.add(redactCatalogJson(element));
+            }
+            return clean;
+        }
+        if (node.isTextual() && ABSOLUTE_PATH.matcher(node.asText()).matches()) {
+            return objectMapper.getNodeFactory().textNode("[redacted]");
+        }
+        return node.deepCopy();
     }
 }

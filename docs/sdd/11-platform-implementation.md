@@ -54,7 +54,7 @@ security_model
 └── sql/                             数据库初始化和演示数据脚本（含保留的 eladmin.sql）
 ```
 
-旧 `eladmin/`、`eladmin-web/` 已归档到 Tag `migration-r4-verified` 与 `legacy` 分支，不在主分支。
+旧 `eladmin/`、`eladmin-web/` 已归档到 Tag `migration-r4-verified` 与 `legacy` 分支；归档提交 `7e31b3f` 已在当前开发分支删除，本地 `main` 尚未合入。
 
 ### 3.3 演示页面结构
 

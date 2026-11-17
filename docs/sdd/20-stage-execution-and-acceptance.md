@@ -302,12 +302,14 @@ R3-01/02/03/05/06/07/08/09/10 必须含真实 MySQL 证据；R3-04 包含短进�
 |---|---|---|---|---|---|---|
 | R6-01 | 词法候选 + 向量重排，固定 20 题 | `KnowledgeEvaluationTest`、`KnowledgeHybridEvaluationTest` | `tmp/round4-docs-knowledge-eval.log`（7/7） | 通过（隔离，可答 10/10） | 未执行 | 固定小语料，不是大规模评估 |
 | R6-02 | 引用带 sourceKey/version/章节/行号，回答后校验 | `KnowledgeControllerTest`、`KnowledgeEvaluationTest` | `tmp/round3-full-verify-final.log` | 通过（隔离） | 未执行 | 未接付费模型生产质量评估 |
-| R6-03 | 词法候选为空直接拒答；IDF 覆盖率阈值 `0.30` + 最低分 20 | `KnowledgeEvaluationTest`、`KnowledgeHybridEvaluationTest` | `tmp/round4-docs-knowledge-eval.log`（7/7，未知 0 命中） | 通过（隔离，未知 0 命中） | 未执行 | 有限样本校准；后续加独立保留题集，避免围绕同一组题反复调阈值 |
+| R6-03 | 词法候选为空直接拒答；IDF 覆盖率阈值 `0.30` + 最低分 20 | `KnowledgeEvaluationTest`、`KnowledgeHybridEvaluationTest`、`AssistantScenarioEvaluationSetTest` | `tmp/round4-docs-knowledge-eval.log`（7/7，未知 0 命中）；独立集 `tmp/stage6-scenario-eval.log` | 通过（隔离，未知 0 命中；独立集未知 2/2 拒答） | 未执行 | 有限样本校准；独立保留题集已加入测试类，但仍不是大规模语料评估 |
 | R6-04 | ACL 前置 + `status='active'`；退役立即不可召回；持久清理状态/退避/公平排序 | `KnowledgeRetrievalMySqlIT`、`KnowledgeVectorStoreRedisIT`、`KnowledgeHybridEvaluationTest` | `tmp/round3-p2.log`（6/6） | 通过（隔离） | 未执行 | 向量残留靠对账，不是强一致；失败期间只保证 ACL 不召回 |
 | R6-04a | 基础表四列/索引；增量/回滚脚本动态判断，可重复执行 | `KnowledgeVectorCleanupMigrationIT` | `tmp/round3-p2-migration.log`（1/1） | 通过（隔离） | 未执行 | 仅隔离 schema；生产库未迁移；回滚需停机 |
 | R6-05 | 四层路径规则 + 凭据/PII；所有外发渠道复用 `forModel()` | `KnowledgeSanitizerTest` 9/9、`AssistantOutboundPrivacyTest` 1/1 两轮最终 body | `tmp/round3-p1.log` | 通过（隔离） | 未执行 | 正则形态过滤，不能穷举自由文本隐私形态 |
 | R6-06 | 模型/工具预算、超时、`provider=disabled` 降级 | `AssistantChatServiceTest`、`AssistantPreviewServiceTest`、`KnowledgeControllerTest` | `tmp/round3-full-verify-final.log` | 通过（隔离） | 未执行 | 付费供应商额度未形成生产配置 |
-| R6-07 | system prompt 声明 context 不可信；工具白名单；注入题零私有候选 | `KnowledgeEvaluationTest.unsafeOrUnauthorizedPromptsNeverExposeForeignPrivateData`、`KnowledgeHybridEvaluationTest` | `tmp/round4-docs-knowledge-eval.log`（7/7） | 通过（隔离） | 未执行 | 非对抗性红队覆盖 |
+| R6-07 | system prompt 声明 context 不可信；工具白名单；注入题零私有候选 | `KnowledgeEvaluationTest.unsafeOrUnauthorizedPromptsNeverExposeForeignPrivateData`、`KnowledgeHybridEvaluationTest`、`AssistantScenarioEvaluationSetTest` | `tmp/round4-docs-knowledge-eval.log`（7/7）；`tmp/stage6-scenario-eval.log` | 通过（隔离） | 未执行 | 非对抗性红队覆盖 |
+
+**2026-11-17 独立评估集（质量改进，不新增必选 ID）**：`AssistantScenarioEvaluationSetTest` 的题集只存在于测试类，不写入 `docs/sdd`，避免被检索语料污染。固定输出维度为 `retrieval_hit`、`citation_correct`、`refusal_unknown`、`permission_blocked`、`injection_blocked`，并单独断言参数默认值/schema、报告白名单指标与绝对路径脱敏、过期确认拒绝。评估首跑发现 `ParameterGuideTool` 会把算法默认配置的 `script` 绝对路径带入结果，已修为递归丢弃 path/script/dir/file/log/workspace/root 字段并把绝对路径文本替换为 `[redacted]`；该用例固化为回归。结果只代表隔离环境确定性测试，不代表真实 DeepSeek 多轮质量或部署验收。
 
 #### R7 受控助手
 
@@ -320,6 +322,8 @@ R3-01/02/03/05/06/07/08/09/10 必须含真实 MySQL 证据；R3-04 包含短进�
 | R7-05 | 重校验 task/run/attempt/update_time、参数哈希、资源指纹；变化 409 零派发 | `AssistantConfirmationEndToEndIT` 资源/默认值变化 | `tmp/round3-full-verify-final.log` | 通过（隔离） | 未执行 | 无 |
 | R7-06 | 模型线程池有界、总预算/工具预算、超时取消；核心 API 不共享失败 | `AssistantChatServiceTest`、`AssistantConfirmationEndToEndIT` | `tmp/round2-r7-a.log` | 通过（隔离） | 未执行 | 底层 JDBC 物理终止不保证 |
 | R7-07 | 审计只存工具名/operator/target/resultCode/duration；请求体脱敏 | `AssistantOutboundPrivacyTest`、`AssistantConfirmationEndToEndIT` | `tmp/round2-p1-final.log`、`tmp/round2-r7-a.log` | 通过（隔离） | 未执行 | 无 |
+
+**2026-11-17 三场景契约与配置缺失边界（质量改进）**：`AssistantScenarioCatalog`/`GET /api/assistant/scenarios` 固化 LDD 参数校验、任务预检、结果解释的输入、工具白名单、返回字段、引用与失败降级；`DispatchConfigBoundaryIT` 2/2 覆盖启动恢复 `replayPending` 与 Rabbit Worker 消费在空白执行器脚本下返回 `EXECUTOR_NOT_CONFIGURED`、intent `abandoned`、租约释放且 `blocked_at` 为空、无本地 accepted、重复投递不重复执行。写工具仍走“预览→确认→后端授权与状态机”，`AssistantConfirmationEndToEndIT` 22 项仍是确认前零副作用、资源变化拒绝、重复确认不重复执行的基线；本轮未新增真实模型故障注入的端到端项，因此 R7-06 仍按原证据判定。
 
 #### R4 单机可靠派发（真实 Broker 双 JVM 已执行，仍有未执行边界）
 

@@ -55,7 +55,7 @@ cd F:\Study\postgraduate\毕业论文\security_model
 npm --prefix migration-frontend run build
 ```
 
-迁移版前端使用 Vue 3 / Vite。旧 ELADMIN 的 Spring Boot 2.7 / Vue 2 工程已归档到 Tag `migration-r4-verified` 与 `legacy` 分支，主分支不再提供旧构建命令。2026-09-10 的旧 ELADMIN 定向测试 42 项记录只属于归档基线，不计入迁移版覆盖。
+迁移版前端使用 Vue 3 / Vite。旧 ELADMIN 的 Spring Boot 2.7 / Vue 2 工程已归档到 Tag `migration-r4-verified` 与 `legacy` 分支；归档提交 `7e31b3f` 已在当前开发分支删除旧目录，本地 `main` 尚未合入，不再提供旧构建命令。2026-09-10 的旧 ELADMIN 定向测试 42 项记录只属于归档基线，不计入迁移版覆盖。
 
 ## 迁移版 MySQL 集成测试
 

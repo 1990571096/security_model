@@ -9,6 +9,7 @@ import com.securitymodel.application.assistant.AssistantConfirmationService;
 import com.securitymodel.application.assistant.AssistantPreviewResponse;
 import com.securitymodel.application.assistant.AssistantPreviewService;
 import com.securitymodel.application.assistant.AssistantQuotaService;
+import com.securitymodel.application.assistant.AssistantScenarioCatalog;
 import com.securitymodel.application.assistant.AssistantSessionService;
 import com.securitymodel.application.assistant.AssistantToolRegistry;
 import com.securitymodel.application.audit.CurrentUserService;
@@ -39,6 +40,7 @@ public class AssistantController {
     private final AssistantAuditService auditService;
     private final AssistantQuotaService quotaService;
     private final AssistantToolRegistry registry;
+    private final AssistantScenarioCatalog scenarioCatalog;
     private final CurrentUserService currentUserService;
     private final String provider;
     private final boolean modelEnabled;
@@ -51,6 +53,7 @@ public class AssistantController {
             AssistantAuditService auditService,
             AssistantQuotaService quotaService,
             AssistantToolRegistry registry,
+            AssistantScenarioCatalog scenarioCatalog,
             CurrentUserService currentUserService,
             @Value("${security-model.assistant.model.provider:disabled}") String provider,
             @Value("${security-model.assistant.model.enabled:false}") boolean modelEnabled) {
@@ -61,6 +64,7 @@ public class AssistantController {
         this.auditService = auditService;
         this.quotaService = quotaService;
         this.registry = registry;
+        this.scenarioCatalog = scenarioCatalog;
         this.currentUserService = currentUserService;
         this.provider = provider;
         this.modelEnabled = modelEnabled;
@@ -103,6 +107,12 @@ public class AssistantController {
             view.put("inputSchema", descriptor.inputSchema());
             return view;
         }).toList();
+    }
+
+    /** The three supported user scenarios and their tool/citation/fallback contracts. */
+    @GetMapping("/scenarios")
+    public List<AssistantScenarioCatalog.Scenario> scenarios() {
+        return scenarioCatalog.scenarios();
     }
 
     @GetMapping("/status")

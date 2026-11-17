@@ -2,7 +2,7 @@
 
 更新时间：2026-11-17
 
-状态：**初始化链路已收口、旧工程已归档（2026-11-17）**。已创建并从空库初始化 `security_model`（48 表），已用该库启动后端并验证登录、执行池、知识索引与检索；未迁移旧 `eladmin` 数据库。旧 `eladmin/`、`eladmin-web/` 源码已归档到 Tag `migration-r4-verified` 与 `legacy` 分支并从主分支删除，`sql/eladmin.sql` 保留。阶段 3 五组监控的后端字段与前端页面已实现。
+状态：**初始化链路已收口、旧工程已归档（2026-11-17）**。已创建并从空库初始化 `security_model`（48 表），已用该库启动后端并验证登录、执行池、知识索引与检索；未迁移旧 `eladmin` 数据库。旧 `eladmin/`、`eladmin-web/` 源码已归档到 Tag `migration-r4-verified` 与 `legacy` 分支，并在当前开发分支 `feature/r3-dispatch-idempotency` 的独立提交 `7e31b3f` 删除（本地 `main` 尚未合入），`sql/eladmin.sql` 保留。阶段 3 五组监控的后端字段与前端页面已实现。
 
 ## 1. “生产库迁移”的含义
 
@@ -110,7 +110,7 @@ SECURITY_MODEL_JWT_SECRET=<至少 32 字节>
 
 ## 5. 旧工程归档方案（已执行）
 
-当前新后端运行主链路是 `migration-backend`、`migration-frontend`、`algorithm-runtime/vab` 和 `sql`，不依赖旧 `eladmin` Java 工程或 `eladmin-web` 的运行时。旧工程源码已归档到 Tag `migration-r4-verified` 与 `legacy` 分支，主分支只删除目录，不删除历史；`sql/eladmin.sql` 保留。
+当前新后端运行主链路是 `migration-backend`、`migration-frontend`、`algorithm-runtime/vab` 和 `sql`，不依赖旧 `eladmin` Java 工程或 `eladmin-web` 的运行时。旧工程源码已归档到 Tag `migration-r4-verified` 与 `legacy` 分支；归档提交 `7e31b3f` 在当前开发分支删除目录，不删除历史，本地 `main` 尚未合入；`sql/eladmin.sql` 保留。
 
 执行记录：
 
@@ -171,7 +171,7 @@ SECURITY_MODEL_JWT_SECRET=<至少 32 字节>
 | 旧 `eladmin` 迁移 | 未执行 | 未改表、未回填、未备份 |
 | `application.yml` 默认库 | 未改 | 仍为 `DB_NAME=eladmin` |
 | Tag `migration-r4-verified` | 已执行（2026-11-17） | annotated Tag 已推送，指向归档前提交 `4dd8005` |
-| `legacy` 分支/归档仓库 | 已执行（2026-11-17） | `legacy` 分支已推送，含 `eladmin/`、`eladmin-web/` 完整 685 文件；主分支已删除两目录 |
+| `legacy` 分支/归档仓库 | 已执行（2026-11-17） | `legacy` 分支已推送，含 `eladmin/`、`eladmin-web/` 完整 685 文件；当前开发分支已删除两目录，本地 `main` 待合入 |
 | 旧工程干净检出验证 | 已执行（2026-11-17） | 在归档提交 `7e31b3f` 的 detached worktree：旧目录不存在、`sql/eladmin.sql` 存在；`verify -Pmysql-it` 306 单测 + 111 IT 通过，guard 与完整初始化幂等通过，隔离 schema 启动 `/actuator/health=UP`；证据 `tmp/archive-clean-*.log` 与 `tmp/archive-clean-verification.txt`；归档提交 CI run `44035312196` 四 job 全绿 |
 | 阶段 3 监控页面 | 实现完成，已通过本机全量与 CI | 后端五组字段 + 前端五组卡片；本机 `verify -Pmysql-it` 289 单测 + 106 IT（0 失败/9 环境跳过），前端 `vite build` 通过；提交 `f70711f`，CI run `43995845889` 全绿 |
 | 干净库启动手册 | 已形成，部分验收 | `06-mvp-runbook.md` 已补“干净库启动手册”；第 7 节第 3、5 项尚未逐项执行 |
