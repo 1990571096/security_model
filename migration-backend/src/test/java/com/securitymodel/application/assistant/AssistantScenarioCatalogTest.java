@@ -18,19 +18,20 @@ class AssistantScenarioCatalogTest {
     @Test
     void threeScenariosDeclareToolsCitationsAndFailureFallback() {
         AssistantToolRegistry registry = new AssistantToolRegistry(List.of(
-                tool("get_parameter_guide", false), tool("search_knowledge", false),
-                tool("preview_create_task", true), tool("get_my_task_summary", false),
-                tool("preview_start_task", true), tool("get_my_report_summary", false)));
+                tool("validate_ldd_parameters", false), tool("get_parameter_guide", false),
+                tool("search_knowledge", false), tool("preview_create_task", true),
+                tool("get_my_task_summary", false), tool("preview_start_task", true),
+                tool("get_my_report_summary", false)));
         AssistantScenarioCatalog catalog = new AssistantScenarioCatalog(registry);
 
         assertEquals(3, catalog.scenarios().size());
         AssistantScenarioCatalog.Scenario validation = catalog.find("ldd_parameter_validation");
         assertNotNull(validation);
-        assertTrue(validation.tools().contains("preview_create_task"));
-        assertTrue(validation.returnFields().contains("pendingConfirmation"));
+        assertTrue(validation.tools().contains("validate_ldd_parameters"));
+        assertTrue(validation.returnFields().contains("validation"));
         assertTrue(validation.returnFields().contains("citations"));
-        assertTrue(validation.sideEffectPolicy().contains("允许保存确认与审计记录"));
-        assertEquals("get_parameter_guide", validation.requiredEvidenceTool());
+        assertTrue(validation.sideEffectPolicy().contains("不生成确认凭据"));
+        assertEquals("validate_ldd_parameters", validation.requiredEvidenceTool());
 
         AssistantScenarioCatalog.Scenario preflight = catalog.find("task_preflight");
         assertNotNull(preflight);

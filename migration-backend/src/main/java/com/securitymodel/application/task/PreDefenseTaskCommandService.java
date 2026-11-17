@@ -354,33 +354,35 @@ public class PreDefenseTaskCommandService {
     private Resolution resolveCommand(PreDefenseTaskCommand command) {
         if (command == null || command.getTaskName() == null
                 || command.getTaskName().isBlank()) {
-            throw new TaskCommandException("任务名称不能为空");
+            throw new TaskCommandException("TASK_NAME_REQUIRED", "任务名称不能为空");
         }
         if (command.getDatasetId() == null) {
-            throw new TaskCommandException("数据集ID不能为空");
+            throw new TaskCommandException("DATASET_REQUIRED", "数据集ID不能为空");
         }
         if (command.getAlgorithmId() == null) {
-            throw new TaskCommandException("算法ID不能为空");
+            throw new TaskCommandException("ALGORITHM_REQUIRED", "算法ID不能为空");
         }
 
         Dataset dataset = resourceQueryService.findDatasetAuthoritative(command.getDatasetId());
         if (dataset == null || !Boolean.TRUE.equals(dataset.getEnabled())
                 || !"success".equals(dataset.getParseStatus())) {
-            throw new TaskCommandException("指定的数据集不存在或未解析成功");
+            throw new TaskCommandException("DATASET_UNAVAILABLE", "指定的数据集不存在或未解析成功");
         }
 
         Algorithm algorithm = resourceQueryService.findAlgorithmAuthoritative(command.getAlgorithmId());
         if (algorithm == null || !Boolean.TRUE.equals(algorithm.getEnabled())
                 || !"pre".equals(algorithm.getDefenseStage())
                 || !LDD_IMPLEMENTATION.equals(algorithm.getImplementationPath())) {
-            throw new TaskCommandException("当前平台仅开放已启用的 LDD 训练前防御算法");
+            throw new TaskCommandException("NOT_LDD_ALGORITHM",
+                    "当前平台仅开放已启用的 LDD 训练前防御算法");
         }
 
         Hyper hyper = command.getHyperId() == null ? null : resourceQueryService.findHyper(command.getHyperId());
         if (command.getHyperId() != null) {
             if (hyper == null || !Boolean.TRUE.equals(hyper.getEnabled())
                     || !command.getAlgorithmId().equals(hyper.getAlgorithmId())) {
-                throw new TaskCommandException("超参数模板不存在、未启用或与 LDD 算法不匹配");
+                throw new TaskCommandException("HYPER_TEMPLATE_UNAVAILABLE",
+                        "超参数模板不存在、未启用或与 LDD 算法不匹配");
             }
         }
         normalizeParams(command);
@@ -427,10 +429,11 @@ public class PreDefenseTaskCommandService {
                     command.getCustomParams() == null || command.getCustomParams().isBlank()
                             ? "{}" : command.getCustomParams());
         } catch (Exception exception) {
-            throw new TaskCommandException("自定义参数格式不正确，必须是 JSON 对象");
+            throw new TaskCommandException("PARAMETERS_MALFORMED",
+                    "自定义参数格式不正确，必须是 JSON 对象");
         }
         if (node == null || !node.isObject()) {
-            throw new TaskCommandException("自定义参数必须是 JSON 对象");
+            throw new TaskCommandException("PARAMETERS_MALFORMED", "自定义参数必须是 JSON 对象");
         }
         ObjectNode object = (ObjectNode) node;
         if (object.has("epochs") && !object.has("num_epochs")) {

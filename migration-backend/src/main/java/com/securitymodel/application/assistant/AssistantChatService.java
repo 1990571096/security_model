@@ -283,6 +283,12 @@ public class AssistantChatService {
                                 citations, "timeout", modelCalls, toolCalls);
                     }
                 } catch (AssistantException exception) {
+                    if ("ASSISTANT_TOOL_NOT_ALLOWED_FOR_SCENARIO".equals(exception.getCode())) {
+                        // Scenario rejection is a request-level policy denial, not an
+                        // ordinary tool failure: expose the real HTTP 403 instead of
+                        // disguising it as a 200 tool_error body.
+                        throw exception;
+                    }
                     if ("ASSISTANT_TOOL_TIMEOUT".equals(exception.getCode())) {
                         return finish(session, question, scope, "timeout",
                                 "工具执行超过剩余时限，后续工具与模型调用不会继续；底层操作可能仍在收尾。", traces, pending,
@@ -436,11 +442,19 @@ public class AssistantChatService {
         }
         JsonNode structured = scope == null ? null : buildStructured(scope, effectiveStatus, effectiveAnswer,
                 effectiveModelStatus, traces, pending, citations);
+        String answerSource = scope == null ? "model" : "server_fallback";
+        if (scope != null && "answered".equals(effectiveStatus)) {
+            // Scenario answers are assembled from server evidence. The model's free-form
+            // prose is never used as the authoritative answer, so a fabricated number or
+            // [citation:99] cannot reach the user-facing answer or the saved turn.
+            effectiveAnswer = buildScenarioAnswer(scope.name(), structured);
+            answerSource = "server_evidence";
+        }
         sessionService.appendTurn(session, question, effectiveStatus, effectiveAnswer, toolNames,
                 confirmationIds, citationIds);
-        return new AssistantChatResponse(session.getSessionId(), effectiveStatus, effectiveAnswer, traces, pending,
-                new ArrayList<>(citations), effectiveModelStatus, effectiveAnswer, modelCalls, toolCalls,
-                quotaService.remaining(), scope == null ? null : scope.name(), structured);
+        return new AssistantChatResponse(session.getSessionId(), effectiveStatus, effectiveAnswer, answerSource,
+                traces, pending, new ArrayList<>(citations), effectiveModelStatus, effectiveAnswer, modelCalls,
+                toolCalls, quotaService.remaining(), scope == null ? null : scope.name(), structured);
     }
 
     private JsonNode buildStructured(ScenarioScope scope, String status, String answer, String modelStatus,
@@ -474,6 +488,15 @@ public class AssistantChatService {
                     evidence.set("task", data);
                     evidence.set("blockers", data.path("blockers").deepCopy());
                     evidence.set("warnings", data.path("warnings").deepCopy());
+                }
+                case "validate_ldd_parameters" -> {
+                    evidence.set("validation", data.deepCopy());
+                    if (data.has("normalizedParameters")) {
+                        evidence.set("finalParameters", data.get("normalizedParameters").deepCopy());
+                    }
+                    if (data.has("configFingerprint")) {
+                        evidence.put("configFingerprint", data.path("configFingerprint").asText());
+                    }
                 }
                 case "get_my_report_summary" -> {
                     evidence.put("taskId", data.path("taskId").asLong());
@@ -518,6 +541,149 @@ public class AssistantChatService {
             failure.put("message", answer == null ? "场景未完成" : KnowledgeSanitizer.forModel(answer, 300));
         }
         return root;
+    }
+
+    /**
+     * Builds the only user-visible prose for a scenario. Every number, status, validation
+     * conclusion and citation below comes from {@code structured}, which was assembled from
+     * tool results. Model prose is deliberately not concatenated or paraphrased here.
+     */
+    private String buildScenarioAnswer(String scenarioName, JsonNode structured) {
+        JsonNode evidence = structured.path("evidence");
+        String body = switch (scenarioName) {
+            case "ldd_parameter_validation" -> lddAnswer(evidence);
+            case "task_preflight" -> taskAnswer(evidence);
+            case "result_explanation" -> reportAnswer(evidence);
+            default -> "场景结果已由服务端证据生成。";
+        };
+        String citations = citationAnswer(structured.path("citations"));
+        String source = "本回答由服务端工具证据组装，未采用未经校验的模型正文。";
+        return source + "\n" + body + (citations.isEmpty() ? "" : "\n引用：" + citations);
+    }
+
+    private String lddAnswer(JsonNode evidence) {
+        JsonNode validation = evidence.path("validation");
+        if (!validation.isObject()) {
+            return "未取得参数校验证据，不能判断参数是否可执行。";
+        }
+        if (!validation.path("valid").asBoolean(false)) {
+            return "参数校验未通过（" + validation.path("code").asText("PARAMETER_INVALID") + "）："
+                    + KnowledgeSanitizer.forModel(validation.path("message").asText("参数不符合服务端要求"), 300)
+                    + "。未创建任务、未生成确认凭据。";
+        }
+        String algorithm = validation.path("algorithm").path("name").asText("");
+        String dataset = validation.path("dataset").path("name").asText("");
+        String params = scalarSummary(evidence.path("finalParameters"), 8);
+        StringBuilder answer = new StringBuilder("参数校验通过");
+        if (!algorithm.isEmpty()) {
+            answer.append("：算法「").append(algorithm).append("」");
+        }
+        if (!dataset.isEmpty()) {
+            answer.append("、数据集「").append(dataset).append("」");
+        }
+        answer.append("。服务端配置策略校验后的参数");
+        answer.append(params.isEmpty() ? "已通过范围和类型检查" : "为 " + params);
+        answer.append("。未创建任务、未生成确认凭据。");
+        return answer.toString();
+    }
+
+    private String taskAnswer(JsonNode evidence) {
+        JsonNode task = evidence.path("task");
+        if (!task.isObject()) {
+            return "未取得任务摘要证据，不能判断任务是否可启动。";
+        }
+        StringBuilder answer = new StringBuilder("任务 #").append(task.path("taskId").asLong())
+                .append("「").append(task.path("taskName").asText("")).append("」当前状态 ")
+                .append(task.path("status").asText("unknown"))
+                .append("，进度 ").append(task.path("progress").asInt(0)).append("%。");
+        String executor = task.path("executorConfiguration").asText("");
+        if ("worker_unknown".equals(executor)) {
+            answer.append("执行器配置无法在 API 进程确认，需由 Worker 在消费时校验。");
+        } else if ("missing".equals(executor)) {
+            answer.append("本机执行器未配置，启动会被拒绝。");
+        } else if ("configured".equals(executor)) {
+            answer.append("本机执行器已配置。");
+        }
+        answer.append(blockersAnswer(evidence.path("blockers"), "阻塞项"))
+                .append(blockersAnswer(evidence.path("warnings"), "提示"));
+        return answer.toString();
+    }
+
+    private String reportAnswer(JsonNode evidence) {
+        JsonNode metrics = evidence.path("metrics");
+        StringBuilder answer = new StringBuilder("任务 #").append(evidence.path("taskId").asLong())
+                .append(" 当前状态 ").append(evidence.path("taskStatus").asText("unknown")).append("。");
+        if (metrics.isObject() && "unavailable".equals(metrics.path("state").asText())) {
+            answer.append("服务端未取得可用指标，不能给出纯度或样本数量结论。");
+        } else {
+            answer.append("服务端报告指标：隔离比例清洗纯度 ")
+                    .append(metrics.path("cleanPurityPercentByIsolationRatio").asText("—")).append("%")
+                    .append("，隔离比例选取样本数 ")
+                    .append(metrics.path("selectedSampleCountByIsolationRatio").asText("—")).append("。");
+        }
+        answer.append("导出：").append(evidence.path("exportAvailability").asBoolean(false)
+                ? "可用" : "不可用").append("。");
+        if (evidence.hasNonNull("failureSummary")) {
+            answer.append("失败摘要：")
+                    .append(KnowledgeSanitizer.forModel(evidence.path("failureSummary").asText(), 300)).append("。");
+        }
+        return answer.toString();
+    }
+
+    private String blockersAnswer(JsonNode items, String label) {
+        if (!items.isArray() || items.isEmpty()) {
+            return "";
+        }
+        StringBuilder answer = new StringBuilder(label).append("：");
+        int count = 0;
+        for (JsonNode item : items) {
+            if (count > 0) {
+                answer.append("；");
+            }
+            answer.append(item.path("code").asText("ITEM")).append(" ")
+                    .append(KnowledgeSanitizer.forModel(item.path("message").asText(""), 160));
+            if (++count >= 4) {
+                break;
+            }
+        }
+        answer.append("。");
+        return answer.toString();
+    }
+
+    private String scalarSummary(JsonNode object, int limit) {
+        if (!object.isObject()) {
+            return "";
+        }
+        List<String> parts = new ArrayList<>();
+        java.util.Iterator<java.util.Map.Entry<String, JsonNode>> fields = object.fields();
+        while (fields.hasNext() && parts.size() < limit) {
+            java.util.Map.Entry<String, JsonNode> entry = fields.next();
+            if ("data_path".equals(entry.getKey()) || !entry.getValue().isValueNode()) {
+                continue;
+            }
+            parts.add(entry.getKey() + "=" + entry.getValue().asText());
+        }
+        return String.join("，", parts);
+    }
+
+    private String citationAnswer(JsonNode citations) {
+        if (!citations.isArray() || citations.isEmpty()) {
+            return "";
+        }
+        List<String> parts = new ArrayList<>();
+        for (JsonNode citation : citations) {
+            if (parts.size() >= 4) {
+                break;
+            }
+            String id = citation.path("citationId").asText("");
+            String sourceKey = citation.path("sourceKey").asText("");
+            if (id.isEmpty() && sourceKey.isEmpty()) {
+                continue;
+            }
+            parts.add(id + " " + sourceKey + " L" + citation.path("startLine").asInt()
+                    + "-" + citation.path("endLine").asInt());
+        }
+        return String.join("；", parts);
     }
 
     @PreDestroy

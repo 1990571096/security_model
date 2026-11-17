@@ -8,8 +8,12 @@ export function getAssistantTools() {
   return http.get('/api/assistant/tools')
 }
 
-export function chatWithAssistant(question, sessionId) {
-  return http.post('/api/assistant/chat', { question, sessionId })
+export function getAssistantScenarios() {
+  return http.get('/api/assistant/scenarios')
+}
+
+export function chatWithAssistant(question, sessionId, scenario) {
+  return http.post('/api/assistant/chat', { question, sessionId, scenario: scenario || undefined })
 }
 
 export function confirmAssistantAction(confirmationId, token) {

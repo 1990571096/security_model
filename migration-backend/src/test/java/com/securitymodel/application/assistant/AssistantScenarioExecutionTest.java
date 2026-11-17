@@ -35,23 +35,28 @@ class AssistantScenarioExecutionTest {
 
     @Test
     void scenarioFiltersModelToolsAndAssemblesServerEvidence() {
+        ObjectNode validationArguments = objectMapper.createObjectNode()
+                .put("datasetId", 4).put("algorithmId", 14);
+        validationArguments.putObject("customParams").put("batch_size", 128).put("num_epochs", 5);
         RecordingModel model = new RecordingModel(
-                AssistantModel.ModelReply.toolCall("get_parameter_guide",
-                        objectMapper.createObjectNode().put("algorithmId", 14), "fake"),
-                AssistantModel.ModelReply.answer("LDD 默认参数为 batch_size=128。", "fake"));
+                AssistantModel.ModelReply.toolCall("validate_ldd_parameters", validationArguments, "fake"),
+                AssistantModel.ModelReply.answer("模型伪造结论：batch_size=999，纯度为 99.9%。", "fake"));
         AssistantChatService service = service(registry(), model, mock(AssistantPreviewService.class));
 
         AssistantChatResponse response = service.chat(null, "检查 LDD 参数", "ldd_parameter_validation");
 
         assertEquals("answered", response.status());
         assertEquals("ldd_parameter_validation", response.scenario());
-        assertEquals(List.of("get_parameter_guide", "preview_create_task", "search_knowledge"),
+        assertEquals("server_evidence", response.answerSource());
+        assertEquals(List.of("get_parameter_guide", "search_knowledge", "validate_ldd_parameters"),
                 model.lastRequest.get().tools().stream().map(AssistantToolDescriptor::name).sorted().toList());
         assertNotNull(response.structured());
         assertEquals("ldd_parameter_validation", response.structured().path("scenario").asText());
-        assertEquals("get_parameter_guide", response.structured().path("requiredEvidenceTool").asText());
-        assertEquals(14, response.structured().path("evidence").path("findings").get(0)
-                .path("algorithmId").asInt());
+        assertEquals("validate_ldd_parameters", response.structured().path("requiredEvidenceTool").asText());
+        assertTrue(response.structured().path("evidence").path("validation").path("valid").asBoolean());
+        assertTrue(response.answer().contains("batch_size=128"));
+        assertFalse(response.answer().contains("batch_size=999"));
+        assertFalse(response.answer().contains("99.9"));
         assertFalse(response.structured().has("failure"));
     }
 
@@ -63,13 +68,11 @@ class AssistantScenarioExecutionTest {
         AssistantPreviewService preview = mock(AssistantPreviewService.class);
         AssistantChatService service = service(registry(), model, preview);
 
-        AssistantChatResponse response = service.chat(null, "解释任务结果", "result_explanation");
+        AssistantException exception = assertThrows(AssistantException.class,
+                () -> service.chat(null, "解释任务结果", "result_explanation"));
 
-        assertEquals("tool_error", response.status());
-        assertEquals("ASSISTANT_TOOL_NOT_ALLOWED_FOR_SCENARIO", response.modelStatus());
-        assertEquals("ASSISTANT_TOOL_NOT_ALLOWED_FOR_SCENARIO",
-                response.structured().path("failure").path("code").asText());
-        assertTrue(response.pendingConfirmations().isEmpty());
+        assertEquals("ASSISTANT_TOOL_NOT_ALLOWED_FOR_SCENARIO", exception.getCode());
+        assertEquals(org.springframework.http.HttpStatus.FORBIDDEN, exception.getStatus());
         verify(preview, never()).preview(any(), any(), anyLong(), anyLong());
     }
 
@@ -84,12 +87,15 @@ class AssistantScenarioExecutionTest {
         AssistantChatResponse response = service.chat(null, "解释任务 500", "result_explanation");
 
         assertEquals("answered", response.status());
+        assertEquals("server_evidence", response.answerSource());
         assertEquals(91.2, response.structured().path("evidence").path("metrics")
                 .path("cleanPurityPercentByIsolationRatio").asDouble(), 0.001);
         assertEquals(420, response.structured().path("evidence").path("metrics")
                 .path("selectedSampleCountByIsolationRatio").asInt());
         assertFalse(response.structured().path("evidence").path("metrics")
                 .path("cleanPurityPercentByIsolationRatio").asText().contains("99.9"));
+        assertFalse(response.answer().contains("99.9"));
+        assertTrue(response.answer().contains("91.2"));
     }
 
     @Test
@@ -104,6 +110,8 @@ class AssistantScenarioExecutionTest {
 
         assertTrue(response.citations().isEmpty());
         assertTrue(response.structured().path("citations").isEmpty());
+        assertFalse(response.answer().contains("[citation:99]"));
+        assertTrue(response.answer().contains("服务端工具证据组装"));
     }
 
     @Test
@@ -146,7 +154,55 @@ class AssistantScenarioExecutionTest {
                 objectMapper, 6, 5, 60, 1);
     }
 
+    private JsonNode validationData(boolean valid, int batchSize) {
+        ObjectNode data = objectMapper.createObjectNode();
+        data.put("valid", valid);
+        data.put("code", valid ? "PARAMETERS_VALID" : "PARAMETER_OUT_OF_RANGE");
+        data.put("message", valid ? "参数校验通过"
+                : "LDD 参数 batch_size 必须是范围为 [16, 512] 的整数");
+        data.put("datasetId", 4);
+        data.put("algorithmId", 14);
+        data.put("parameterSource", "LDD_CONFIGURATION_POLICY");
+        data.put("configFingerprint", "server-fingerprint");
+        data.putObject("algorithm").put("algorithmId", 14).put("name", "LDD");
+        data.putObject("dataset").put("datasetId", 4).put("name", "cifar10");
+        if (valid) {
+            data.putObject("normalizedParameters")
+                    .put("batch_size", batchSize)
+                    .put("num_epochs", 5);
+        }
+        return data;
+    }
+
+    @Test
+    void invalidParametersAreShownFromServerValidationNotModelProse() {
+        ObjectNode validationArguments = objectMapper.createObjectNode()
+                .put("datasetId", 4).put("algorithmId", 14);
+        validationArguments.putObject("customParams").put("batch_size", 999).put("num_epochs", 5);
+        RecordingModel model = new RecordingModel(
+                AssistantModel.ModelReply.toolCall("validate_ldd_parameters", validationArguments, "fake"),
+                AssistantModel.ModelReply.answer("参数完全没问题，batch_size=999 可执行。", "fake"));
+        AssistantChatService service = service(registry(validationData(false, 999)), model,
+                mock(AssistantPreviewService.class));
+
+        AssistantChatResponse response = service.chat(null, "检查越界参数", "ldd_parameter_validation");
+
+        assertEquals("answered", response.status());
+        assertEquals("server_evidence", response.answerSource());
+        assertFalse(response.structured().path("evidence").path("validation").path("valid").asBoolean());
+        assertEquals("PARAMETER_OUT_OF_RANGE",
+                response.structured().path("evidence").path("validation").path("code").asText());
+        assertTrue(response.answer().contains("参数校验未通过"));
+        assertTrue(response.answer().contains("PARAMETER_OUT_OF_RANGE"));
+        assertFalse(response.answer().contains("参数完全没问题"));
+        assertFalse(response.answer().contains("batch_size=999"));
+    }
+
     private AssistantToolRegistry registry() {
+        return registry(validationData(true, 128));
+    }
+
+    private AssistantToolRegistry registry(JsonNode validation) {
         ObjectNode parameterData = objectMapper.createObjectNode();
         parameterData.putArray("algorithms").addObject()
                 .put("algorithmId", 14).put("name", "LDD").put("type", "ldd");
@@ -160,6 +216,9 @@ class AssistantScenarioExecutionTest {
                 .put("selectedSampleCountByIsolationRatio", 420).put("failureSummary", "执行失败");
         reportData.put("cleanSubsetExportAvailable", true);
         List<AssistantTool> tools = new ArrayList<>();
+        tools.add(tool("validate_ldd_parameters", false, new AssistantToolResult(
+                validation.path("valid").asBoolean() ? "参数校验通过" : "参数校验未通过",
+                validation, null, null, null, null, null)));
         tools.add(tool("get_parameter_guide", false, new AssistantToolResult(
                 "参数目录", parameterData, null, null, null, null, null)));
         tools.add(tool("search_knowledge", false, new AssistantToolResult(

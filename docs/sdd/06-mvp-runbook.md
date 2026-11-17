@@ -236,7 +236,8 @@ SOURCE sql/security_model_vab_seed.sql;
 
 - 入口：`/assistant` 页面或 `/api/assistant/*`。模型默认 `security-model.assistant.model.provider=disabled`、`enabled=false`；只有实现并选择 `AssistantModel` 适配器后才启用自然语言编排。
 - 上限：每请求最多 6 次模型调用、5 次工具调用、60 秒；每用户每日默认 50 次，超出 429；核心任务 API 不受影响。
-- 读写边界：`get_parameter_guide`、`get_my_task_summary`、`get_my_report_summary`、`search_knowledge` 只读；`preview_create_task`、`preview_start_task`、`preview_cancel_task`、`preview_retry_task`、`preview_export_task` 只生成预览。
+- 读写边界：`validate_ldd_parameters`、`get_parameter_guide`、`get_my_task_summary`、`get_my_report_summary`、`search_knowledge` 只读；`validate_ldd_parameters` 只复用创建任务的资源与参数校验，不建任务、不写 outbox、不领 GPU、不生成确认凭据；`preview_create_task`、`preview_start_task`、`preview_cancel_task`、`preview_retry_task`、`preview_export_task` 只生成预览。
+- 场景：`GET /api/assistant/scenarios` 返回 `ldd_parameter_validation`、`task_preflight`、`result_explanation`；前端“回答模式”选择后请求体带 `scenario`。场景 `answered` 时 `answerSource=server_evidence`，正文和会话摘要只由服务端结构化证据组装；越界工具返回真实 HTTP 403 并写 `SCENARIO_DENIED` 审计。
 - 写操作必须调用确认接口：预览返回 `confirmationId` 与一次性 `token`，TTL 默认 300 秒；服务端只存 token 的 SHA-256。确认后重校验用户、task/run/attempt、参数哈希和状态，并返回 `confirmationReplayed`。
 - 审计表 `sys_assistant_tool_audit` 只存工具名、operator、目标、结果码和耗时；不存 prompt、参数正文或 token。会话 7 天，用户可删除自己的会话。
 - 未配置模型时页面明确显示 `model_disabled`，不得写成“助手联调完成”。

@@ -47,7 +47,7 @@ public class LddConfigurationPolicy {
 
         for (String key : merged.properties().stream().map(entry -> entry.getKey()).toList()) {
             if (!SUPPORTED_KEYS.contains(key)) {
-                throw new TaskCommandException("LDD 不支持参数: " + key);
+                throw new TaskCommandException("PARAMETER_UNKNOWN", "LDD 不支持参数: " + key);
             }
         }
 
@@ -76,40 +76,43 @@ public class LddConfigurationPolicy {
         try {
             JsonNode node = objectMapper.readTree(raw);
             if (node == null || !node.isObject()) {
-                throw new TaskCommandException(fieldName + "必须是 JSON 对象");
+                throw new TaskCommandException("PARAMETERS_MALFORMED", fieldName + "必须是 JSON 对象");
             }
             return (ObjectNode) node;
         } catch (TaskCommandException exception) {
             throw exception;
         } catch (JsonProcessingException exception) {
-            throw new TaskCommandException(fieldName + "格式不正确，必须是 JSON 对象");
+            throw new TaskCommandException("PARAMETERS_MALFORMED", fieldName + "格式不正确，必须是 JSON 对象");
         }
     }
 
     private void requireText(ObjectNode config, String key) {
         if (!config.hasNonNull(key) || !StringUtils.hasText(config.get(key).asText())) {
-            throw new TaskCommandException("LDD 参数 " + key + " 不能为空");
+            throw new TaskCommandException("PARAMETER_REQUIRED", "LDD 参数 " + key + " 不能为空");
         }
     }
 
     private void requireOneOf(ObjectNode config, String key, String... allowed) {
         requireText(config, key);
         if (!Arrays.asList(allowed).contains(config.get(key).asText())) {
-            throw new TaskCommandException("LDD 参数 " + key + " 取值不合法");
+            throw new TaskCommandException("PARAMETER_VALUE_INVALID",
+                    "LDD 参数 " + key + " 取值不合法");
         }
     }
 
     private void requireNumber(ObjectNode config, String key, double min, double max, boolean integer) {
         JsonNode value = config.get(key);
         if (value == null || !value.isNumber()) {
-            throw new TaskCommandException("LDD 参数 " + key + " 必须是范围为 [" + min + ", " + max + "] 的"
-                    + (integer ? "整数" : "数字"));
+            throw new TaskCommandException("PARAMETER_TYPE_INVALID",
+                    "LDD 参数 " + key + " 必须是范围为 [" + min + ", " + max + "] 的"
+                            + (integer ? "整数" : "数字"));
         }
         double number = value.doubleValue();
         if (Double.isNaN(number) || number < min || number > max
                 || (integer && number != Math.rint(number))) {
-            throw new TaskCommandException("LDD 参数 " + key + " 必须是范围为 [" + min + ", " + max + "] 的"
-                    + (integer ? "整数" : "数字"));
+            throw new TaskCommandException("PARAMETER_OUT_OF_RANGE",
+                    "LDD 参数 " + key + " 必须是范围为 [" + min + ", " + max + "] 的"
+                            + (integer ? "整数" : "数字"));
         }
     }
 }

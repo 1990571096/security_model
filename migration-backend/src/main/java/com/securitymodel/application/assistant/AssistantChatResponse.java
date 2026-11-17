@@ -5,7 +5,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import java.time.LocalDateTime;
 import java.util.List;
 
-public record AssistantChatResponse(Long sessionId, String status, String answer,
+public record AssistantChatResponse(Long sessionId, String status, String answer, String answerSource,
                                     List<AssistantToolTrace> toolResults,
                                     List<AssistantPendingConfirmation> pendingConfirmations,
                                     List<JsonNode> citations, String modelStatus,
