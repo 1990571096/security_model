@@ -196,7 +196,10 @@ const workerStateLabel = computed(() => {
   if (dispatch.value.workerRecovering) return '恢复中'
   return dispatch.value.workerConsumerStarted ? '消费中' : '未启动'
 })
-const workerTagLabel = computed(() => (workerApplicable.value ? '独立 Worker' : 'db 模式'))
+const workerTagLabel = computed(() => {
+  if (!dispatch.value) return '需管理员'
+  return workerApplicable.value ? '独立 Worker' : 'db 模式'
+})
 const workerTagType = computed(() => {
   if (!dispatch.value || !workerApplicable.value) return 'info'
   return dispatch.value.workerConsumerStarted ? 'success' : 'warning'
