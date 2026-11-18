@@ -133,7 +133,8 @@ jobs:
             'scripts/dev/Stop-FrontendStatic.ps1',
             'scripts/dev/Test-SecurityModelStackScripts.ps1',
             'scripts/dev/Test-LddAcceptanceEnvironment.ps1',
-            'scripts/dev/Invoke-LddAcceptanceRun.ps1'
+            'scripts/dev/Invoke-LddAcceptanceRun.ps1',
+            'scripts/dev/Test-LddAcceptanceRun.ps1'
           )
           $failed = $false
           foreach ($file in $files) {
@@ -154,9 +155,15 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
       - name: Verify process identity and failure paths
         shell: pwsh
         run: ./scripts/dev/Test-SecurityModelStackScripts.ps1
+      - name: Verify LDD acceptance run script with fake HTTP
+        shell: pwsh
+        run: ./scripts/dev/Test-LddAcceptanceRun.ps1 -PythonExe python
 
   frontend:
     runs-on: ubuntu-latest

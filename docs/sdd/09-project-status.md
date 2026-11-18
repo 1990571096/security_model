@@ -14,7 +14,7 @@ LDD 进程；R4 的 RabbitMQ/Outbox/Worker 已用真实 Broker + 隔离 MySQL �
 真实 LDD 已通过 1 epoch 短周期验收：任务经真实 HTTP API、真实 GPU 租约和真实 `D:\Anaconda\python.exe` 子进程跑完。该结果是执行链路门禁，**不是论文正式实验结论**；正式 5 epochs 仍未启动。详见 [25-ldd-real-acceptance-checklist.md](25-ldd-real-acceptance-checklist.md)。
 
 - 第一次真实 1 epoch（任务 `2122910425962569730`）在启动 Python 前失败，`PROCESS_RECORD_FAILED`：只设置了 `SECURITY_MODEL_EXECUTOR_PYTHON_WORKSPACE`，未设置进程记录 guard `SECURITY_MODEL_EXECUTOR_WORKSPACE`，`AttemptProcessRegistry` 拒绝记录。该失败没有产生子进程；随后修正执行器清理路径并补回归测试，避免“子进程未启动却隔离 GPU 槽位”。
-- 第二次真实 1 epoch：任务 `2122913324293771266`，run `af5f081a-6661-462c-b0bc-c70ea003597a`，attempt 1，参数 `num_epochs=1`、`batch_size=128`、`SIG`、`all2one`、`poisoned_portion=0.1`、`seed=123`。12:42:33 启动，12:45:03 `success`、progress 100；任务墙钟约 2 分 25 秒，LDD 自报运行 1.79 分钟。
+- 第二次真实 1 epoch：任务 `2122913324293771266`，run `af5f081a-6661-462c-b0bc-c70ea003597a`，attempt 1，参数 `num_epochs=1`、`batch_size=128`、`SIG`、`all2one`、`poisoned_portion=0.1`、`seed=123`。12:42:33 启动，12:44:58 任务实际结束；12:45:03 轮询观察到 `success`、progress 100；实际墙钟约 2 分 25 秒，LDD 自报运行 1.79 分钟。
 - LDD 实际输出：注入 5000 张中毒图 + 45000 张干净图；`clean_loss_avg≈0.4564`、`poison_loss_avg≈0.0036`；12 个隔离比例下 `clean_purity` 为 100.00%（5%–40%）与 99.98%–99.99%（45%–60%）。这些指标来自 VaB 的已知中毒标签口径，单 epoch 只用于链路验收，不能作为论文效果结论。
 - 产物：`F:\security-model-data\ldd-acceptance-20261118\results\20261118-124233-ldd-LDD-short-cycle-20261118-124232`，含 `execution.log`（1967 B）、`generated_LDD.py`（16212 B）、`0.1.pth`（42.69 MB）、`0.1.txt` 和 12 个 `selected_indices_*.npy`；结果目录总大小约 43.9 MB。
 - 收尾核对：任务结束后没有残留 `python.exe`；`nvidia-smi` 显存 0 MiB、利用率 0%；`sys_gpu_lease.default-gpu-0` 的 lease/task/run/attempt 已清空，`released_at=12:44:57.730`，`blocked_at=NULL`；报告、日志、执行器状态与 dispatch 快照保存在 `tmp\ldd-short-run-real2-1epoch\run-summary.json`。

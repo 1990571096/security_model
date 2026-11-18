@@ -167,7 +167,7 @@ FROM security_model_ldd_20261118.sys_gpu_lease;
 | 项 | 结果 |
 | --- | --- |
 | 参数 | `num_epochs=1`、`batch_size=128`、`SIG`、`all2one`、`poisoned_portion=0.1`、`seed=123` |
-| 时间 | 12:42:33 启动，12:45:03 `success`；任务墙钟约 2 分 25 秒，LDD 自报 1.79 分钟 |
+| 时间 | 12:42:33 启动，12:44:58 任务实际结束；12:45:03 轮询观察到 `success`；实际墙钟约 2 分 25 秒，LDD 自报 1.79 分钟 |
 | 执行阶段 | `pending -> running(10) -> running(12) -> success(100)` |
 | 训练输出 | 注入 5000 张中毒图 + 45000 张干净图；`clean_loss_avg≈0.4564`、`poison_loss_avg≈0.0036` |
 | LDD 指标 | `clean_purity`：5%–40% 为 100.00%，45%–60% 为 99.98%–99.99% |
@@ -177,6 +177,16 @@ FROM security_model_ldd_20261118.sys_gpu_lease;
 产物目录：`F:\security-model-data\ldd-acceptance-20261118\results\20261118-124233-ldd-LDD-short-cycle-20261118-124232`；API/报告/日志/执行器快照：`tmp\ldd-short-run-real2-1epoch\run-summary.json`；启动日志 `tmp\ldd-real2-start.log`。
 
 **口径**：1 epoch 成功只证明执行链路、租约、子进程、日志、报告和产物可用；单 epoch 指标不能作为论文效果结论，正式 5 epochs 仍需实验负责人确认配置和运行窗口。
+
+### 3.5.1 运行脚本的启动与验收判定
+
+`Invoke-LddAcceptanceRun.ps1` 已收紧为“先校验、再显式启动、最后分开判定”：
+
+- 不传 `-Start` 时只读取任务、校验 `pending`、`datasetId`、`algorithmId` 和服务端 `customParams`，不调用 `start`；`-CreateOnly`/`-NoStart` 同样不启动。
+- 复用 `-TaskId` 时，`-Epochs` 必须与服务端 `num_epochs` 一致；不传 `-Epochs` 时使用服务端值。创建新任务必须显式传 `-Epochs`。
+- 汇总 JSON 分开记录 `task_status` 与 `acceptance`。`acceptance.state` 可取 `not_started`、`preflight_failed`、`passed`、`evidence_incomplete`、`task_failed`、`not_terminal`。
+- 只有任务 `success` 且报告、日志、`taskId/runId/attempt`、产物元数据与本地文件、GPU 空闲、无运行任务、dispatch 就绪全部通过，脚本才退出 `0`；任务成功但证据不全退出 `4`，任务失败退出 `1`，超时退出 `3`，启动前校验失败退出 `2`。
+- 假 HTTP 回归 `scripts/dev/Test-LddAcceptanceRun.ps1` 覆盖“不传 `-Start` 不启动、参数不一致拒绝、正常 success、报告缺失不得通过、非 pending 拒绝”，不占 GPU。
 
 ### 3.6 正式训练前必须补的检查
 
@@ -217,8 +227,11 @@ FROM security_model_ldd_20261118.sys_gpu_lease;
 # 环境预检
 .\scripts\dev\Test-LddAcceptanceEnvironment.ps1 -PythonExe 'D:\Anaconda\python.exe' -VabRoot '<VaB根>' -Workspace '<工作目录>' -ProcessGuardWorkspace '<工作目录>' -ResultRoot '<结果根>'
 
-# 短周期运行（默认 1 epoch；-CreateOnly / -NoStart 只创建不启动）
-.\scripts\dev\Invoke-LddAcceptanceRun.ps1 -BaseUrl 'http://127.0.0.1:18300' -Epochs 1 -OutputRoot 'tmp\ldd-short-run-real2-1epoch'
+# 短周期运行（必须显式 -Start 才会调用 start；创建新任务必须显式 -Epochs）
+.\scripts\dev\Invoke-LddAcceptanceRun.ps1 -BaseUrl 'http://127.0.0.1:18300' -Epochs 1 -Start -OutputRoot 'tmp\ldd-short-run-real2-1epoch'
+
+# 复用已有 pending 任务：脚本先核对 status/datasetId/algorithmId/服务端最终参数，再启动
+.\scripts\dev\Invoke-LddAcceptanceRun.ps1 -BaseUrl 'http://127.0.0.1:18300' -TaskId 2122901116713205761 -Epochs 5 -Start -OutputRoot 'tmp\ldd-formal-5epochs'
 
 # 启动验收栈（示例；JWT secret 从本地文件读取，不写入仓库）
 $env:SECURITY_MODEL_JWT_SECRET = (Get-Content -Raw 'tmp\deploy-stack\jwt-secret.txt').Trim()
