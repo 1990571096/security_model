@@ -269,3 +269,23 @@ $env:SECURITY_MODEL_JWT_SECRET = (Get-Content -Raw 'tmp\deploy-stack\jwt-secret.
 ```
 
 不要把数据库密码、JWT secret、Bearer token、绝对数据路径写入提交或公开材料。
+
+## 8. 正式 5 epochs 执行结果（2026-11-18，已通过）
+
+| 项 | 结果 |
+| --- | --- |
+| 任务 | `2122901116713205761`，`success`、`progress=100` |
+| run / attempt | `37204a64-2b3d-4c72-8cb1-5b7bc2617dd9` / 1 |
+| 起止 | 17:03:48.372 至 17:09:12.986，墙钟约 324.6 秒 |
+| 参数 | `cifar10`、`batch_size=128`、`num_epochs=5`、`SIG`、`all2one`、`poisoned_portion=0.1`、`trigger_label=0`、`lr_poison=0.001`、`r=0.75`、`alpha1=0.1`、`alpha2=0.5`、`seed=123` |
+| 实际轮数 | `0.1.txt` 中 `Epoch: 0..4` 共 5 条 |
+| 验收 | `acceptance.state=passed`、80 项检查全 `ok`、0 失败 |
+| 产物 | 16 个文件、46,351,536 B；模型 `0.1.pth` 44,767,430 B；`execution.log` 5,275 B；`0.1.txt` 1,081 B |
+| 租约 | `default-gpu-0` 17:03:47.786 获取，17:09:13.513 释放；无 blocked |
+| 收尾 | `runningTaskCount=0`、GPU/dispatch 均 idle、无残留 Python；栈停止，18300 不可连接 |
+| 资源 | 运行期最低空闲 RAM 4.13 GB；GPU 峰值 1,153 MiB；GPU 利用率峰值 100% |
+| 指标 | clean_purity 5%–30% 为 100.00%，35%–60% 为 99.99%；选择样本 2,500–30,000 |
+
+证据目录：`F:\security-model-data\ldd-acceptance-20261118\formal-freeze-20261118\formal-run-20261118`，含 `formal-5epochs-run-summary.json`、`report-final.json`、`logs-final.json`、`runtime-samples.csv`、`artifact-sha256.json`。
+
+结论：**正式配置工程验收通过**。本结论只覆盖执行链路、配置、产物、轮次和收尾；论文效果评估仍需独立基线与多设置对照。

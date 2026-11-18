@@ -9,9 +9,9 @@
 测试使用临时隔离 schema。迁移后端以 MySQL 保存任务状态，通过有界 JVM 线程池调用 Python
 LDD 进程；R4 的 RabbitMQ/Outbox/Worker 已用真实 Broker + 隔离 MySQL 双 JVM 执行主要场景，默认仍关闭，未执行项见 §5.17。
 
-## 2026-11-18 真实 LDD 1 epoch 验收（当前事实）
+## 2026-11-18 真实 LDD 1 epoch 与正式 5 epochs 工程验收（当前事实）
 
-真实 LDD 已通过 1 epoch 短周期验收：任务经真实 HTTP API、真实 GPU 租约和真实 `D:\Anaconda\python.exe` 子进程跑完。该结果是执行链路门禁，**不是论文正式实验结论**；正式 5 epochs 仍未启动。详见 [25-ldd-real-acceptance-checklist.md](25-ldd-real-acceptance-checklist.md)。
+真实 LDD 已通过 1 epoch 短周期验收，并在 17:03–17:09 通过正式 5 epochs 工程验收：任务经真实 HTTP API、真实 GPU 租约和真实 `D:\Anaconda\python.exe` 子进程跑完。该结果是执行链路与正式配置门禁，**不是论文效果结论**；论文效果仍需独立评估和基线对照。详见 [25-ldd-real-acceptance-checklist.md](25-ldd-real-acceptance-checklist.md)。
 
 - 第一次真实 1 epoch（任务 `2122910425962569730`）在启动 Python 前失败，`PROCESS_RECORD_FAILED`：只设置了 `SECURITY_MODEL_EXECUTOR_PYTHON_WORKSPACE`，未设置进程记录 guard `SECURITY_MODEL_EXECUTOR_WORKSPACE`，`AttemptProcessRegistry` 拒绝记录。该失败没有产生子进程；随后修正执行器清理路径并补回归测试，避免“子进程未启动却隔离 GPU 槽位”。
 - 第二次真实 1 epoch：任务 `2122913324293771266`，run `af5f081a-6661-462c-b0bc-c70ea003597a`，attempt 1，参数 `num_epochs=1`、`batch_size=128`、`SIG`、`all2one`、`poisoned_portion=0.1`、`seed=123`。12:42:33 启动，12:44:58 任务实际结束；12:45:03 轮询观察到 `success`、progress 100；实际墙钟约 2 分 25 秒，LDD 自报运行 1.79 分钟。
@@ -20,9 +20,9 @@ LDD 进程；R4 的 RabbitMQ/Outbox/Worker 已用真实 Broker + 隔离 MySQL �
 - 收尾核对：任务结束后没有残留 `python.exe`；`nvidia-smi` 显存 0 MiB、利用率 0%；`sys_gpu_lease.default-gpu-0` 的 lease/task/run/attempt 已清空，`released_at=12:44:57.730`，`blocked_at=NULL`；报告、日志、执行器状态与 dispatch 快照保存在 `tmp\ldd-short-run-real2-1epoch\run-summary.json`。
 - 环境预检在加 guard 一致性检查后重跑：`status=ready_with_warnings`、`errors=0`、`warnings=1`（空闲内存约 2.3 GB），证据 `tmp\ldd-acceptance-environment-final.json`、`tmp\ldd-acceptance-environment-final.log`。
 - 运行脚本已收紧：默认不启动，必须显式 `-Start`；复用 `-TaskId` 时先核对 `pending`、`datasetId`、`algorithmId` 和服务端 `customParams`；汇总分开记录 `task_status` 与 `acceptance`，任务成功但证据缺失时退出 `4`。产物检查过滤空项，模型/日志/选择文件必须存在且非空，修改时间须落在本次 run 窗口；实际轮数从日志 `Epoch:` 行统计，`num_epochs` 配置值不作为完成证据。假 HTTP 回归新增空模型项、0 字节模型、日志缺失、旧产物时间、轮数不足和模型缺失负例，均不占 GPU。
-- 正式 5 epochs 输入已冻结但未启动：任务 `2122901116713205761` 仍为 `pending`；冻结包 `F:\security-model-data\ldd-acceptance-20261118\formal-freeze-20261118`，含任务 JSON、CIFAR-10 批次清单/SHA256、数据库备份（788,998 B，SHA256 `5D3FC3D4...`）、1 epoch 产物归档（16 文件/46,347,827 B）、环境预检与 JAR 哈希。`hyper_id=NULL`，`hyperParameterFingerprint.available=false` 是未绑定模板，不是最终参数丢失。
+- 正式 5 epochs 已执行并通过：任务 `2122901116713205761`，run `37204a64-2b3d-4c72-8cb1-5b7bc2617dd9`，attempt 1；17:03:48.372 启动，17:09:12.986 结束，墙钟约 324.6 秒，`success`、progress 100。`0.1.txt` 包含 `Epoch: 0..4` 共 5 条；验收 `acceptance.state=passed`、80 项检查全 `ok`、0 失败。产物 16 个文件、46,351,536 B，模型 `0.1.pth` 44,767,430 B；`sys_gpu_lease.default-gpu-0` 于 17:09:13.513 释放，无 blocked，无残留 Python，GPU/dispatch 均 idle。运行期最低空闲 RAM 4.13 GB、GPU 峰值 1,153 MiB。证据包 `F:\security-model-data\ldd-acceptance-20261118\formal-freeze-20261118\formal-run-20261118`，含 `formal-5epochs-run-summary.json`、`report-final.json`、`logs-final.json`、`runtime-samples.csv`、`artifact-sha256.json`。指标 clean_purity 5%–30% 为 100.00%，35%–60% 为 99.99%。
 - 全量门禁（本机，`REDIS_IT=true`、`RABBIT_IT=true`）：**351 单测 + 126 IT，0 失败/0 错误/0 跳过**，日志 `tmp\ldd-formal-full-verify.log`；Python 11/11，日志 `tmp\ldd-formal-python-tests.log`；前端生产构建通过（仍有 element chunk 947.92 kB 警告），日志 `tmp\ldd-formal-frontend-build.log`。
-- 仍未完成：正式 5 epochs 论文实验及其运行窗口/配置冻结；取消、超时、重试的真实 GPU 行为；数据集 6 的样本统计仍为 NULL（仅路径可读验证，不能写成已解析 50000 样本）。2026-08-19 旧工程验证产物不替代论文正式实验。
+- 仍未完成：论文效果评估与基线对照、正式实验的多随机种子/多攻击设置；取消、超时、重试的真实 GPU 行为；数据集 6 的样本统计仍为 NULL（仅路径可读验证，不能写成已解析 50000 样本）。2026-08-19 旧工程验证产物不替代论文正式实验。
 - 已知问题：无 captcha 的 `/auth/login` 在 `uuid=null` 时 500 NPE；正常前端 `/auth/code` 流程不受影响，直接 API 必须先取验证码。本轮未修复。
 
 ## 2026-11-17 R7 场景联调收口（当前事实）
