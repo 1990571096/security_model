@@ -73,3 +73,4 @@ if ($failures.Count -gt 0) {
     exit 1
 }
 Write-Host 'deployment script targeted checks OK: quoting, defaults, identity refusal, state retention'
+exit 0
