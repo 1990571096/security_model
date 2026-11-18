@@ -159,8 +159,23 @@ function Stop-VerifiedProcessTree($entry, [System.Diagnostics.Process]$process) 
     }
 }
 
+function Read-StackState([string]$path) {
+    # ConvertFrom-Json 在部分 PowerShell 版本会把 ISO 时间自动转成本地 DateTime；
+    # 这里统一还原成 UTC ISO 字符串，避免停止时出现 8 小时时区偏差。
+    $state = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+    foreach ($entry in @($state.processes)) {
+        if ($null -eq $entry) { continue }
+        if ($entry.processStartTime -is [datetime]) {
+            $entry.processStartTime = ([datetime]$entry.processStartTime).ToUniversalTime().ToString('o')
+        } elseif ($entry.processStartTime -is [datetimeoffset]) {
+            $entry.processStartTime = ([datetimeoffset]$entry.processStartTime).UtcDateTime.ToString('o')
+        }
+    }
+    return $state
+}
+
 foreach ($stateFile in $stateFiles) {
-    $state = Get-Content -LiteralPath $stateFile.FullName -Raw | ConvertFrom-Json -DateKind String
+    $state = Read-StackState $stateFile.FullName
     $drained = Wait-StackDrain $state
 
     foreach ($entry in @($state.processes)) {
