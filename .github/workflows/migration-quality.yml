@@ -126,8 +126,12 @@ jobs:
         shell: pwsh
         run: |
           $files = @(
+            'scripts/dev/SecurityModelStack.Common.ps1',
             'scripts/dev/Start-SecurityModelStack.ps1',
-            'scripts/dev/Stop-SecurityModelStack.ps1'
+            'scripts/dev/Stop-SecurityModelStack.ps1',
+            'scripts/dev/Start-FrontendStatic.ps1',
+            'scripts/dev/Stop-FrontendStatic.ps1',
+            'scripts/dev/Test-SecurityModelStackScripts.ps1'
           )
           $failed = $false
           foreach ($file in $files) {
@@ -144,6 +148,14 @@ jobs:
           if ($failed) { exit 1 }
           Write-Host 'deployment scripts parse OK'
 
+  deployment-scripts:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify process identity and failure paths
+        shell: pwsh
+        run: ./scripts/dev/Test-SecurityModelStackScripts.ps1
+
   frontend:
     runs-on: ubuntu-latest
     steps:
@@ -159,3 +171,5 @@ jobs:
       - name: Build production bundle
         working-directory: migration-frontend
         run: npm run build
+      - name: Verify static hosting without dev server
+        run: node scripts/dev/Test-FrontendStaticHosting.mjs

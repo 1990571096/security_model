@@ -206,7 +206,14 @@ SOURCE sql/security_model_vab_seed.sql;
 
 ### 可复用单机启停脚本（2026-11-18）
 
-阶段 3 新增 `scripts/dev/Start-SecurityModelStack.ps1` 与 `scripts/dev/Stop-SecurityModelStack.ps1`，用于普通部署演练，不替代 R4 隔离验收夹具。固定依赖版本与完整证据见 [24-stage3-single-node-deployment.md](24-stage3-single-node-deployment.md)。
+阶段 3 新增 `scripts/dev/Start-SecurityModelStack.ps1` 与 `scripts/dev/Stop-SecurityModelStack.ps1`，用于普通部署演练，不替代 R4 隔离验收夹具。2026-11-18 收尾整改后：
+
+- 启动脚本默认 `Mode=db`、`Role=api`，分别等待 `/actuator/health/liveness` 与 `/actuator/health/readiness`；readiness 包含调度恢复、Worker 归属和消费容器，不能再把 health UP 等同于可调度。
+- 停止脚本正常路径先查 `sys_pre_defense` 的 running 任务并等待排空；核对 java 进程、可执行文件、启动时间和命令行 jar 后停止；失败保留 `state.json`；只有显式 `-Force` 才强停。
+- 数据库备份/恢复演练从 `security_model_deploy_20261118` 备份到全新库 `security_model_restore_20261118a`，核对 48 表、80 约束、179 索引和关键行数；数据库备份不包含本地产物、数据集、Python 工作区和 Rabbit 消息。
+- 前端生产静态托管使用 `scripts/dev/frontend-static-server.mjs` + `Start-FrontendStatic.ps1` / `Stop-FrontendStatic.ps1`，不把 Vite dev server 作为交付方式。
+
+固定依赖版本与完整证据见 [24-stage3-single-node-deployment.md](24-stage3-single-node-deployment.md)。
 
 ```powershell
 # 1) 必须用 repackage 后的可执行 jar；skip repackage 会得到 thin jar，启动报“没有主清单属性”
@@ -232,11 +239,19 @@ $env:MYSQL_IT_PASSWORD = '<本机 root 密码>'
 
 # 5) 停止：只停 state.json 中登记的 Java 进程及其子进程，不停止 broker
 .\scripts\dev\Stop-SecurityModelStack.ps1 `
-  -StateRoot '<repo>\tmp\deploy-stack\security_model_deploy_20261118\db'
+  -StateRoot '<repo>\tmp\deploy-stack\security_model_deploy_20261118\db' `
+  -DbPassword $env:MYSQL_IT_PASSWORD
+
+# 6) 前端生产静态托管（不使用 Vite dev server 作为交付方式）
+cd migration-frontend; npm ci; npm run build
+.\scripts\dev\Start-FrontendStatic.ps1 -StaticPort 18220 -ApiPort 18200
+.\scripts\dev\Stop-FrontendStatic.ps1
 ```
 
 要点：
 
+- 启动脚本默认 `Mode=db`/`Role=api`；启动后分别检查 `/actuator/health/liveness` 与 `/actuator/health/readiness`，只有 readiness UP 才代表调度门、Worker 归属和消费容器满足。<br>
+- 停止脚本正常路径会先查 MySQL 中 running 任务并等待排空，未排空或身份不匹配时保留 `state.json` 并拒绝停止；只有显式 `-Force` 才强停。
 - 启动脚本默认关闭知识 embedding/vector/model 和 Assistant 外部模型，避免部署演练误发付费请求；`rabbit` 模式把 `MANAGEMENT_HEALTH_RABBIT_ENABLED` 设为 `true`，health 在 broker 中断时返回 503 `DOWN`，恢复后回到 200 `UP`。
 - `db` 模式启动后验证 `dispatch.mode=db / role=api / dispatchReady=true`；`rabbit` 模式 Worker 必须有 `workerConsumerExpected=true`、`workerConsumerStarted=true`，Rabbit 队列 `security-model.dispatch.worker` 的 `consumers=1`。
 - 登录响应 `token` 已含 `Bearer ` 前缀，Authorization 不要重复拼接。

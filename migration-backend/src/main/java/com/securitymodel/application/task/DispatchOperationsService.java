@@ -8,6 +8,7 @@ import com.securitymodel.domain.task.PreDefenseTask;
 import com.securitymodel.domain.task.TaskDispatchIntent;
 import com.securitymodel.infrastructure.executor.AttemptProcessRegistry;
 import com.securitymodel.infrastructure.persistence.mapper.PreDefenseTaskMapper;
+import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.dao.DataAccessException;
 import org.springframework.stereotype.Service;
@@ -99,6 +100,14 @@ public class DispatchOperationsService {
         result.put("workerLocalAccepted", processRegistry.localAcceptedCount());
         result.put("dispatchReady", readinessGate.isReady());
         result.put("workerConsumerExpected", runtimePolicy.runsConsumer());
+        try {
+            result.put("runningTasks", taskMapper.selectCount(
+                    Wrappers.<PreDefenseTask>lambdaQuery().eq(PreDefenseTask::getStatus, "running")));
+            result.put("runningTasksAvailable", true);
+        } catch (DataAccessException exception) {
+            result.put("runningTasks", 0);
+            result.put("runningTasksAvailable", false);
+        }
         WorkerConsumerLifecycle lifecycle = consumerLifecycleProvider.getIfAvailable();
         result.put("workerConsumerStarted", lifecycle != null && lifecycle.isConsumerStarted());
         result.put("workerRecovering", lifecycle != null && lifecycle.isRecovering());

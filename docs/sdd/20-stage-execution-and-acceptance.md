@@ -385,7 +385,7 @@ CPU/GPU 利用率采集为可选指标，未启用可显示未知；任务/队�
 | R5-03 | Redis hit/miss/degraded 计数 + generation 条件回填 + 提交后失效 | `ResourceCatalogCacheTest` 10 项；`ResourceQueryServiceTest` 4 项；`ResourceCatalogCacheRedisIT` 1 项真实 Redis 并发回填/代际测试通过 | 未注入真实 Redis 宕机（停止共享 Redis 会影响本机其他服务，未执行） |
 | R5-04 | `/api/observability/summary` 管理员汇总；统计页读真实计数 | 服务单测 2 项；真实 Security 链 IT 覆盖管理员 200/普通用户 403；管理端不返回 taskId/userId | 前端管理卡片仅在管理员 200 时显示 |
 | R5-05 | `/actuator/health` 匿名；metrics/info 仅 `ROLE_ADMIN`；`show-details=never`；显式 401 entry point | `OwnershipEndToEndIT` 真实 Security 链覆盖 health 200、metrics 匿名 401、普通用户 summary 403、管理员 summary 200 | 未测试 env/heapdump 等未暴露端点（配置未开启） |
-| R5-06 | 06 迁移版启动/停止/备份/排障、08 Redis 配置、`.env.example`；阶段 3 通用启停脚本 | 2026-11-18 已从干净隔离库 `security_model_deploy_20261118` 完成 db / Rabbit 启停、重启、health 与 broker 故障恢复；备份/恢复、前端常驻静态服务、生产部署未执行 | `24-stage3-single-node-deployment.md`；`tmp/stage11-*`、`tmp/deploy-stack/*` |
+| R5-06 | 06 迁移版启动/停止/备份/排障、08 Redis 配置、`.env.example`；阶段 3 通用启停脚本 | 2026-11-18 已从干净隔离库完成 db / Rabbit 启停、重启、health 与 broker 故障恢复；收尾完成启停脚本身份/排空/失败保留、liveness/readiness 分离、数据库备份恢复到全新库、前端生产静态托管，并用新脚本复测 Rabbit API+Worker 启动与排空停止；生产部署未执行 | `24-stage3-single-node-deployment.md`；`tmp/stage11-*`、`tmp/stage3-closeout-*`、`tmp/deploy-stack/*` |
 
 本机单测为 **127 项，0 失败/0 跳过**；`REDIS_IT=true` 时另有 1 项真实 Redis 缓存代际 IT；前端 `npm run build` 通过；MySQL IT 41 项全绿。不得据此宣称 R5 全部验收或“生产可观测体系已完成”。
 
