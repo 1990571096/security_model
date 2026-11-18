@@ -236,13 +236,15 @@ FROM security_model_ldd_20261118.sys_gpu_lease;
 | 任务 | `2122901116713205761`，`pending`、`progress=0`、`current_run_id=NULL`、`current_attempt=NULL` |
 | 参数 | `dataset=cifar10`、`batch_size=128`、`num_epochs=5`、`SIG`、`all2one`、`poisoned_portion=0.1`、`trigger_label=0`、`lr_poison=0.001`、`r=0.75`、`alpha1=0.1`、`alpha2=0.5`、`seed=123` |
 | 模板 | `hyper_id=NULL`；`hyperParameterFingerprint.available=false` 表示未绑定模板，不是最终参数丢失；最终参数以服务端 `custom_params` 为准 |
-| 代码 | 分支 `feature/r3-dispatch-idempotency`，head `940c83a79a77ea60ca4177c74f2896ae9e190375`，工作区干净 |
+| 代码 | 分支 `feature/r3-dispatch-idempotency`，验收脚本提交 `4c544c453a0bf56ef3ba8ac9d0c1eb2f2a09a8fc`；冻结时基线 `940c83a79a77ea60ca4177c74f2896ae9e190375`，工作区干净 |
+| CI | run `44257008007`，head `4c544c4`，5 个 job 全部 success；证据 `formal-freeze-20261118\ci-evidence-44257008007.json` |
+| 不启动复验 | 15:09 实栈复验，任务仍 `pending`、`started=false`、`acceptance.state=not_started`，6 项启动前检查 `ok`；证据 `tmp\ldd-formal-5epochs-preflight-v2\run-summary.json` |
 | JAR | `migration-backend\target\security-model-backend-0.1.0-SNAPSHOT.jar`，SHA256 `39BEE64DAA64AC48525C5F9FBFE794DD965873D62E4A2778A1FCA0ACA9FEF17E` |
 | 验收库 | `security_model_ldd_20261118`，48 表；冻结时 `pending=1`、`success=3`、`failed=3` |
 | 数据库备份 | `F:\security-model-data\ldd-acceptance-20261118\formal-freeze-20261118\security_model_ldd_20261118-before-5epochs.sql`，788,998 B，SHA256 `5D3FC3D4092EBEB68BF002EBF92DB5BBDB9956F488D7AF68A47BFFD383DBD066` |
 | 数据集清单 | 同目录 `formal-5epochs-freeze.json` 内 `dataset_manifest`；CIFAR-10 批次文件与 tar 均记录大小和 SHA256 |
 | 1 epoch 产物 | 同目录 `artifacts-1epoch`，16 个文件、46,347,827 B；源目录与逐文件 SHA256 在 `one_epoch_artifact` |
-| 环境预检 | 同目录 `environment-preflight.json`，`ready_with_warnings`、`errors=0`、`warnings=1`（空闲内存约 2.3 GB） |
+| 环境预检 | 同目录 `environment-preflight.json`，`ready_with_warnings`、`errors=0`、`warnings=1`（预检记录空闲内存约 2.3 GB）；15:09 复测约 3.25 GB，仍低于 4 GB 建议值，需用户确认风险 |
 
 数据集 6 的 `sample_count/feature_count/class_count` 保持 `NULL`；路径验证 `success` 只代表目录存在且可读，不代表已解析 50000 样本。
 
