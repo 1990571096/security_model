@@ -352,7 +352,7 @@ Authorization: 'Bearer ' + token -> 401
 | Rabbit 新脚本复测 | API pid 40840 / Worker pid 24488；两端 liveness/readiness 与整体 health 均 UP；Worker `workerOwned=true`、`workerConsumerStarted=true`；正常排空后双进程停止、18210/18211 释放 | `tmp/stage3-closeout-rabbit-stack-start2.log`、`rabbit-stack-stop2.log`、`state-stopped-20261118-110507813.json` |
 | 本轮全量门禁 | 350 单测 + 126 IT，0 失败/0 错误/0 跳过，BUILD SUCCESS；`RabbitDispatchBrokerIT` 2/2 真实 broker 通过 | `tmp/stage3-closeout-full-verify-final.log` |
 
-本轮收尾已完成提交与推送：`da2230c`（脚本/readiness/备份/静态托管/文档/CI）、`94d3521`（state 时间戳跨 PowerShell 版本兼容）、`aedc0e8`（脚本测试成功路径显式 exit 0）；远端 head 为 `aedc0e8`。
+本轮收尾已完成提交与推送：`da2230c`（脚本/readiness/备份/静态托管/文档/CI）、`94d3521`（state 时间戳跨 PowerShell 版本兼容）、`aedc0e8`（脚本测试成功路径显式 exit 0）；代码 head 为 `aedc0e8`。
 
 - 本地 343 单测 + 126 IT 是 `f1ccd5c`/`b1dba42` 时代结果；本轮新增 readiness 用例后全量为 **350 单测 + 126 IT，0 失败/0 错误/0 跳过**，日志 `tmp/stage3-closeout-full-verify-final.log`。
 - Rabbit 双进程本轮已用新脚本复测启动、readiness、排空停止；broker 故障恢复仍沿用旧脚本时代证据，未在本次复测中重新中断 broker。
