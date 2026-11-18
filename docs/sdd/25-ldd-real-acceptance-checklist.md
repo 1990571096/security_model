@@ -219,9 +219,28 @@ FROM security_model_ldd_20261118.sys_gpu_lease;
 3. **数据集验证只到路径层**：`parseStatus=success` 不等于样本已解析；样本统计为空是当前事实。
 4. **内存偏紧**：预检空闲约 2.3–2.5 GB；1 epoch 已跑通，但 5 epochs / 长时间运行的显存与系统内存峰值仍未实测。
 5. **旧产物不是正式结论**：`...\VaB-main\security-model-results\20260819-232538-ldd-ldd-cifar10-sig-5epochs` 是 2026-08-19 工程验证，只可作为参照，不可替代论文实验。
-6. **验收库未备份**：`security_model_ldd_20261118` 当前保留 5 epochs pending 任务、1 epoch success 任务和 1 条失败证据任务，未做备份/删除；正式运行前应决定备份与保留周期。
+6. **验收库已备份、尚未删除**：`security_model_ldd_20261118` 当前保留 5 epochs pending 任务、1 epoch success 任务和 1 条失败证据任务；已备份到 `formal-freeze-20261118`，删除/保留周期仍需确认。
 
-## 6. 复现命令索引
+## 6. 正式 5 epochs 配置与输入冻结（2026-11-18，未启动）
+
+正式任务仍保持 `pending`，本轮只冻结输入和证据，不调用 `start`。
+
+| 项 | 冻结值 |
+| --- | --- |
+| 任务 | `2122901116713205761`，`pending`、`progress=0`、`current_run_id=NULL`、`current_attempt=NULL` |
+| 参数 | `dataset=cifar10`、`batch_size=128`、`num_epochs=5`、`SIG`、`all2one`、`poisoned_portion=0.1`、`trigger_label=0`、`lr_poison=0.001`、`r=0.75`、`alpha1=0.1`、`alpha2=0.5`、`seed=123` |
+| 模板 | `hyper_id=NULL`；`hyperParameterFingerprint.available=false` 表示未绑定模板，不是最终参数丢失；最终参数以服务端 `custom_params` 为准 |
+| 代码 | 分支 `feature/r3-dispatch-idempotency`，head `940c83a79a77ea60ca4177c74f2896ae9e190375`，工作区干净 |
+| JAR | `migration-backend\target\security-model-backend-0.1.0-SNAPSHOT.jar`，SHA256 `39BEE64DAA64AC48525C5F9FBFE794DD965873D62E4A2778A1FCA0ACA9FEF17E` |
+| 验收库 | `security_model_ldd_20261118`，48 表；冻结时 `pending=1`、`success=3`、`failed=3` |
+| 数据库备份 | `F:\security-model-data\ldd-acceptance-20261118\formal-freeze-20261118\security_model_ldd_20261118-before-5epochs.sql`，788,998 B，SHA256 `5D3FC3D4092EBEB68BF002EBF92DB5BBDB9956F488D7AF68A47BFFD383DBD066` |
+| 数据集清单 | 同目录 `formal-5epochs-freeze.json` 内 `dataset_manifest`；CIFAR-10 批次文件与 tar 均记录大小和 SHA256 |
+| 1 epoch 产物 | 同目录 `artifacts-1epoch`，16 个文件、46,347,827 B；源目录与逐文件 SHA256 在 `one_epoch_artifact` |
+| 环境预检 | 同目录 `environment-preflight.json`，`ready_with_warnings`、`errors=0`、`warnings=1`（空闲内存约 2.3 GB） |
+
+数据集 6 的 `sample_count/feature_count/class_count` 保持 `NULL`；路径验证 `success` 只代表目录存在且可读，不代表已解析 50000 样本。
+
+## 7. 复现命令索引
 
 ```powershell
 # 环境预检
@@ -238,7 +257,7 @@ $env:SECURITY_MODEL_JWT_SECRET = (Get-Content -Raw 'tmp\deploy-stack\jwt-secret.
 .\scripts\dev\Start-SecurityModelStack.ps1 -Mode db -SchemaName security_model_ldd_20261118 -ApiPort 18300 -DbPassword '<本机密码>'
 
 # 停止验收栈（正常路径会先确认 running=0）
-.\scripts\dev\Stop-SecurityModelStack.ps1 -StateRoot 'tmp\deploy-stack\security_model_ldd_20261118\db' -DbPassword '<本机密码>'
+.\scripts\dev\Stop-SecurityModelStack.ps1 -StateRoot '<对应状态根>' -DbPassword '<本机密码>'
 ```
 
 不要把数据库密码、JWT secret、Bearer token、绝对数据路径写入提交或公开材料。
