@@ -13,10 +13,14 @@ param(
     [switch]$CreateOnly,
     [switch]$NoStart,
     [switch]$Start,
-    [switch]$SkipArtifactFileCheck
+    [switch]$SkipArtifactFileCheck,
+    [string]$ExecutorWorkspace = ''
 )
 
 $ErrorActionPreference = 'Stop'
+if ([string]::IsNullOrWhiteSpace($ExecutorWorkspace)) {
+    $ExecutorWorkspace = $env:SECURITY_MODEL_EXECUTOR_WORKSPACE
+}
 New-Item -ItemType Directory -Force -Path $OutputRoot | Out-Null
 $runLogPath = Join-Path $OutputRoot 'run.log'
 $summaryPath = Join-Path $OutputRoot 'run-summary.json'
@@ -122,6 +126,49 @@ function Add-AcceptanceCheck {
         ok = $Ok
         detail = $Detail
     })
+}
+
+function Get-NonEmptyStrings($Value) {
+    $items = New-Object System.Collections.Generic.List[string]
+    if ($null -ne $Value) {
+        foreach ($item in @($Value)) {
+            if ($null -eq $item) { continue }
+            $text = ([string]$item).Trim()
+            if (-not [string]::IsNullOrWhiteSpace($text)) {
+                if (-not $items.Contains($text)) { $items.Add($text) }
+            }
+        }
+    }
+    return @($items)
+}
+
+function Get-FileEvidence([string]$Path) {
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return [pscustomobject]@{ exists = $false; is_file = $false; length = 0; last_write_utc = $null }
+    }
+    try {
+        $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+        return [pscustomobject]@{
+            exists = $true
+            is_file = (-not $item.PSIsContainer)
+            length = if ($item.PSIsContainer) { 0 } else { [long]$item.Length }
+            last_write_utc = if ($item.PSIsContainer) { $null } else { $item.LastWriteTimeUtc }
+        }
+    } catch {
+        return [pscustomobject]@{ exists = $false; is_file = $false; length = 0; last_write_utc = $null }
+    }
+}
+
+function Get-EpochEvidence([string[]]$Texts) {
+    $numbers = New-Object System.Collections.Generic.List[int]
+    foreach ($text in $Texts) {
+        if ([string]::IsNullOrWhiteSpace($text)) { continue }
+        foreach ($match in [regex]::Matches($text, '(?im)^[ \t]*Epoch:\s*([0-9]+)[ \t\r]*$')) {
+            $number = [int]$match.Groups[1].Value
+            if (-not $numbers.Contains($number)) { $numbers.Add($number) }
+        }
+    }
+    return @($numbers | Sort-Object)
 }
 
 function Get-TaskDetail([long]$id) {
@@ -348,6 +395,9 @@ $acceptanceChecks = New-Object System.Collections.Generic.List[object]
 Add-AcceptanceCheck $acceptanceChecks 'task result success' ($terminalStatus -eq 'success') "status=$terminalStatus"
 Add-AcceptanceCheck $acceptanceChecks 'report readable' ($null -ne $finalReport) $(if ($null -ne $finalReport) { '报告已返回' } else { "报告缺失: $reportError" })
 Add-AcceptanceCheck $acceptanceChecks 'logs readable' ($null -ne $finalLogs -and [bool]$finalLogs.available) '日志接口 available=true'
+if ($finalLogs) {
+    Add-AcceptanceCheck $acceptanceChecks 'logs task id' ([string]$finalLogs.taskId -eq [string]$TaskId) "logs.taskId=$($finalLogs.taskId)"
+}
 
 $runId = $null
 $attempt = $null
@@ -355,13 +405,17 @@ if ($finalLogs -and $finalLogs.progress) {
     $runId = [string]$finalLogs.progress.run_id
     $attempt = [int]$finalLogs.progress.attempt
     Add-AcceptanceCheck $acceptanceChecks 'progress run id' (-not [string]::IsNullOrWhiteSpace($runId)) "run_id=$runId"
+    Add-AcceptanceCheck $acceptanceChecks 'progress attempt' ($attempt -gt 0) "attempt=$attempt"
 } else {
     Add-AcceptanceCheck $acceptanceChecks 'progress run id' $false '日志缺少 progress.run_id'
+    Add-AcceptanceCheck $acceptanceChecks 'progress attempt' $false '日志缺少 progress.attempt'
 }
 
 if ($finalReport) {
     Add-AcceptanceCheck $acceptanceChecks 'report task id' ([string]$finalReport.taskInfo.taskId -eq [string]$TaskId) "report.taskInfo.taskId=$($finalReport.taskInfo.taskId)"
     Add-AcceptanceCheck $acceptanceChecks 'report task status' ([string]$finalReport.taskInfo.status -eq 'success') "report.taskInfo.status=$($finalReport.taskInfo.status)"
+    Add-AcceptanceCheck $acceptanceChecks 'report task current run id' ([string]$finalReport.taskInfo.currentRunId -eq $runId) "report.taskInfo.currentRunId=$($finalReport.taskInfo.currentRunId)，progress run_id=$runId"
+    Add-AcceptanceCheck $acceptanceChecks 'report task current attempt' ([int]$finalReport.taskInfo.currentAttempt -eq $attempt) "report.taskInfo.currentAttempt=$($finalReport.taskInfo.currentAttempt)，progress attempt=$attempt"
     Add-AcceptanceCheck $acceptanceChecks 'report run id' ([string]$finalReport.cleaningResult.run_id -eq $runId) "report run_id=$($finalReport.cleaningResult.run_id)，progress run_id=$runId"
     Add-AcceptanceCheck $acceptanceChecks 'report attempt' ([int]$finalReport.cleaningResult.attempt -eq $attempt) "report attempt=$($finalReport.cleaningResult.attempt)，progress attempt=$attempt"
     Add-AcceptanceCheck $acceptanceChecks 'cleaning result success' ([string]$finalReport.cleaningResult.status -eq 'success') "cleaningResult.status=$($finalReport.cleaningResult.status)"
@@ -369,12 +423,41 @@ if ($finalReport) {
 
     $artifacts = $finalReport.cleaningResult.artifacts
     Add-AcceptanceCheck $acceptanceChecks 'artifacts available' ([bool]$artifacts.available) "available=$($artifacts.available)"
-    $artifactPath = [string]$artifacts.path
+    $artifactPath = ([string]$artifacts.path).Trim()
     Add-AcceptanceCheck $acceptanceChecks 'artifact path recorded' (-not [string]::IsNullOrWhiteSpace($artifactPath)) "path=$artifactPath"
-    $modelFiles = @($artifacts.model_files)
+
+    $modelRaw = @($artifacts.model_files)
+    $modelFiles = @(Get-NonEmptyStrings $artifacts.model_files)
     Add-AcceptanceCheck $acceptanceChecks 'model files recorded' ($modelFiles.Count -gt 0) "count=$($modelFiles.Count)"
-    $logFiles = @($artifacts.logs)
+    Add-AcceptanceCheck $acceptanceChecks 'model files list clean' (($modelRaw.Count -eq 0) -or ($modelRaw.Count -eq $modelFiles.Count)) "raw=$($modelRaw.Count)，non-empty=$($modelFiles.Count)"
+
+    $logRaw = @($artifacts.logs)
+    $logFiles = @(Get-NonEmptyStrings $artifacts.logs)
     Add-AcceptanceCheck $acceptanceChecks 'log files recorded' ($logFiles.Count -gt 0) "count=$($logFiles.Count)"
+    Add-AcceptanceCheck $acceptanceChecks 'log files list clean' (($logRaw.Count -eq 0) -or ($logRaw.Count -eq $logFiles.Count)) "raw=$($logRaw.Count)，non-empty=$($logFiles.Count)"
+
+    $selectionFiles = @(Get-NonEmptyStrings $artifacts.selection_files)
+    $selectionKind = ([string]$artifacts.selection_kind).Trim()
+    if (-not [string]::IsNullOrWhiteSpace($selectionKind)) {
+        Add-AcceptanceCheck $acceptanceChecks 'selection files recorded' ($selectionFiles.Count -gt 0) "kind=$selectionKind，count=$($selectionFiles.Count)"
+    }
+    $generatedScript = ([string]$artifacts.generated_script).Trim()
+    Add-AcceptanceCheck $acceptanceChecks 'generated script recorded' (-not [string]::IsNullOrWhiteSpace($generatedScript)) "path=$generatedScript"
+
+    $logTexts = New-Object System.Collections.Generic.List[string]
+    if ($finalLogs -and $finalLogs.logs) {
+        foreach ($entry in @($finalLogs.logs)) {
+            if ($entry -and -not [string]::IsNullOrWhiteSpace([string]$entry.content)) {
+                $logTexts.Add([string]$entry.content)
+            }
+        }
+    }
+
+    $startUtc = $null
+    $endUtc = $null
+    try { if ($finalReport.cleaningResult.started_at) { $startUtc = ([datetime]$finalReport.cleaningResult.started_at).ToUniversalTime() } } catch {}
+    try { if ($finalReport.cleaningResult.finished_at) { $endUtc = ([datetime]$finalReport.cleaningResult.finished_at).ToUniversalTime() } } catch {}
+    Add-AcceptanceCheck $acceptanceChecks 'artifact timestamps available' (($null -ne $startUtc) -and ($null -ne $endUtc)) "started_at=$startUtc，finished_at=$endUtc"
 
     if (-not $SkipArtifactFileCheck) {
         if (-not [string]::IsNullOrWhiteSpace($artifactPath)) {
@@ -382,19 +465,54 @@ if ($finalReport) {
         } else {
             Add-AcceptanceCheck $acceptanceChecks 'artifact path exists' $false '报告未记录产物路径'
         }
+
         foreach ($file in $modelFiles) {
-            if (-not [string]::IsNullOrWhiteSpace([string]$file)) {
-                Add-AcceptanceCheck $acceptanceChecks 'model file exists' ([bool](Test-Path -LiteralPath ([string]$file))) "path=$file"
+            $info = Get-FileEvidence $file
+            Add-AcceptanceCheck $acceptanceChecks 'model file exists' $info.exists "path=$file"
+            Add-AcceptanceCheck $acceptanceChecks 'model file non-empty' ([bool]($info.exists -and $info.is_file -and $info.length -gt 0)) "path=$file，bytes=$($info.length)"
+            if ($startUtc -and $endUtc -and $info.last_write_utc) {
+                $inWindow = ($info.last_write_utc -ge $startUtc.AddMinutes(-10)) -and ($info.last_write_utc -le $endUtc.AddMinutes(10))
+                Add-AcceptanceCheck $acceptanceChecks 'model file time in run window' $inWindow "path=$file，mtime=$($info.last_write_utc)"
             }
         }
         foreach ($file in $logFiles) {
-            if (-not [string]::IsNullOrWhiteSpace([string]$file)) {
-                Add-AcceptanceCheck $acceptanceChecks 'log file exists' ([bool](Test-Path -LiteralPath ([string]$file))) "path=$file"
+            $info = Get-FileEvidence $file
+            Add-AcceptanceCheck $acceptanceChecks 'log file exists' $info.exists "path=$file"
+            Add-AcceptanceCheck $acceptanceChecks 'log file non-empty' ([bool]($info.exists -and $info.is_file -and $info.length -gt 0)) "path=$file，bytes=$($info.length)"
+            if ($startUtc -and $endUtc -and $info.last_write_utc) {
+                $inWindow = ($info.last_write_utc -ge $startUtc.AddMinutes(-10)) -and ($info.last_write_utc -le $endUtc.AddMinutes(10))
+                Add-AcceptanceCheck $acceptanceChecks 'log file time in run window' $inWindow "path=$file，mtime=$($info.last_write_utc)"
+            }
+            if ($info.exists -and $info.is_file -and $info.length -gt 0) {
+                try { $logTexts.Add((Get-Content -Raw -LiteralPath $file -ErrorAction Stop)) } catch {}
             }
         }
+        foreach ($file in $selectionFiles) {
+            $info = Get-FileEvidence $file
+            Add-AcceptanceCheck $acceptanceChecks 'selection file exists' $info.exists "path=$file"
+            Add-AcceptanceCheck $acceptanceChecks 'selection file non-empty' ([bool]($info.exists -and $info.is_file -and $info.length -gt 0)) "path=$file，bytes=$($info.length)"
+            if ($startUtc -and $endUtc -and $info.last_write_utc) {
+                $inWindow = ($info.last_write_utc -ge $startUtc.AddMinutes(-10)) -and ($info.last_write_utc -le $endUtc.AddMinutes(10))
+                Add-AcceptanceCheck $acceptanceChecks 'selection file time in run window' $inWindow "path=$file，mtime=$($info.last_write_utc)"
+            }
+        }
+        if (-not [string]::IsNullOrWhiteSpace($generatedScript)) {
+            $info = Get-FileEvidence $generatedScript
+            Add-AcceptanceCheck $acceptanceChecks 'generated script exists' $info.exists "path=$generatedScript"
+            Add-AcceptanceCheck $acceptanceChecks 'generated script non-empty' ([bool]($info.exists -and $info.is_file -and $info.length -gt 0)) "path=$generatedScript，bytes=$($info.length)"
+        }
     }
+
+    $expectedEpochs = if ($Epochs -gt 0) { $Epochs } else { [int]$finalReport.cleaningResult.effective_config.num_epochs }
+    $epochNumbers = @(Get-EpochEvidence @($logTexts))
+    $missingEpochs = @()
+    if ($expectedEpochs -gt 0) {
+        $missingEpochs = @(0..($expectedEpochs - 1) | Where-Object { $epochNumbers -notcontains $_ })
+    }
+    Add-AcceptanceCheck $acceptanceChecks 'actual epochs completed' (($expectedEpochs -gt 0) -and ($missingEpochs.Count -eq 0)) "expected=$expectedEpochs，observed=@($epochNumbers -join ',')，missing=@($missingEpochs -join ',')"
 } else {
     Add-AcceptanceCheck $acceptanceChecks 'report details' $false '报告不可用，无法核对 taskId/runId/attempt/产物'
+    Add-AcceptanceCheck $acceptanceChecks 'actual epochs completed' $false '报告不可用，无法核对实际完成轮数'
 }
 
 Add-AcceptanceCheck $acceptanceChecks 'executor status readable' ($null -ne $executor) 'executor-status 已返回'
@@ -402,8 +520,18 @@ if ($executor) {
     Add-AcceptanceCheck $acceptanceChecks 'gpu slot idle' ([string]$executor.gpuSlot.state -eq 'idle') "gpuSlot.state=$($executor.gpuSlot.state)"
     Add-AcceptanceCheck $acceptanceChecks 'running task count zero' ([int]$executor.runningTaskCount -eq 0) "runningTaskCount=$($executor.runningTaskCount)"
 }
+if (-not [string]::IsNullOrWhiteSpace($ExecutorWorkspace)) {
+    try {
+        $residualProcesses = @(Get-CimInstance Win32_Process -Filter "Name = 'python.exe'" -ErrorAction Stop |
+            Where-Object { $_.CommandLine -and $_.CommandLine -like "*$ExecutorWorkspace*" })
+        Add-AcceptanceCheck $acceptanceChecks 'no residual executor python' ($residualProcesses.Count -eq 0) "workspace=$ExecutorWorkspace，count=$($residualProcesses.Count)"
+    } catch {
+        Add-AcceptanceCheck $acceptanceChecks 'no residual executor python' $false "无法检查工作区进程: $($_.Exception.Message)"
+    }
+}
 Add-AcceptanceCheck $acceptanceChecks 'dispatch readable' ($null -ne $dispatch) 'dispatch 已返回'
 if ($dispatch) {
+    Add-AcceptanceCheck $acceptanceChecks 'dispatch gpu slot idle' ([string]$dispatch.gpuSlot.state -eq 'idle') "dispatch.gpuSlot.state=$($dispatch.gpuSlot.state)"
     Add-AcceptanceCheck $acceptanceChecks 'dispatch ready' ([bool]$dispatch.dispatchReady) "dispatchReady=$($dispatch.dispatchReady)"
     Add-AcceptanceCheck $acceptanceChecks 'dispatch running zero' ([int]$dispatch.runningTasks -eq 0) "runningTasks=$($dispatch.runningTasks)"
 }

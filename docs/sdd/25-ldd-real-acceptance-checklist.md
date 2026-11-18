@@ -185,8 +185,12 @@ FROM security_model_ldd_20261118.sys_gpu_lease;
 - 不传 `-Start` 时只读取任务、校验 `pending`、`datasetId`、`algorithmId` 和服务端 `customParams`，不调用 `start`；`-CreateOnly`/`-NoStart` 同样不启动。
 - 复用 `-TaskId` 时，`-Epochs` 必须与服务端 `num_epochs` 一致；不传 `-Epochs` 时使用服务端值。创建新任务必须显式传 `-Epochs`。
 - 汇总 JSON 分开记录 `task_status` 与 `acceptance`。`acceptance.state` 可取 `not_started`、`preflight_failed`、`passed`、`evidence_incomplete`、`task_failed`、`not_terminal`。
-- 只有任务 `success` 且报告、日志、`taskId/runId/attempt`、产物元数据与本地文件、GPU 空闲、无运行任务、dispatch 就绪全部通过，脚本才退出 `0`；任务成功但证据不全退出 `4`，任务失败退出 `1`，超时退出 `3`，启动前校验失败退出 `2`。
-- 假 HTTP 回归 `scripts/dev/Test-LddAcceptanceRun.ps1` 覆盖“不传 `-Start` 不启动、参数不一致拒绝、正常 success、报告缺失不得通过、非 pending 拒绝”，不占 GPU。
+- 只有任务 `success` 且报告、日志、`taskId/runId/attempt`、非空产物、实际轮数、GPU 空闲、无运行任务、dispatch 就绪全部通过，脚本才退出 `0`；任务成功但证据不全退出 `4`，任务失败退出 `1`，超时退出 `3`，启动前校验失败退出 `2`。
+- 产物检查先过滤空项，再逐项核验：模型、日志、`selected_indices_*.npy`、`generated_LDD.py` 必须存在且非空；文件修改时间必须落在本次 `started_at/finished_at` 窗口内，旧 attempt 的旧时间戳不得通过。
+- `effective_config.num_epochs=5` 只是配置值。脚本从日志中的 `Epoch: 0` 到 `Epoch: 4` 统计实际完成轮次；缺轮、重轮或没有 `Epoch:` 行都判失败。LDD 的 5 轮口径为 `First Warmup Net2` 加 4 条 `Epoch` 记录。
+- 报告和日志必须同时给出相同 `taskId`、`runId`、`attempt`；报告 `taskInfo.currentRunId/currentAttempt` 与 `cleaningResult.run_id/attempt` 也必须一致。
+- 设置 `SECURITY_MODEL_EXECUTOR_WORKSPACE` 后，脚本按工作区匹配残留 `python.exe` 并判失败；`-SkipArtifactFileCheck` 仍会检查 API 日志中的轮次证据。
+- 假 HTTP 回归 `scripts/dev/Test-LddAcceptanceRun.ps1` 覆盖“不传 `-Start` 不启动、参数不一致拒绝、正常 success、报告缺失、非 pending、空模型项、0 字节模型、日志缺失、旧产物时间、实际轮数不足、模型缺失”，不占 GPU。
 
 ### 3.6 正式训练前必须补的检查
 
@@ -201,6 +205,8 @@ FROM security_model_ldd_20261118.sys_gpu_lease;
 - [ ] 运行结束后核对 `.pth`、`selected_indices_*.npy`、`execution.log`、报告指标和产物清单；缺失项写失败，不用旧产物补齐。
 - [ ] 停止栈，确认 `running=0`、租约已释放、无残留 Python 进程和 VaB 锁。
 - [ ] 把正式结果放在独立目录，不覆盖或混入 2026-08-19 的工程验证产物。
+
+2026-11-18 14:43 实测空闲 RAM 约 3.25 GB，低于 4 GB 建议值；是否在此条件下开跑必须由用户明确决定，不得用脚本默认值代替。
 
 ## 4. 验收判定
 

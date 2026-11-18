@@ -18,16 +18,52 @@ function New-FakeScenario {
     param(
         [string]$Name,
         [bool]$ReportAvailable = $true,
-        [string]$InitialStatus = 'pending'
+        [string]$InitialStatus = 'pending',
+        [int]$Epochs = 5,
+        [int]$LoggedEpochs = 5,
+        [bool]$IncludeModel = $true,
+        [bool]$IncludeLog = $true,
+        [bool]$EmptyModel = $false,
+        [bool]$EmptyLog = $false,
+        [bool]$OldArtifact = $false,
+        [switch]$BlankModelEntry
     )
     $dir = Join-Path $tempRoot $Name
     New-Item -ItemType Directory -Force -Path $dir | Out-Null
     $artifactPath = Join-Path $dir 'artifacts'
     New-Item -ItemType Directory -Force -Path $artifactPath | Out-Null
     $modelFile = Join-Path $artifactPath '0.1.pth'
-    $logFile = Join-Path $artifactPath 'execution.log'
-    Set-Content -LiteralPath $modelFile -Value 'fake-pth' -Encoding utf8
-    Set-Content -LiteralPath $logFile -Value 'fake-log' -Encoding utf8
+    $logFile = Join-Path $artifactPath '0.1.txt'
+    $generatedScript = Join-Path $artifactPath 'generated_LDD.py'
+    $selectionFile = Join-Path $artifactPath 'selected_indices_10.npy'
+
+    if ($IncludeModel) {
+        if ($EmptyModel) { Set-Content -LiteralPath $modelFile -Value '' -NoNewline -Encoding utf8 }
+        else { Set-Content -LiteralPath $modelFile -Value 'fake-pth' -Encoding utf8 }
+    }
+    $lines = @('Namespace(num_epochs=5)', 'First Warmup Net2')
+    for ($i = 0; $i -lt $LoggedEpochs; $i++) {
+        $lines += "`nEpoch: $i`nclean_purity:100.00%"
+    }
+    $lines += '程序运行了 0.01 分钟。'
+    $logContent = $lines -join "`n"
+    if ($IncludeLog) {
+        if ($EmptyLog) { Set-Content -LiteralPath $logFile -Value '' -NoNewline -Encoding utf8; $logContent = '' }
+        else { Set-Content -LiteralPath $logFile -Value $logContent -Encoding utf8 }
+    }
+    Set-Content -LiteralPath $generatedScript -Value 'print("fake LDD")' -Encoding utf8
+    Set-Content -LiteralPath $selectionFile -Value 'fake-npy' -Encoding utf8
+
+    if ($OldArtifact) {
+        $old = [datetime]'2020-01-01T00:00:00Z'
+        foreach ($path in @($modelFile, $logFile, $generatedScript, $selectionFile)) {
+            if (Test-Path -LiteralPath $path) { (Get-Item -LiteralPath $path).LastWriteTimeUtc = $old }
+        }
+    }
+
+    $modelFiles = if ($BlankModelEntry) { @('') } elseif ($IncludeModel) { @($modelFile) } else { @() }
+    $logFiles = if ($IncludeLog) { @($logFile) } else { @() }
+    $selectionFiles = @($selectionFile)
     $params = [ordered]@{
         dataset = 'cifar10'
         trigger_type = 'SIG'
@@ -35,7 +71,7 @@ function New-FakeScenario {
         poisoned_mode = 'all2one'
         poisoned_portion = 0.1
         batch_size = 128
-        num_epochs = 5
+        num_epochs = $Epochs
         lr_poison = 0.001
         r = 0.75
         alpha1 = 0.1
@@ -54,9 +90,19 @@ function New-FakeScenario {
         artifact_path = $artifactPath
         model_file = $modelFile
         log_file = $logFile
+        model_files = @($modelFiles)
+        logs = @($logFiles)
+        log_content = $logContent
+        logged_epochs = $LoggedEpochs
+        include_model = $IncludeModel
+        include_log = $IncludeLog
+        selection_files = $selectionFiles
+        generated_script = $generatedScript
+        started_at = (Get-Date).AddMinutes(-5).ToUniversalTime().ToString('o')
+        finished_at = (Get-Date).AddMinutes(1).ToUniversalTime().ToString('o')
     }
     $scenarioPath = Join-Path $dir 'scenario.json'
-    $scenario | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $scenarioPath -Encoding utf8
+    $scenario | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $scenarioPath -Encoding utf8
     return $scenarioPath
 }
 
@@ -193,6 +239,92 @@ try {
         $run = Invoke-AcceptanceScript -BaseUrl $server.BaseUrl -OutputRoot $out -TaskId '2122901116713205761' -Epochs '5' -Start
         Assert-True ($run.Exit -eq 2) "非 pending 任务应退出 2，实际 $($run.Exit)"
         Assert-True ((Get-StartCount $server.BaseUrl) -eq 0) "非 pending 任务仍调用了 start"
+    } finally { Stop-FakeApi $server }
+
+    # 6) 模型文件列表只有空项：过滤后不得计为已记录。
+    $scenario = New-FakeScenario -Name 'blank-model-entry' -BlankModelEntry
+    $server = Start-FakeApi $scenario
+    try {
+        $out = Join-Path $tempRoot 'out-blank-model-entry'
+        $run = Invoke-AcceptanceScript -BaseUrl $server.BaseUrl -OutputRoot $out -TaskId '2122901116713205761' -Epochs '5' -Start
+        Assert-True ($run.Exit -eq 4) "空模型项应退出 4，实际 $($run.Exit)"
+        $summary = Get-Content -Raw (Join-Path $out 'run-summary.json') | ConvertFrom-Json
+        Assert-True ($summary.acceptance.passed -eq $false) "空模型项 acceptance.passed 不得为 true"
+        Assert-True (($summary.acceptance.failed_checks -join '; ') -match 'model files recorded') "空模型项未命中 model files recorded"
+        Assert-True (($summary.acceptance.failed_checks -join '; ') -match 'model files list clean') "空模型项未命中 model files list clean"
+    } finally { Stop-FakeApi $server }
+
+    # 7) 模型文件存在但为 0 字节：不得判通过。
+    $scenario = New-FakeScenario -Name 'empty-model' -EmptyModel $true
+    $server = Start-FakeApi $scenario
+    try {
+        $out = Join-Path $tempRoot 'out-empty-model'
+        $run = Invoke-AcceptanceScript -BaseUrl $server.BaseUrl -OutputRoot $out -TaskId '2122901116713205761' -Epochs '5' -Start
+        Assert-True ($run.Exit -eq 4) "空模型文件应退出 4，实际 $($run.Exit)"
+        $summary = Get-Content -Raw (Join-Path $out 'run-summary.json') | ConvertFrom-Json
+        Assert-True ($summary.acceptance.passed -eq $false) "空模型文件 acceptance.passed 不得为 true"
+        Assert-True (($summary.acceptance.failed_checks -join '; ') -match 'model file non-empty') "空模型文件未命中 model file non-empty"
+    } finally { Stop-FakeApi $server }
+
+    # 8) 日志缺失：即使任务 success，也不能通过。
+    $scenario = New-FakeScenario -Name 'missing-log' -IncludeLog $false
+    $server = Start-FakeApi $scenario
+    try {
+        $out = Join-Path $tempRoot 'out-missing-log'
+        $run = Invoke-AcceptanceScript -BaseUrl $server.BaseUrl -OutputRoot $out -TaskId '2122901116713205761' -Epochs '5' -Start
+        Assert-True ($run.Exit -eq 4) "日志缺失应退出 4，实际 $($run.Exit)"
+        $summary = Get-Content -Raw (Join-Path $out 'run-summary.json') | ConvertFrom-Json
+        Assert-True ($summary.acceptance.passed -eq $false) "日志缺失 acceptance.passed 不得为 true"
+        Assert-True (($summary.acceptance.failed_checks -join '; ') -match 'log files recorded') "日志缺失未命中 log files recorded"
+        Assert-True (($summary.acceptance.failed_checks -join '; ') -match 'actual epochs completed') "日志缺失未命中 actual epochs completed"
+    } finally { Stop-FakeApi $server }
+
+    # 9) 旧 attempt 产物：文件时间不在本次 run 窗口内，不得通过。
+    $scenario = New-FakeScenario -Name 'old-artifact' -OldArtifact $true
+    $server = Start-FakeApi $scenario
+    try {
+        $out = Join-Path $tempRoot 'out-old-artifact'
+        $run = Invoke-AcceptanceScript -BaseUrl $server.BaseUrl -OutputRoot $out -TaskId '2122901116713205761' -Epochs '5' -Start
+        Assert-True ($run.Exit -eq 4) "旧产物应退出 4，实际 $($run.Exit)"
+        $summary = Get-Content -Raw (Join-Path $out 'run-summary.json') | ConvertFrom-Json
+        Assert-True ($summary.acceptance.passed -eq $false) "旧产物 acceptance.passed 不得为 true"
+        Assert-True (($summary.acceptance.failed_checks -join '; ') -match 'time in run window') "旧产物未命中 time in run window"
+    } finally { Stop-FakeApi $server }
+
+    # 10) 配置为 5 epochs 但日志只出现 3 轮：不得通过。
+    $scenario = New-FakeScenario -Name 'short-epochs' -LoggedEpochs 3
+    $server = Start-FakeApi $scenario
+    try {
+        $out = Join-Path $tempRoot 'out-short-epochs'
+        $run = Invoke-AcceptanceScript -BaseUrl $server.BaseUrl -OutputRoot $out -TaskId '2122901116713205761' -Epochs '5' -Start
+        Assert-True ($run.Exit -eq 4) "实际轮数不足应退出 4，实际 $($run.Exit)"
+        $summary = Get-Content -Raw (Join-Path $out 'run-summary.json') | ConvertFrom-Json
+        Assert-True ($summary.acceptance.passed -eq $false) "实际轮数不足 acceptance.passed 不得为 true"
+        Assert-True (($summary.acceptance.failed_checks -join '; ') -match 'actual epochs completed') "实际轮数不足未命中 actual epochs completed"
+    } finally { Stop-FakeApi $server }
+
+    # 11) 模型文件缺失：即使报告 success，也不得通过。
+    $scenario = New-FakeScenario -Name 'missing-model' -IncludeModel $false
+    $server = Start-FakeApi $scenario
+    try {
+        $out = Join-Path $tempRoot 'out-missing-model'
+        $run = Invoke-AcceptanceScript -BaseUrl $server.BaseUrl -OutputRoot $out -TaskId '2122901116713205761' -Epochs '5' -Start
+        Assert-True ($run.Exit -eq 4) "模型缺失应退出 4，实际 $($run.Exit)"
+        $summary = Get-Content -Raw (Join-Path $out 'run-summary.json') | ConvertFrom-Json
+        Assert-True ($summary.acceptance.passed -eq $false) "模型缺失 acceptance.passed 不得为 true"
+        Assert-True (($summary.acceptance.failed_checks -join '; ') -match 'model files recorded') "模型缺失未命中 model files recorded"
+    } finally { Stop-FakeApi $server }
+
+    # 12) 1 epoch 只有 Epoch: 0，仍应按 1 轮通过，不能被 5 轮规则误杀。
+    $scenario = New-FakeScenario -Name 'one-epoch' -Epochs 1 -LoggedEpochs 1
+    $server = Start-FakeApi $scenario
+    try {
+        $out = Join-Path $tempRoot 'out-one-epoch'
+        $run = Invoke-AcceptanceScript -BaseUrl $server.BaseUrl -OutputRoot $out -TaskId '2122901116713205761' -Epochs '1' -Start
+        Assert-True ($run.Exit -eq 0) "1 epoch 正常路径应退出 0，实际 $($run.Exit): $($run.Output)"
+        $summary = Get-Content -Raw (Join-Path $out 'run-summary.json') | ConvertFrom-Json
+        Assert-True ($summary.acceptance.passed -eq $true) "1 epoch acceptance.passed 不是 true"
+        Assert-True ($summary.acceptance.state -eq 'passed') "1 epoch acceptance.state 不是 passed: $($summary.acceptance.state)"
     } finally { Stop-FakeApi $server }
 } finally {
     Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue

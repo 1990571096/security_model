@@ -34,6 +34,25 @@ def send_json(handler, code, payload):
     handler.wfile.write(body)
 
 
+def _iso_now(offset_seconds=0):
+    from datetime import datetime, timedelta, timezone
+    return (datetime.now(timezone.utc) + timedelta(seconds=offset_seconds)).isoformat()
+
+
+def _log_text(scenario):
+    if "log_content" in scenario:
+        return str(scenario["log_content"])
+    epochs = int(scenario.get("logged_epochs", scenario["params"].get("num_epochs", 0)))
+    lines = [
+        "Namespace(num_epochs=%d)" % int(scenario["params"].get("num_epochs", 0)),
+        "First Warmup Net2",
+    ]
+    for epoch in range(max(0, epochs)):
+        lines.append("\nEpoch: %d\nclean_purity:100.00%%" % epoch)
+    lines.append("程序运行了 0.01 分钟。")
+    return "\n".join(lines)
+
+
 def task_detail(state):
     scenario = state.scenario
     params = scenario["params"]
@@ -61,6 +80,14 @@ def report_payload(state):
     artifact_path = scenario.get("artifact_path", "")
     model_file = scenario.get("model_file", "")
     log_file = scenario.get("log_file", "")
+    generated_script = scenario.get("generated_script", "")
+    selection_files = scenario.get("selection_files", [])
+    model_files = scenario.get("model_files")
+    if model_files is None:
+        model_files = [model_file] if scenario.get("include_model", True) and model_file else []
+    log_files = scenario.get("logs")
+    if log_files is None:
+        log_files = [log_file] if scenario.get("include_log", True) and log_file else []
     return {
         "taskInfo": {
             "taskId": str(scenario["task_id"]),
@@ -76,14 +103,18 @@ def report_payload(state):
             "status": "success",
             "attempt": 1,
             "message": "fake LDD completed",
+            "started_at": scenario.get("started_at", _iso_now(-300)),
+            "finished_at": scenario.get("finished_at", _iso_now(60)),
             "effective_config": params,
             "artifacts": {
                 "type": "vab-task-output",
                 "available": True,
                 "path": artifact_path,
-                "model_files": [model_file] if model_file else [],
-                "logs": [log_file] if log_file else [],
-                "selection_files": [],
+                "model_files": model_files,
+                "logs": log_files,
+                "selection_kind": "retained_clean_subset",
+                "selection_files": selection_files,
+                "generated_script": generated_script,
                 "images": [],
             },
         },
@@ -94,19 +125,20 @@ def logs_payload(state):
     scenario = state.scenario
     run_id = scenario["run_id"]
     log_file = scenario.get("log_file", "")
+    entries = []
+    if scenario.get("include_log", True) and log_file:
+        entries.append({
+            "name": "0.1.txt",
+            "path": log_file,
+            "relativePath": "0.1.txt",
+            "content": _log_text(scenario),
+            "size": len(_log_text(scenario)),
+            "truncated": False,
+        })
     return {
         "taskId": str(scenario["task_id"]),
         "available": True,
-        "logs": [
-            {
-                "name": "execution.log",
-                "path": log_file,
-                "relativePath": "execution.log",
-                "content": "fake execution log",
-                "size": 19,
-                "truncated": False,
-            }
-        ],
+        "logs": entries,
         "incremental": False,
         "progress": {
             "run_id": run_id,
