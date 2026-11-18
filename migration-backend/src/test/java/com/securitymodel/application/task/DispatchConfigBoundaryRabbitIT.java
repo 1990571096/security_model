@@ -93,6 +93,7 @@ class DispatchConfigBoundaryRabbitIT {
         registry.add("spring.rabbitmq.port", () -> envOr("RABBIT_IT_PORT", "5673"));
         registry.add("spring.rabbitmq.username", () -> envOr("RABBIT_IT_USER", "guest"));
         registry.add("spring.rabbitmq.password", () -> envOr("RABBIT_IT_PASSWORD", "guest"));
+        registry.add("spring.rabbitmq.virtual-host", () -> envOr("RABBIT_IT_VHOST", "/"));
     }
 
     /**

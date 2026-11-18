@@ -122,6 +122,27 @@ jobs:
             -RootPassword "$MYSQL_IT_PASSWORD" -MysqlExe mysql -DbHost 127.0.0.1 -Port 3306
           pwsh -NoProfile -File scripts/dev/Test-InitializeSecurityModelDatabaseIdempotency.ps1 \
             -RootPassword "$MYSQL_IT_PASSWORD" -MysqlExe mysql -DbHost 127.0.0.1 -Port 3306
+      - name: Parse deployment scripts
+        shell: pwsh
+        run: |
+          $files = @(
+            'scripts/dev/Start-SecurityModelStack.ps1',
+            'scripts/dev/Stop-SecurityModelStack.ps1'
+          )
+          $failed = $false
+          foreach ($file in $files) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $file).Path, [ref]$tokens, [ref]$errors) | Out-Null
+            $errorCount = if ($errors) { $errors.Count } else { 0 }
+            if ($errorCount -gt 0) {
+              $failed = $true
+              Write-Host "PARSE_ERROR $file"
+              $errors | ForEach-Object { Write-Host $_.Message }
+            }
+          }
+          if ($failed) { exit 1 }
+          Write-Host 'deployment scripts parse OK'
 
   frontend:
     runs-on: ubuntu-latest

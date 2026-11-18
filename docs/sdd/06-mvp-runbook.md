@@ -157,7 +157,7 @@ SOURCE sql/security_model_dataset_verification_baseline.sql;
 SOURCE sql/security_model_vab_seed.sql;
 ```
 
-除 `sql/eladmin.sql` 外，增量脚本按 `CREATE TABLE IF NOT EXISTS` / 条件 `ALTER` 编写，正常可重复执行；`sql/eladmin.sql` 开头是 `DROP TABLE IF EXISTS` 后重建，**不是幂等建表脚本**，重复执行会清空业务表，不能对已有数据的库直接执行。开发库统一用 `scripts/dev/InitializeSecurityModelDatabase.ps1`，脚本只允许 `security_model`，并用 `sys_dev_init_marker` 区分“基础 schema 已应用”和“从未初始化”：没有可信 marker 且目标库存在**任意表或视图**时直接拒绝，不再只检查 `sys_pre_defense`；只有 `sys_dev_init_marker` 中 `schema_name` 匹配的记录才算可信 marker。`sql/security_model_dataset_verification_baseline.sql` 把 `sql/eladmin.sql` 自带的历史样例数据集、以及阶段 5 仅凭目录检查写成 `success` 的 VaB 目录登记，从伪造的 `success` 改为 `pending`、清空样本统计，避免它们进入可用列表；该脚本只匹配仍保留原始种子消息的行，管理员真实验证后不会再次覆盖。`sql/security_model_legacy_running_task_baseline.sql` 只收敛 `sql/eladmin.sql` 自带的无 `current_run_id` / `current_attempt` 的 `running` 演示任务：置为 `failed`、`progress=0`，并写入 `EXECUTOR_RESTARTED` / “应用重启导致任务中断”；它绝不写 `success`，也不碰已有 run 上下文的任务，避免干净库启动时恢复扫描把 GPU 槽位永久隔离。回滚脚本只删除本阶段新增表，不删除业务任务。R3 两张表没有外键到任务表，回滚不会级联删除任务。知识库退役向量清理的增量脚本 `security_model_knowledge_vector_reconcile.sql` 也必须执行，否则 `vector_cleanup_status` 等列缺失，退役对账会失败；回滚先执行 `sql/security_model_knowledge_vector_reconcile_rollback.sql`，要求停止调度且无活跃任务，脚本只删除索引和四个清理列，不删业务行。
+除 `sql/eladmin.sql` 外，增量脚本按 `CREATE TABLE IF NOT EXISTS` / 条件 `ALTER` 编写，正常可重复执行；`sql/eladmin.sql` 开头是 `DROP TABLE IF EXISTS` 后重建，**不是幂等建表脚本**，重复执行会清空业务表，不能对已有数据的库直接执行。开发库统一用 `scripts/dev/InitializeSecurityModelDatabase.ps1`，脚本只允许 `security_model` 前缀（canonical 库或带明确后缀的隔离/部署库），并用 `sys_dev_init_marker` 区分“基础 schema 已应用”和“从未初始化”：没有可信 marker 且目标库存在**任意表或视图**时直接拒绝，不再只检查 `sys_pre_defense`；只有 `sys_dev_init_marker` 中 `schema_name` 匹配的记录才算可信 marker。`sql/security_model_dataset_verification_baseline.sql` 把 `sql/eladmin.sql` 自带的历史样例数据集、以及阶段 5 仅凭目录检查写成 `success` 的 VaB 目录登记，从伪造的 `success` 改为 `pending`、清空样本统计，避免它们进入可用列表；该脚本只匹配仍保留原始种子消息的行，管理员真实验证后不会再次覆盖。`sql/security_model_legacy_running_task_baseline.sql` 只收敛 `sql/eladmin.sql` 自带的无 `current_run_id` / `current_attempt` 的 `running` 演示任务：置为 `failed`、`progress=0`，并写入 `EXECUTOR_RESTARTED` / “应用重启导致任务中断”；它绝不写 `success`，也不碰已有 run 上下文的任务，避免干净库启动时恢复扫描把 GPU 槽位永久隔离。回滚脚本只删除本阶段新增表，不删除业务任务。R3 两张表没有外键到任务表，回滚不会级联删除任务。知识库退役向量清理的增量脚本 `security_model_knowledge_vector_reconcile.sql` 也必须执行，否则 `vector_cleanup_status` 等列缺失，退役对账会失败；回滚先执行 `sql/security_model_knowledge_vector_reconcile_rollback.sql`，要求停止调度且无活跃任务，脚本只删除索引和四个清理列，不删业务行。
 
 ### 干净库启动手册（2026-11-17）
 
@@ -203,6 +203,44 @@ SOURCE sql/security_model_vab_seed.sql;
      -RootPassword $env:MYSQL_IT_PASSWORD -DbHost 127.0.0.1 -Port 3306
    ```
    第一个脚本验证“无可信标记的非空库”被拒绝且哨兵表/行/表数不变；第二个脚本在隔离库完整初始化两次，比较业务行与 `update_time` 完全一致，再修改路径、参数、启用状态并插入未知 running 行，确认第三次初始化不覆盖且只输出审核清单。CI 的 `init-scripts` job 运行同样两项，适用于 `scripts/dev/**` 变更。
+
+### 可复用单机启停脚本（2026-11-18）
+
+阶段 3 新增 `scripts/dev/Start-SecurityModelStack.ps1` 与 `scripts/dev/Stop-SecurityModelStack.ps1`，用于普通部署演练，不替代 R4 隔离验收夹具。固定依赖版本与完整证据见 [24-stage3-single-node-deployment.md](24-stage3-single-node-deployment.md)。
+
+```powershell
+# 1) 必须用 repackage 后的可执行 jar；skip repackage 会得到 thin jar，启动报“没有主清单属性”
+& '<maven>\bin\mvn.cmd' -B -f migration-backend/pom.xml package -DskipTests
+
+# 2) 干净隔离库（schema 只允许 security_model 前缀）
+$env:MYSQL_IT_PASSWORD = '<本机 root 密码>'
+.\scripts\dev\InitializeSecurityModelDatabase.ps1 -SchemaName security_model_deploy_20261118
+
+# 3) db 模式：只允许 Role=api
+.\scripts\dev\Start-SecurityModelStack.ps1 `
+  -Mode db -Role api -ApiPort 18200 `
+  -SchemaName security_model_deploy_20261118 `
+  -DbPassword $env:MYSQL_IT_PASSWORD -JwtSecret '<至少 32 字节>'
+
+# 4) rabbit 模式：API + Worker；broker 由 R4 测试夹具或生产服务提供
+.\scripts\dev\Start-SecurityModelStack.ps1 `
+  -Mode rabbit -Role all -ApiPort 18210 -WorkerPort 18211 `
+  -SchemaName security_model_deploy_20261118 `
+  -DbPassword $env:MYSQL_IT_PASSWORD -JwtSecret '<至少 32 字节>' `
+  -RabbitHost 127.0.0.1 -RabbitPort 5673 `
+  -RabbitUser '<user>' -RabbitPassword '<password>' -RabbitVhost '<vhost>'
+
+# 5) 停止：只停 state.json 中登记的 Java 进程及其子进程，不停止 broker
+.\scripts\dev\Stop-SecurityModelStack.ps1 `
+  -StateRoot '<repo>\tmp\deploy-stack\security_model_deploy_20261118\db'
+```
+
+要点：
+
+- 启动脚本默认关闭知识 embedding/vector/model 和 Assistant 外部模型，避免部署演练误发付费请求；`rabbit` 模式把 `MANAGEMENT_HEALTH_RABBIT_ENABLED` 设为 `true`，health 在 broker 中断时返回 503 `DOWN`，恢复后回到 200 `UP`。
+- `db` 模式启动后验证 `dispatch.mode=db / role=api / dispatchReady=true`；`rabbit` 模式 Worker 必须有 `workerConsumerExpected=true`、`workerConsumerStarted=true`，Rabbit 队列 `security-model.dispatch.worker` 的 `consumers=1`。
+- 登录响应 `token` 已含 `Bearer ` 前缀，Authorization 不要重复拼接。
+- 状态证据在 `tmp/deploy-stack/<schema>/<mode>/state.json`，停止后保留为 `state-stopped-<timestamp>.json`；运行日志同目录。
 
 ### 启动与停止
 

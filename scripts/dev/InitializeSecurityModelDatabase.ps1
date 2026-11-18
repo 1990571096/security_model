@@ -15,8 +15,9 @@ $ErrorActionPreference = 'Stop'
 if ([string]::IsNullOrWhiteSpace($RootPassword)) {
     throw '需要 MYSQL_IT_PASSWORD 或 -RootPassword（不要写入仓库）'
 }
-if ($SchemaName -ne 'security_model') {
-    throw "拒绝操作：本脚本只允许初始化 security_model，当前=$SchemaName"
+# 只允许 canonical 库和带明确前缀的隔离/部署库；绝不触碰 eladmin 或其他业务库。
+if ($SchemaName -notmatch '^security_model(_[a-z0-9_]+)?$') {
+    throw "拒绝操作：本脚本只允许 security_model 前缀的库，当前=$SchemaName"
 }
 
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
