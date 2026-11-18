@@ -131,7 +131,8 @@ jobs:
             'scripts/dev/Stop-SecurityModelStack.ps1',
             'scripts/dev/Start-FrontendStatic.ps1',
             'scripts/dev/Stop-FrontendStatic.ps1',
-            'scripts/dev/Test-SecurityModelStackScripts.ps1'
+            'scripts/dev/Test-SecurityModelStackScripts.ps1',
+            'scripts/dev/Test-LddAcceptanceEnvironment.ps1'
           )
           $failed = $false
           foreach ($file in $files) {

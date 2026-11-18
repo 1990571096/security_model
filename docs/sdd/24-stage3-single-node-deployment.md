@@ -397,6 +397,7 @@ Authorization: 'Bearer ' + token -> 401
 - 前端静态服务器是 Node 单进程方案，不是 Nginx/TLS/多机高可用；生产需在前面加反向代理、HTTPS、进程守护和日志轮转。
 - Rabbit 使用 R4 测试 vhost 和测试用户；生产部署必须替换为独立 vhost、最小权限账号和真实 secret 管理。
 - 真实模型联调仍被凭据、预算和数据留存授权阻塞，不能以本地短桩替代真实模型验收。
+- 下一步真实 LDD 验收准备见 [25-ldd-real-acceptance-checklist.md](25-ldd-real-acceptance-checklist.md)：当前只完成环境预检、隔离库资源验证和不启动的 pending 任务，正式训练仍需独立运行窗口。
 - 生产凭据注入方式尚未确定；正常停止依赖 MySQL 查询 running 任务，需 `-DbPassword` 或 `MYSQL_IT_PASSWORD`，不得写入仓库。
 
 ## 7. 结论

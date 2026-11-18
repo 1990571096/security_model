@@ -27,6 +27,7 @@
 - [22-database-boundary-and-convergence-plan.md](22-database-boundary-and-convergence-plan.md)：生产库迁移含义、`security_model` 新库初始化、旧 `eladmin` 归档、阶段 3 监控与干净库启动计划（未执行）。
 - [23-r7-scenario-integration-closeout.md](23-r7-scenario-integration-closeout.md)：R7 助手参数策略、模型证据投影、隔离后端 + 真实前端 + 脚本化假模型的浏览器联调证据与未执行边界。
 - [24-stage3-single-node-deployment.md](24-stage3-single-node-deployment.md)：阶段 3 单机部署复现与收尾整改：固定依赖版本、干净部署库初始化、db / Rabbit 启停与 broker 故障恢复、liveness/readiness 分离、数据库备份恢复、前端生产静态托管、CI 针对性脚本与托管测试。
+- [25-ldd-real-acceptance-checklist.md](25-ldd-real-acceptance-checklist.md)：真实 LDD 验收准备：运行时/数据/磁盘/GPU 预检、隔离验收库、非训练 API 证据、正式训练前的门禁与已知边界。
 - [../project-introduction-and-interview-guide.md](../project-introduction-and-interview-guide.md)：完整项目介绍、业务流程、当前进度和面试讲解稿。
 - [../resume-project-entry.md](../resume-project-entry.md)：简历项目简介和 4-5 条核心项目要点。
 
