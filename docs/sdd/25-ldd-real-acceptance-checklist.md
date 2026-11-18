@@ -1,9 +1,9 @@
 # 25. 真实 LDD 验收准备清单
 
 更新时间：2026-11-18
-状态：**环境预检通过（带 1 项内存警告）；真实训练未执行**
+状态：**环境预检通过（带 1 项内存警告）；真实 1 epoch 验收成功（任务 `2122913324293771266`）；正式 5 epochs 未启动**
 
-本文档把“准备一次真实 LDD 实验”从口头检查固化为可重复步骤。它不替代论文实验方案，也不把工程验证写成论文结论。当前结论只到“非训练验收和受控环境检查”，正式训练必须另定运行窗口并由实验负责人确认配置。
+本文档把“准备一次真实 LDD 实验”从口头检查固化为可重复步骤。它不替代论文实验方案，也不把工程验证写成论文结论。当前结论到“环境预检、非训练验收和 1 epoch 真实执行链路验收”；正式 5 epochs 必须另定运行窗口并由实验负责人确认配置。
 
 ## 1. 本轮范围与非目标
 
@@ -39,11 +39,12 @@
 | 受控工作目录 | `F:\security-model-data\ldd-acceptance-20261118\workspace` |
 | 受控结果根 | `F:\security-model-data\ldd-acceptance-20261118\results` |
 | 磁盘 | F: 约 75 GB free；C: 约 9.6 GB free；D: 约 110.7 GB free |
-| 内存 | 物理内存约 15.4 GB，预检时空闲约 2.5 GB（**警告**） |
+| 内存 | 物理内存约 15.4 GB，预检时空闲约 2.3–2.5 GB（**警告**） |
 | 验收库 | `security_model_ldd_20261118`，48 表 |
 | 数据集 | ID 6，`VaB CIFAR-10 Runtime Root`，路径验证 `success`，样本统计仍为 NULL |
 | 算法 | ID 14，`LDD (VaB)`，`vab://pre-defense/ldd` |
-| 验收任务 | `2122901116713205761`，`pending`，`progress=0` |
+| 验收任务（1 epoch） | `2122913324293771266`，`success`，`progress=100`，run `af5f081a-6661-462c-b0bc-c70ea003597a` |
+| 正式任务（5 epochs） | `2122901116713205761`，仍为 `pending`，未启动 |
 
 ### 2.1 不使用的环境
 
@@ -53,7 +54,7 @@
 
 ### 2.2 内存警告的含义
 
-预检时空闲物理内存约 2.5 GB，低于脚本建议的 4 GB。它不一定导致失败，但会放大 CUDA OOM、Python 进程被杀和桌面卡顿的风险。正式训练前应关闭无关应用，并在训练中记录 `nvidia-smi` 显存与系统内存；不能因为预检 `ready_with_warnings` 就宣称 6 GB 显存足以跑完整 5 epochs。
+预检时空闲物理内存约 2.3–2.5 GB，低于脚本建议的 4 GB。它不一定导致失败，但会放大 CUDA OOM、Python 进程被杀和桌面卡顿的风险。正式训练前应关闭无关应用，并在训练中记录 `nvidia-smi` 显存与系统内存；不能因为预检 `ready_with_warnings` 或 1 epoch 通过就宣称 6 GB 显存足以跑完整 5 epochs。
 
 ## 3. 非训练验收步骤
 
@@ -67,16 +68,18 @@ Set-Location 'F:\Study\postgraduate\毕业论文\security_model'
   -PythonExe 'D:\Anaconda\python.exe' `
   -VabRoot 'F:\Study\postgraduate\1下\VB backdoor defence\VaB-main' `
   -Workspace 'F:\security-model-data\ldd-acceptance-20261118\workspace' `
+  -ProcessGuardWorkspace 'F:\security-model-data\ldd-acceptance-20261118\workspace' `
   -ResultRoot 'F:\security-model-data\ldd-acceptance-20261118\results' `
   -JsonOutput 'tmp\ldd-acceptance-environment.json'
 ```
 
-脚本检查：解释器、torch/CUDA、依赖导入、VaB 源文件、CIFAR 批次文件、磁盘、内存、VaB 锁、工作/结果目录写权限，并执行一次 `algorithm_entry.py --validate-only`。退出码 0 表示没有硬错误；`status=ready_with_warnings` 表示只有警告。
+脚本检查：解释器、torch/CUDA、依赖导入、VaB 源文件、CIFAR 批次文件、磁盘、内存、VaB 锁、工作/结果目录写权限、`SECURITY_MODEL_EXECUTOR_WORKSPACE` 与 `SECURITY_MODEL_EXECUTOR_PYTHON_WORKSPACE` 是否一致，并执行一次 `algorithm_entry.py --validate-only`。退出码 0 表示没有硬错误；`status=ready_with_warnings` 表示只有警告。
 
-2026-11-18 实测结果：`status=ready_with_warnings`、`errors=0`、`warnings=1`，唯一警告是空闲内存约 2.5 GB。证据：
+2026-11-18 实测结果：加入 guard 一致性检查后重跑仍为 `status=ready_with_warnings`、`errors=0`、`warnings=1`，唯一警告是空闲内存约 2.3 GB。证据：
 
-- `tmp\ldd-acceptance-environment.json`
-- `tmp\ldd-acceptance-environment.log`
+- `tmp\ldd-acceptance-environment-final.json`
+- `tmp\ldd-acceptance-environment-final.log`
+- `tmp\ldd-acceptance-environment.json`（加入 guard 检查前的首次快照）
 - `F:\security-model-data\ldd-acceptance-20261118\workspace\validate-only-result.json`
 - `F:\security-model-data\ldd-acceptance-20261118\workspace\validate-only.stdout.log`
 - `F:\security-model-data\ldd-acceptance-20261118\workspace\validate-only.stderr.log`
@@ -108,12 +111,13 @@ Set-Location 'F:\Study\postgraduate\毕业论文\security_model'
 $env:SECURITY_MODEL_EXECUTOR_PYTHON_EXECUTABLE = 'D:\Anaconda\python.exe'
 $env:SECURITY_MODEL_EXECUTOR_PYTHON_SCRIPT = 'F:\Study\postgraduate\毕业论文\security_model\algorithm-runtime\vab\algorithm_entry.py'
 $env:SECURITY_MODEL_EXECUTOR_PYTHON_WORKSPACE = 'F:\security-model-data\ldd-acceptance-20261118\workspace'
+$env:SECURITY_MODEL_EXECUTOR_WORKSPACE = 'F:\security-model-data\ldd-acceptance-20261118\workspace'
 $env:SECURITY_MODEL_EXECUTOR_PYTHON_TIMEOUT_SECONDS = '3600'
 $env:SECURITY_MODEL_VAB_RESULT_ROOT = 'F:\security-model-data\ldd-acceptance-20261118\results'
 $env:VAB_ROOT = 'F:\Study\postgraduate\1下\VB backdoor defence\VaB-main'
 ```
 
-启动脚本本身不设置这些变量；变量必须由启动 shell 继承，并在启动日志中核对。实测：
+启动脚本本身不设置这些变量；变量必须由启动 shell 继承，并在启动日志中核对。`SECURITY_MODEL_EXECUTOR_PYTHON_WORKSPACE` 负责创建 attempt 目录，`SECURITY_MODEL_EXECUTOR_WORKSPACE` 是进程记录的受控根；两个变量必须指向同一目录（或后者包含前者），否则执行器会在启动 Python 前以 `PROCESS_RECORD_FAILED` 失败。实测：
 
 - `/actuator/health/liveness` UP
 - `/actuator/health/readiness` UP
@@ -154,7 +158,27 @@ FROM security_model_ldd_20261118.sys_gpu_lease;
 
 验收栈随后通过 `Stop-SecurityModelStack.ps1` 正常停止，停止前 `running=0`；证据 `tmp\ldd-acceptance-stop.log` 和 `tmp\deploy-stack\security_model_ldd_20261118\db\state-stopped-20261118-115451710.json`。
 
-### 3.5 正式训练前必须补的检查
+### 3.5 真实 1 epoch 验收结果（2026-11-18）
+
+第一次尝试在启动子进程前失败：任务 `2122910425962569730` 因只设置 `SECURITY_MODEL_EXECUTOR_PYTHON_WORKSPACE`、未设置 `SECURITY_MODEL_EXECUTOR_WORKSPACE`，`AttemptProcessRegistry` 抛出“未配置 executor workspace”，任务以 `PROCESS_RECORD_FAILED` 结束，没有 Python 子进程。该失败也暴露出旧清理逻辑在 `process == null` 时会错误隔离 GPU 槽位；已修复为先判断子进程是否真的启动，未启动则直接释放租约，并新增 `PythonLddTaskExecutorCleanupOrderTest` 回归用例。
+
+修复并重建 jar 后，第二次 1 epoch 任务 `2122913324293771266` 实测：
+
+| 项 | 结果 |
+| --- | --- |
+| 参数 | `num_epochs=1`、`batch_size=128`、`SIG`、`all2one`、`poisoned_portion=0.1`、`seed=123` |
+| 时间 | 12:42:33 启动，12:45:03 `success`；任务墙钟约 2 分 25 秒，LDD 自报 1.79 分钟 |
+| 执行阶段 | `pending -> running(10) -> running(12) -> success(100)` |
+| 训练输出 | 注入 5000 张中毒图 + 45000 张干净图；`clean_loss_avg≈0.4564`、`poison_loss_avg≈0.0036` |
+| LDD 指标 | `clean_purity`：5%–40% 为 100.00%，45%–60% 为 99.98%–99.99% |
+| 产物 | `0.1.pth` 42.69 MB、12 个 `selected_indices_*.npy`、`execution.log` 1967 B、`generated_LDD.py` 16212 B |
+| 收尾 | 无残留 `python.exe`；GPU 0 MiB / 0%；租约 `released_at=12:44:57.730`、`blocked_at=NULL` |
+
+产物目录：`F:\security-model-data\ldd-acceptance-20261118\results\20261118-124233-ldd-LDD-short-cycle-20261118-124232`；API/报告/日志/执行器快照：`tmp\ldd-short-run-real2-1epoch\run-summary.json`；启动日志 `tmp\ldd-real2-start.log`。
+
+**口径**：1 epoch 成功只证明执行链路、租约、子进程、日志、报告和产物可用；单 epoch 指标不能作为论文效果结论，正式 5 epochs 仍需实验负责人确认配置和运行窗口。
+
+### 3.6 正式训练前必须补的检查
 
 以下项目本轮未执行，不能打勾为已完成：
 
@@ -162,7 +186,7 @@ FROM security_model_ldd_20261118.sys_gpu_lease;
 - [ ] 关闭无关 GPU/CPU 进程，确认 `nvidia-smi` 无计算进程占用；保留启动前快照。
 - [ ] 确认空闲物理内存不低于 4 GB，或明确接受 OOM 风险并准备失败重试。
 - [ ] 在启动 shell 设置全部执行器变量，并核对 API 进程环境或启动日志。
-- [ ] 用一个短周期配置（例如 1 epoch）先验证 `pending -> running -> success`、GPU 租约、日志和产物；短周期通过不等于正式实验通过。
+- [x] 用一个短周期配置（1 epoch）验证 `pending -> running -> success`、GPU 租约、日志和产物；任务 `2122913324293771266` 已通过。短周期通过不等于正式 5 epochs 通过。
 - [ ] 正式运行前记录任务的参数快照和数据集路径摘要，运行中按固定间隔记录 GPU 显存、系统内存、epoch 进度和日志 offset。
 - [ ] 运行结束后核对 `.pth`、`selected_indices_*.npy`、`execution.log`、报告指标和产物清单；缺失项写失败，不用旧产物补齐。
 - [ ] 停止栈，确认 `running=0`、租约已释放、无残留 Python 进程和 VaB 锁。
@@ -174,6 +198,7 @@ FROM security_model_ldd_20261118.sys_gpu_lease;
 | --- | --- |
 | 环境预检通过 | 脚本 `errors=0`；`validate-only` status=success；CUDA 可用 |
 | 可进入短周期真实验证 | 环境预检通过、GPU 空闲、内存风险已确认、执行器变量已核对、参数已冻结 |
+| 短周期真实验证通过 | 1 epoch 任务真实 `success`、产物与报告可读、租约释放、无残留子进程；仍不得称为正式实验通过 |
 | 可进入正式实验 | 短周期真实验证通过，且正式配置和结果目录已由实验负责人确认 |
 | 不得判定为真实 LDD 通过 | 只跑了 validate-only、只创建了 pending 任务、只使用旧工程产物、或指标缺失 |
 
@@ -182,15 +207,18 @@ FROM security_model_ldd_20261118.sys_gpu_lease;
 1. **无 captcha 的 `/auth/login` 会 500**：`AuthController.java:51` 在 `uuid=null` 时调用 `CAPTCHA_STORE.remove`，触发 NPE；第 52–54 行才检查验证码空/过期。正常前端先 `GET /auth/code` 再登录，不受影响；直接 API 调用必须先取 uuid/验证码，不能把 500 当作登录成功。该问题本轮未修复。
 2. **`/auth/info` 曾返回 400“用户不存在”**：本轮未复核；token 对其他 API 可用。验收脚本和 API 证据使用已有管理员 Bearer token，没有重新走无 captcha 登录。
 3. **数据集验证只到路径层**：`parseStatus=success` 不等于样本已解析；样本统计为空是当前事实。
-4. **内存偏紧**：预检空闲约 2.5 GB；6 GB 显存能否支撑正式配置未实测。
+4. **内存偏紧**：预检空闲约 2.3–2.5 GB；1 epoch 已跑通，但 5 epochs / 长时间运行的显存与系统内存峰值仍未实测。
 5. **旧产物不是正式结论**：`...\VaB-main\security-model-results\20260819-232538-ldd-ldd-cifar10-sig-5epochs` 是 2026-08-19 工程验证，只可作为参照，不可替代论文实验。
-6. **验收库未备份**：`security_model_ldd_20261118` 当前保留 pending 任务，未做备份/删除；正式运行前应决定备份与保留周期。
+6. **验收库未备份**：`security_model_ldd_20261118` 当前保留 5 epochs pending 任务、1 epoch success 任务和 1 条失败证据任务，未做备份/删除；正式运行前应决定备份与保留周期。
 
 ## 6. 复现命令索引
 
 ```powershell
 # 环境预检
-.\scripts\dev\Test-LddAcceptanceEnvironment.ps1 -PythonExe 'D:\Anaconda\python.exe' -VabRoot '<VaB根>' -Workspace '<工作目录>' -ResultRoot '<结果根>'
+.\scripts\dev\Test-LddAcceptanceEnvironment.ps1 -PythonExe 'D:\Anaconda\python.exe' -VabRoot '<VaB根>' -Workspace '<工作目录>' -ProcessGuardWorkspace '<工作目录>' -ResultRoot '<结果根>'
+
+# 短周期运行（默认 1 epoch；-CreateOnly / -NoStart 只创建不启动）
+.\scripts\dev\Invoke-LddAcceptanceRun.ps1 -BaseUrl 'http://127.0.0.1:18300' -Epochs 1 -OutputRoot 'tmp\ldd-short-run-real2-1epoch'
 
 # 启动验收栈（示例；JWT secret 从本地文件读取，不写入仓库）
 $env:SECURITY_MODEL_JWT_SECRET = (Get-Content -Raw 'tmp\deploy-stack\jwt-secret.txt').Trim()

@@ -35,6 +35,7 @@ environment variable name is the upper-snake-case form):
 | `security-model.executor.python.executable` | `SECURITY_MODEL_EXECUTOR_PYTHON_EXECUTABLE` | `python` | Interpreter that can import torch |
 | `security-model.executor.python.script` | `SECURITY_MODEL_EXECUTOR_PYTHON_SCRIPT` | *(empty)* | Absolute path to `algorithm_entry.py` |
 | `security-model.executor.python.workspace` | `SECURITY_MODEL_EXECUTOR_PYTHON_WORKSPACE` | `${java.io.tmpdir}/security-model-executor` | Attempt directory root |
+| `security-model.executor.workspace` | `SECURITY_MODEL_EXECUTOR_WORKSPACE` | *(empty; must be set for a real run)* | Process-record guard root; must equal or contain `python.workspace` |
 | `security-model.executor.python.timeout-seconds` | `SECURITY_MODEL_EXECUTOR_PYTHON_TIMEOUT_SECONDS` | `3600` | Wall-clock timeout per attempt |
 | `security-model.executor.python.fingerprint-content` | `SECURITY_MODEL_EXECUTOR_PYTHON_FINGERPRINT_CONTENT` | `true` | Hash dataset files ≤1GB |
 | `security-model.executor.python.fingerprint-max-bytes` | `SECURITY_MODEL_EXECUTOR_PYTHON_FINGERPRINT_MAX_BYTES` | `1073741824` | Size limit for hashing |
@@ -50,6 +51,14 @@ no fallback to a demo or mock executor in this backend. In db mode the API rejec
 a dispatch intent, so the task keeps its previous state. The recovery replay path and the
 Rabbit Worker apply the same executor check; a Rabbit API instance does not require its own
 Python script, because it never starts Python.
+
+For a real run, set both `SECURITY_MODEL_EXECUTOR_PYTHON_WORKSPACE` and
+`SECURITY_MODEL_EXECUTOR_WORKSPACE`. The first creates `pre_defense-<taskId>/attempt-<n>`; the
+second is the guard that refuses to record a child outside the controlled root. They must be
+the same directory, or the guard root must contain the attempt root. If the guard is blank,
+the executor fails before starting the child with `PROCESS_RECORD_FAILED`; the attempt is
+failed and the lease is released without starting Python (the 2026-11-18 acceptance run used
+this failure path to verify that no orphan is created).
 
 The error message names the bound property and environment variable explicitly:
 `security-model.executor.python.script` / `SECURITY_MODEL_EXECUTOR_PYTHON_SCRIPT`. No short

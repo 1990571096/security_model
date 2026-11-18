@@ -137,18 +137,20 @@ public class PythonLddTaskExecutor implements DefenseTaskExecutor {
             runtimeMetrics.recordExecution(metricOutcome, System.nanoTime() - metricsStarted);
             canceledRuns.remove(request.getRunId());
             Process process = activeProcesses.remove(request.getRunId());
-            Path taskDir = context == null ? null : context.taskDir();
+            Path taskDir = context == null ? null : context.taskDir;
             boolean cleanupDecisionComplete = false;
             try {
                 // Never release the slot while any known executor process may still be alive.
                 // When the executor was never configured nothing was started, so probing the
                 // tree would only produce a missing-record UNKNOWN and quarantine the slot
-                // forever; release the lease directly instead.
-                boolean treeGone = executorConfigured
-                        ? processGuard.ensureGone(process, taskDir, 3000, true)
-                        : true;
+                // forever; release the lease directly instead. The same rule applies when
+                // the pre-start record fails: no child was started, so there is no tree to
+                // probe.
+                boolean processStarted = context != null && context.processStarted;
+                boolean treeGone = !executorConfigured || !processStarted
+                        || processGuard.ensureGone(process, taskDir, 3000, true);
                 if (context != null) {
-                    artifactPolicy.finalizeAttempt(context.taskDir());
+                    artifactPolicy.finalizeAttempt(context.taskDir);
                 }
                 if (treeGone) {
                     gpuLeaseService.releaseQuietly(request.getGpuLeaseToken());
@@ -221,6 +223,7 @@ public class PythonLddTaskExecutor implements DefenseTaskExecutor {
             throw new IllegalStateException("PROCESS_RECORD_FAILED: 无法记录执行进程，已拒绝启动", exception);
         }
         Process process = builder.start();
+        context.processStarted = true;
         activeProcesses.put(request.getRunId(), process);
         try {
             processRegistry.record(context.taskDir, process);
@@ -442,8 +445,24 @@ public class PythonLddTaskExecutor implements DefenseTaskExecutor {
         return index > 0 ? message.substring(index + 1).trim() : message;
     }
 
-    private record ExecutionContext(Path taskDir, Path requestFile, Path resultFile,
-                                    Path stdoutFile, Path stderrFile, Path progressFile) {
+    private static final class ExecutionContext {
+        private final Path taskDir;
+        private final Path requestFile;
+        private final Path resultFile;
+        private final Path stdoutFile;
+        private final Path stderrFile;
+        private final Path progressFile;
+        private boolean processStarted;
+
+        private ExecutionContext(Path taskDir, Path requestFile, Path resultFile,
+                                 Path stdoutFile, Path stderrFile, Path progressFile) {
+            this.taskDir = taskDir;
+            this.requestFile = requestFile;
+            this.resultFile = resultFile;
+            this.stdoutFile = stdoutFile;
+            this.stderrFile = stderrFile;
+            this.progressFile = progressFile;
+        }
     }
 
     private static class CanceledException extends Exception {

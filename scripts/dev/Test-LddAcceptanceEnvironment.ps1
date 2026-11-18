@@ -4,6 +4,7 @@ param(
     [string]$DatasetRoot = $env:SECURITY_MODEL_VAB_DATASET_ROOT,
     [string]$ExecutorScript = $env:SECURITY_MODEL_EXECUTOR_PYTHON_SCRIPT,
     [string]$Workspace = $env:SECURITY_MODEL_EXECUTOR_PYTHON_WORKSPACE,
+    [string]$ProcessGuardWorkspace = $env:SECURITY_MODEL_EXECUTOR_WORKSPACE,
     [string]$ResultRoot = $env:SECURITY_MODEL_VAB_RESULT_ROOT,
     [string]$RequestFile = '',
     [int]$MinFreeDiskGb = 20,
@@ -55,6 +56,14 @@ if ([string]::IsNullOrWhiteSpace($Workspace)) { $Workspace = Join-Path $repoRoot
 if ([string]::IsNullOrWhiteSpace($ResultRoot)) { $ResultRoot = Join-Path $repoRoot 'tmp\ldd-acceptance\results' }
 if ([string]::IsNullOrWhiteSpace($RequestFile)) { $RequestFile = Join-Path $repoRoot 'algorithm-runtime\vab\sample-request.json' }
 if ([string]::IsNullOrWhiteSpace($JsonOutput)) { $JsonOutput = Join-Path $repoRoot 'tmp\ldd-acceptance-environment.json' }
+
+if ([string]::IsNullOrWhiteSpace($ProcessGuardWorkspace)) {
+    Add-Check 'process guard workspace' $false '未设置 SECURITY_MODEL_EXECUTOR_WORKSPACE；执行器会在启动 Python 前以 PROCESS_RECORD_FAILED 拒绝执行' 'error'
+} else {
+    $workspaceFull = [IO.Path]::GetFullPath($Workspace).TrimEnd('\')
+    $guardFull = [IO.Path]::GetFullPath($ProcessGuardWorkspace).TrimEnd('\')
+    Add-Check 'process guard workspace' ($guardFull -eq $workspaceFull) "SECURITY_MODEL_EXECUTOR_WORKSPACE=$guardFull; SECURITY_MODEL_EXECUTOR_PYTHON_WORKSPACE=$workspaceFull（两者必须一致）" 'error'
+}
 
 $ExecutorScript = Resolve-RequiredPath $ExecutorScript 'executor script'
 $DatasetRoot = Resolve-RequiredPath $DatasetRoot 'dataset root'
@@ -209,6 +218,7 @@ $summary = [ordered]@{
         dataset_root = $DatasetRoot
         executor_script = $ExecutorScript
         workspace = $Workspace
+        process_guard_workspace = $ProcessGuardWorkspace
         result_root = $ResultRoot
         request = $RequestFile
     }

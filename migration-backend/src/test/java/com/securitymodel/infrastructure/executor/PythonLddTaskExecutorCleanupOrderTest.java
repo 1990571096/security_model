@@ -10,6 +10,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.mockito.InOrder;
 
+import java.io.IOException;
 import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -17,6 +18,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -69,6 +71,21 @@ class PythonLddTaskExecutorCleanupOrderTest {
 
         // No script means invoke() fails before any child can be started. Probing a missing
         // process record would only yield UNKNOWN and keep the slot blocked forever.
+        verify(processGuard, never()).ensureGone(any(), any(), anyLong(), anyBoolean());
+        verify(gpuLeases).releaseQuietly("lease-token");
+        verify(gpuLeases, never()).markBlocked(any(), any(), any());
+        verify(registry).clearAccepted(7L, "run-1", 1);
+    }
+
+    @Test
+    void preStartRecordFailureReleasesLeaseWithoutQuarantining() throws Exception {
+        when(fingerprints.getWorkspace()).thenReturn(tempDir.toString());
+        doThrow(new IOException("workspace not configured")).when(registry).prepare(any());
+
+        configured.executeAndWait(request());
+
+        // prepare() happens before builder.start(); a failed marker means no child exists.
+        // Probing a missing process record would only yield UNKNOWN and quarantine the slot.
         verify(processGuard, never()).ensureGone(any(), any(), anyLong(), anyBoolean());
         verify(gpuLeases).releaseQuietly("lease-token");
         verify(gpuLeases, never()).markBlocked(any(), any(), any());
