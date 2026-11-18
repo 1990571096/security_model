@@ -527,7 +527,7 @@ mvn -B -f migration-backend/pom.xml verify -Pmysql-it
 4. **R6（离线检索与适配器完成；本机已接 DeepSeek 与本地向量，生产验收未完成）**：MySQL 文档/版本/chunk、ACL 前置检索、确定性中文切词与 IDF 排序、引用 API、知识页、通用模型适配器和 Redis 8 向量混合检索已落地；2026-11-15 本机 `deepseek` profile 已真实外发并返回引用回答，`vectorHits=40`；本地 embedding 是 256 维哈希实现，不是 BGE；生产库未建表。详见 §5.9、§5.11 与 ADR-020。
 5. **R7（受控工具与确认契约；实现验收通过，部署验收未执行）**：4 个只读工具 + 5 个预览写工具、一次性确认、资源/参数指纹、R3 幂等、日配额、单用户并发槽、会话/审计和助手页已落地；N1 改为 MySQL 权威读 + 计划资源副本，执行请求只由计划构造；N5 将助手 HTTP + MySQL 确认矩阵扩到 22 项（新增 insert 阻塞超时、错误 token 篡改与 alice/bob 并发身份隔离）。本机 `deepseek` profile 已跑通真实工具调用、创建预览、确认落库与本人任务查询；生产库未建表、未做真实 LDD。详见 §5.10、§5.11/§5.13/§5.14 与 ADR-021/ADR-023/ADR-024。
 6. 持续补迁移版领域服务和 API 集成测试；现有 MySQL 集成测试仅覆盖任务原子领取、状态竞争和恢复扫描，不代表完整端到端覆盖。
-7. **阶段 3 单机部署复现（2026-11-18 隔离环境完成；生产/备份未执行）**：已新增通用 `Start-SecurityModelStack.ps1` / `Stop-SecurityModelStack.ps1`，从干净库 `security_model_deploy_20261118`（`tables=48`）完成 db 单进程与 Rabbit API+Worker 双进程的启动、健康检查、停止、重启；Rabbit broker 中断时 health 503 `DOWN`，恢复后 200 `UP`，Worker 消费者重新建立。固定依赖版本、命令、证据路径与未执行边界见 `24-stage3-single-node-deployment.md`。本轮门禁为 343 单测 + 126 IT 全绿，Python 11/11、前端构建 exit 0；尚未做数据库备份/恢复演练、前端常驻静态服务和真实 LDD/GPU。
+7. **阶段 3 单机部署复现（2026-11-18 隔离环境完成；生产/备份未执行）**：已新增通用 `Start-SecurityModelStack.ps1` / `Stop-SecurityModelStack.ps1`，从干净库 `security_model_deploy_20261118`（`tables=48`）完成 db 单进程与 Rabbit API+Worker 双进程的启动、健康检查、停止、重启；Rabbit broker 中断时 health 503 `DOWN`，恢复后 200 `UP`，Worker 消费者重新建立。固定依赖版本、命令、证据路径与未执行边界见 `24-stage3-single-node-deployment.md`。本轮门禁为 343 单测 + 126 IT 全绿，Python 11/11、前端构建 exit 0；远端 CI run `44219531993` 四 job success。尚未做数据库备份/恢复演练、前端常驻静态服务和真实 LDD/GPU。
 8. 继续补充 Redis 缓存命中率、失效和不可用降级的观测指标。
 9. 跨进程/多实例调度已成为明确需求，R4 按 `21` 与 ADR-026 实施；组织级双人审批、多实例网络分区、多机高可用列为未来扩展，不作为单机部署必选门槛。
 10. 视需要将日志轮询升级为 SSE；SSE 属于服务端推送，不替代任务消息队列。

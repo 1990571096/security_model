@@ -221,6 +221,7 @@ Authorization: 'Bearer ' + token -> 401
 | 初始化幂等 | 两次初始化 `tables=48` 一致，运维修改保留 | `tmp/stage11-init-idempotency-test.log` |
 | Python 适配器 | 11/11 | `tmp/stage11-python-tests.log` |
 | 前端生产构建 | 1706 modules，exit 0 | `tmp/stage11-frontend-build.log` |
+| 远端 CI | run `44219531993`，python/frontend/init-scripts/backend 四 job success | GitHub Actions |
 | 启停脚本语法 | 两个脚本 ParseFile 无错误 | 本机解析；CI `init-scripts` 新增 parse step |
 
 全量门禁第一次失败在 `DispatchConfigBoundaryRabbitIT`：该测试只读取 `RABBIT_IT_PORT/USER/PASSWORD`，没有读取 `RABBIT_IT_VHOST`，使用隔离 vhost 时仍连接 `/`，broker 返回 `reply-code=530 NOT_ALLOWED`。补上 `spring.rabbitmq.virtual-host` 映射后聚焦 1/1、全量 126 IT 全绿。该修复是测试环境可复现性问题，不改变生产 Rabbit 配置语义。
