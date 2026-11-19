@@ -97,7 +97,12 @@ class TaskCommandServicePipelineIT {
     void seedPendingTask() {
         jdbc.update("DELETE FROM sys_task_dispatch_intent WHERE task_id = ?", TASK_ID);
         jdbc.update("DELETE FROM sys_pre_defense WHERE task_id = ?", TASK_ID);
-        jdbc.update("DELETE FROM sys_gpu_lease WHERE task_id = ?", TASK_ID);
+        jdbc.update("""
+                UPDATE sys_gpu_lease SET lease_token = NULL, task_id = NULL, run_id = NULL,
+                    attempt = NULL, acquired_at = NULL, heartbeat_at = NULL, expires_at = NULL,
+                    released_at = NOW(3), blocked_at = NULL, blocked_reason = NULL
+                WHERE task_id = ?
+                """, TASK_ID);
         jdbc.update("""
                 INSERT INTO sys_pre_defense (
                     task_id, task_name, status, dataset_id, algorithm_id, custom_params,
@@ -116,7 +121,12 @@ class TaskCommandServicePipelineIT {
         SecurityContextHolder.clearContext();
         jdbc.update("DELETE FROM sys_task_dispatch_intent WHERE task_id = ?", TASK_ID);
         jdbc.update("DELETE FROM sys_pre_defense WHERE task_id = ?", TASK_ID);
-        jdbc.update("DELETE FROM sys_gpu_lease WHERE task_id = ?", TASK_ID);
+        jdbc.update("""
+                UPDATE sys_gpu_lease SET lease_token = NULL, task_id = NULL, run_id = NULL,
+                    attempt = NULL, acquired_at = NULL, heartbeat_at = NULL, expires_at = NULL,
+                    released_at = NOW(3), blocked_at = NULL, blocked_reason = NULL
+                WHERE task_id = ?
+                """, TASK_ID);
     }
 
     @Test

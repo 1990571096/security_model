@@ -238,9 +238,17 @@ MySQL 门禁的 10 项跳过按用例拆分如下：
 6. 代码清理审计：`infrastructure/legacy/LegacyBackendClient.java` 全仓仅命中自身声明/构造器，
    是 Spring `@Component` 但当前无注入引用；因仍有迁移兼容用途且无专项测试覆盖，本轮保留未删。
    `src/`、`.agents` 为空目录，`secrets/`、`runtime/`、`tmp/` 等 ignored/untracked 内容均未移动或删除。
-7. 远端发布未完成：2026-11-19 尝试推送 `feature/r3-dispatch-idempotency`，GitHub 443
-   连接失败（`Failed to connect to github.com port 443`）；未触发远端 CI，也未创建交付 Tag。
-   本地分支相对已缓存的远端分支仍有未推送提交。冻结仍只落在本地提交和本文件。
+7. 远端发布进行中：2026-11-19 首次推送因 GitHub 443 连接失败；重试后
+   `3c86a12..be2a8f9` 推送成功，远端 `feature/r3-dispatch-idempotency` 已更新。
+   远端 CI run `44453126790` 已完成，`deployment-scripts`、`frontend`、`init-scripts`、
+   `python` 4 个 job 成功，`backend` 失败（job `135321650165`，约 2m28s）。失败原因为
+   `DispatchConfigBoundaryIT` 的 2 个用例在共享 schema 中找不到 `default-gpu-0` 行：
+   `TaskCommandServicePipelineIT` 清理时按 `task_id` 删除了该行，后执行的边界用例再执行
+   `UPDATE` 就得到 0 行。修复方式：`TaskCommandServicePipelineIT` 清理改为清空租约字段而非
+   删除行；`DispatchConfigBoundaryIT` 在持有租约前 `INSERT IGNORE` 恢复 bootstrap 行。
+   修复后本地 `mvn verify -Pmysql-it` 为 126 IT / 0 失败 / 0 错误 / 10 跳过。
+   本轮修复提交推送后必须用同一提交重跑完整 CI；通过后再创建交付 Tag。
+   当前交付 Tag 尚未创建。CI 失败日志保存在 `tmp/ci-backend-logs.zip`（实际是 UTF-8 文本）。
 8. 生产部署、真实外部模型联调、论文效果评估继续作为独立事项，不纳入本次冻结。
 
 ## 7. 文档使用规则

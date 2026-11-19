@@ -158,6 +158,9 @@ class DispatchConfigBoundaryIT {
     }
 
     private void holdLease(long taskId, String runId) {
+        // The shared ownership schema is also used by cases that delete lease rows. Restore the
+        // bootstrap row so this test never depends on another test's cleanup order.
+        jdbc.update("INSERT IGNORE INTO sys_gpu_lease (slot_id, fencing_token) VALUES (?, 0)", SLOT_ID);
         jdbc.update("""
                 UPDATE sys_gpu_lease
                 SET lease_token = ?, task_id = ?, run_id = ?, attempt = 1,
