@@ -69,7 +69,7 @@
       <el-empty v-else-if="!selectedTask" description="任务详情不可用" />
       <template v-else>
         <div class="detail-status"><div><span class="muted">任务状态</span><el-tag :type="statusType(selectedTask.status)">{{ statusLabel(selectedTask.status) }}</el-tag></div><div><span class="muted">当前进度</span><strong>{{ detailProgressValue }}%</strong></div></div>
-        <div v-if="selectedTask.status === 'running' || detailProgress" class="runtime-progress-panel">
+        <div v-if="selectedTask.status === 'running'" class="runtime-progress-panel">
           <div class="runtime-progress-header">
             <strong>{{ detailProgress?.phase_label || '任务执行中' }}</strong>
             <el-tag size="small" :type="detailHeartbeatStale ? 'warning' : 'success'">
@@ -156,7 +156,9 @@ const executorLabel = computed(() => executor.value.saturated ? '资源紧张' :
 const gpuSlot = computed(() => executor.value.gpuSlot || {}); const gpuSlotLabel = computed(() => ({ blocked: '隔离中', leased: '占用中', idle: '空闲', unknown: '未知' })[gpuSlot.value.state] || '未知')
 const sampleStats = computed(() => report.value?.cleaningResult?.sample_stats || {}); const snapshotRows = computed(() => report.value?.executionSnapshot?.attempts || []); const isolationRatios = computed(() => report.value?.cleanDatasetDownload?.isolationRatios || [])
 const detailProgress = ref(null)
-const detailProgressValue = computed(() => safeProgress(detailProgress.value?.progress ?? selectedTask.value?.progress))
+const detailProgressValue = computed(() => selectedTask.value?.status === 'running'
+  ? safeProgress(detailProgress.value?.progress ?? selectedTask.value?.progress)
+  : safeProgress(selectedTask.value?.progress))
 const detailHeartbeatStale = computed(() => {
   const value = detailProgress.value?.heartbeat_at
   if (!value || selectedTask.value?.status !== 'running') return false
