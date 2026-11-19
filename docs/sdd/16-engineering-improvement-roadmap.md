@@ -2,6 +2,9 @@
 
 更新时间：2026-11-13（R0 记录）
 
+> 本文是历史路线与各次实施记录的快照。当前测试计数、R4/单机部署状态和正式 5 epochs 边界以
+> [`26-current-delivery-facts.md`](26-current-delivery-facts.md) 为准；文中 `287/106` 等数字不代表本轮验证。
+
 开发执行入口（2026-11-13 补充）：下文 I1–I4 与 R0/R1/R2 实施记录保留各次历史口径；后续阶段范围、默认决策、实施顺序和必选验收统一参见 [17-agent-development-guide.md](17-agent-development-guide.md) 与 [20-stage-execution-and-acceptance.md](20-stage-execution-and-acceptance.md)。新任务书不构成代码已实现或业务库操作授权。
 
 ## 目标
@@ -52,7 +55,7 @@ mvn -B -f migration-backend/pom.xml verify
 
 - 当前真实执行范围：迁移版后端调用 VaB Python 进程执行 LDD 训练前清洗。
 - 当前异步执行方式：事务提交后提交至有界 JVM 线程池；MySQL 保存任务状态。
-- 当前 Redis 状态：已接入迁移版运行时，仅缓存可重建的资源目录；R4 RabbitMQ/Outbox 代码已接入但默认关闭，2026-11-16 本机真实 Broker 已完成 R4-01..08 实现验收（隔离），部署验收未执行（详见 `21` §16、`20` §6.8）。
+- 当前 Redis 状态：已接入迁移版运行时，仅缓存可重建的资源目录；R4 RabbitMQ/Outbox 代码已接入但默认关闭，2026-11-16 本机真实 Broker 已完成 R4-01..08 实现验收（隔离），单机 db/rabbit 启停演练通过，生产多机部署未验收（详见 `21` §16、`26` §5）。
 - 迁移版增加 `AfterCommitTaskDispatcher` 单元测试，覆盖事务提交前不派发、无事务时立即派发、异常处理器和无异常处理器两种失败路径。
 - GitHub Actions 运行迁移版 Maven 验证和 Vue 3 前端生产构建。
 - 本地验收命令：`mvn -B -f migration-backend/pom.xml verify`；前端执行 `npm run build`。

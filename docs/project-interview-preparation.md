@@ -2,7 +2,7 @@
 
 更新时间：2026-11-17
 
-> 当前事实：R4 已实现独立 Worker、RabbitMQ/Outbox、消费账本与 GPU 单槽租约，默认 `dispatch.mode=db`；实现验收通过（隔离），部署验收未执行。全量 **287 单测 + 106 IT**，日志 `tmp/stage2-full-verify-new.log`。
+> 当前事实：R4 已实现独立 Worker、RabbitMQ/Outbox、消费账本与 GPU 单槽租约，默认 `dispatch.mode=db`；实现验收通过（隔离），单机部署演练通过，生产多机未验收。正式 5 epochs 已于 2026-11-18 完成工程验收，仅支持执行链路、配置、产物、租约和收尾结论；论文效果未评估。当前测试计数、证据和边界统一见 [`sdd/26-current-delivery-facts.md`](sdd/26-current-delivery-facts.md)。
 
 本文基于当前仓库实现，帮助把项目讲清楚、讲可信。建议先读[设计思路](project-design-overview.md)理解业务，再用[实现说明](project-implementation-guide.md)复习代码。
 
@@ -251,7 +251,7 @@ Java 的 `PythonProcessWaiter` 等待外层适配器进程时关注该文件的�
 
 ### 如何证明项目经过测试？
 
-截至 2026-11-16（四项阻断修复后），`mvn -B -f migration-backend/pom.xml verify -Pmysql-it` 实测迁移版 **287 项单元测试（0 失败、0 跳过）+ 106 项 MySQL/Redis/RabbitMQ 集成测试**全部通过，BUILD SUCCESS（`tmp/stage2-full-verify-new.log`）；适配器 `python -m unittest` 11/11。以下测试类明细为 2026-11-13 的历史记录（当时 127 单测 + 41 MySQL IT + 1 Redis IT），保留用于说明演进过程，不再作为当前计数。单测覆盖资源命令/查询、缓存 TTL 与故障降级、事务提交后派发、任务重试快照、进度等待与查询、启动恢复、YAML 配置解析，以及 R1 新增的任务归属守卫（8 项，含 demo 写拒绝）、按 owner 配额（4 项）、资源管理员权限与数据集验证（4 项）、进度查询越权与统计 scope（3 项）、真实登录取证后的双账号 HTTP 契约（8 项，含禁用账号与令牌 `adm` 不被信任）、R2 的 GPU 租约语义（8 项）、适配器失败码兜底（7 项）、attempt 产物截断/清单/保留期（6 项）、恢复前子进程五态/整树确认（11 项）、隔离槽位探测（3 项）、真实短进程超时/取消（2 项）、导出失败收敛（3 项）、独立 JVM 崩溃演练（1 项）。集成测试 41 项分五个类：`MySqlTaskPersistenceIT` 13 项（并发领取原子性、完成与恢复的条件更新竞争、孤儿恢复边界、owner 范围查询、demo 排除、导出 pending/running 真实库收敛、R3 意图唯一键/条件抢占/事务回滚/pending 扫描、幂等键隔离与过期、SQL 脚本重复执行与回滚）、`OwnershipMigrationScriptIT` 6 项、`OwnershipEndToEndIT` 10 项、`OwnershipEndToEndCrossReadIT` 4 项、`GpuLeaseMySqlIT` 8 项（并发唯一、过期接管、fencing、按 run 释放、事务回滚、隔离槽位 TTL 过期仍不可接管、重建实例仍隔离），均在本机 MySQL 实跑通过。命令为 `mvn -B -f migration-backend/pom.xml test` 和 `mvn -B -f migration-backend/pom.xml verify -Pmysql-it`（`mysql-it` 需 `MYSQL_IT_PASSWORD`）。**生产库 `eladmin` 迁移仍未执行，`sys_gpu_lease` 未在生产库建表，也未跑真实 LDD**；GitHub Actions 配置了 MySQL 8.4 service，远端结果仍以 Actions 页面为准。旧 ELADMIN 的测试不计入迁移版覆盖；LDD 工程链路验证也不等于论文正式实验。
+截至 2026-11-16（四项阻断修复后，历史快照），`mvn -B -f migration-backend/pom.xml verify -Pmysql-it` 实测迁移版 **287 项单元测试（0 失败、0 跳过）+ 106 项 MySQL/Redis/RabbitMQ 集成测试**全部通过，BUILD SUCCESS（`tmp/stage2-full-verify-new.log`）；适配器 `python -m unittest` 11/11。以下测试类明细为 2026-11-13 的历史记录（当时 127 单测 + 41 MySQL IT + 1 Redis IT），保留用于说明演进过程，不再作为当前计数。单测覆盖资源命令/查询、缓存 TTL 与故障降级、事务提交后派发、任务重试快照、进度等待与查询、启动恢复、YAML 配置解析，以及 R1 新增的任务归属守卫（8 项，含 demo 写拒绝）、按 owner 配额（4 项）、资源管理员权限与数据集验证（4 项）、进度查询越权与统计 scope（3 项）、真实登录取证后的双账号 HTTP 契约（8 项，含禁用账号与令牌 `adm` 不被信任）、R2 的 GPU 租约语义（8 项）、适配器失败码兜底（7 项）、attempt 产物截断/清单/保留期（6 项）、恢复前子进程五态/整树确认（11 项）、隔离槽位探测（3 项）、真实短进程超时/取消（2 项）、导出失败收敛（3 项）、独立 JVM 崩溃演练（1 项）。集成测试 41 项分五个类：`MySqlTaskPersistenceIT` 13 项（并发领取原子性、完成与恢复的条件更新竞争、孤儿恢复边界、owner 范围查询、demo 排除、导出 pending/running 真实库收敛、R3 意图唯一键/条件抢占/事务回滚/pending 扫描、幂等键隔离与过期、SQL 脚本重复执行与回滚）、`OwnershipMigrationScriptIT` 6 项、`OwnershipEndToEndIT` 10 项、`OwnershipEndToEndCrossReadIT` 4 项、`GpuLeaseMySqlIT` 8 项（并发唯一、过期接管、fencing、按 run 释放、事务回滚、隔离槽位 TTL 过期仍不可接管、重建实例仍隔离），均在本机 MySQL 实跑通过。命令为 `mvn -B -f migration-backend/pom.xml test` 和 `mvn -B -f migration-backend/pom.xml verify -Pmysql-it`（`mysql-it` 需 `MYSQL_IT_PASSWORD`）。**生产库 `eladmin` 迁移仍未执行，`sys_gpu_lease` 未在生产库建表**；真实 LDD 的正式 5 epochs 工程验收已于 2026-11-18 完成，论文效果评估未执行。GitHub Actions 配置了 MySQL 8.4 service，远端结果仍以 Actions 页面为准。旧 ELADMIN 的测试不计入迁移版覆盖；LDD 工程链路验证也不等于论文正式实验。
 
 ## 8. 代码追问导航
 
@@ -272,7 +272,7 @@ Java 的 `PythonProcessWaiter` 等待外层适配器进程时关注该文件的�
 3. 按某个隔离比例导出的 ZIP，能解释其中的索引、标签和图片文件。
 4. 当前本机 VaB 路径、Python 环境、PyTorch/CUDA 和 GPU 信息。
 5. 一个失败或取消/重试案例，说明状态如何变化、`run_id` 如何变化、旧回调如何被隔离。
-6. 构建和测试命令输出，以及 Surefire/Failsafe 报告。明确迁移版最新实测 **287 项单元测试（0 跳过）+ 106 项 MySQL/Redis/RabbitMQ 集成测试**（2026-11-16，本机环境变量提供密码），并区分旧模块历史定向测试；生产库迁移与 R4 部署验收尚未执行，也未跑真实 LDD/GPU，不能拿隔离库结果冒充生产验证。
+6. 构建和测试命令输出，以及 Surefire/Failsafe 报告。明确区分历史门禁（2026-11-16 实测 **287 项单元测试（0 跳过）+ 106 项 MySQL/Redis/RabbitMQ 集成测试**）与本轮验证（2026-11-19 后端 351 单测、Python 11 项、前端构建通过；126 IT 未复跑）；生产库迁移与生产多机部署尚未执行，真实 LDD 的正式 5 epochs 仅完成工程验收，论文效果未评估，不能拿隔离库或工程验收冒充生产/论文验证。
 
 不要把 `migration-frontend/src/data/demoData.js` 中的任务数字、统计百分比、模拟案例或演示模式页面作为真实实验数据。也不要把页面出现“已接入运行”的静态标签当作后端算法接入证据。
 

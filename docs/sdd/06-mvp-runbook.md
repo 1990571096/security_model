@@ -1,5 +1,8 @@
 # LDD MVP 运行与联调手册
 
+> 当前交付事实、测试计数和验收边界以 [`26-current-delivery-facts.md`](26-current-delivery-facts.md) 为准。
+> 本文保留运行步骤与历史联调记录；文中 `287/106` 等数字是 2026-11-16 快照。
+
 ## 目标
 
 当前联调只验证 LDD 训练前数据清洗闭环：
@@ -120,9 +123,9 @@ mvn -B -f migration-backend/pom.xml verify -Pmysql-it
 
 ### 数据库边界与开发库决策（2026-11-17）
 
-“生产库迁移”指实际运行平台所连接的业务数据库发生表结构变更，不一定是线上正式服务器。当前 `application.yml:13` 默认仍是 `DB_NAME=eladmin`，本轮未改动该默认值。
+“生产库迁移”指实际运行平台所连接的业务数据库发生表结构变更，不一定是线上正式服务器。**历史快照（2026-11-17）**：当时 `application.yml:13` 默认仍是 `DB_NAME=eladmin`；**当前（2026-11-19）已改为 `${DB_NAME:security_model}`**，启动脚本仍会显式设置 `DB_NAME` 为目标隔离库。下面关于 `eladmin` 的段落是迁移历史，不是当前默认值。
 
-开发、截图演示与论文工程验证的当前决策是：**新建独立库 `security_model`，不修改旧 `eladmin`**；旧库保留为原始数据和回退依据，不做历史任务归属回填。启动时通过环境变量 `DB_NAME=security_model` 指到新库。旧 `eladmin` 只在需要继续使用历史任务/正式部署时迁移，且必须先备份、只读核对、审核归属、回填 `owner_user_id`、验证并留档。
+开发、截图演示与论文工程验证的当前决策是：**新建独立库 `security_model`，不修改旧 `eladmin`**；旧库保留为原始数据和回退依据，不做历史任务归属回填。启动时通过环境变量 `DB_NAME=security_model`（或带明确后缀的隔离库名）指到新库，并在启动后核对实际连接库。旧 `eladmin` 只在需要继续使用历史任务/正式部署时迁移，且必须先备份、只读核对、审核归属、回填 `owner_user_id`、验证并留档。
 
 ```sql
 CREATE DATABASE IF NOT EXISTS security_model
@@ -342,7 +345,7 @@ mvn -B -f migration-backend/pom.xml verify -Pmysql-it `
   "-Dtest=R3ProductionExecutorChainIT"
 ```
 
-实际结果（2026-11-16 四项阻断修复后本机）：P1 10 项通过（`tmp/round3-p1.log`）；`KnowledgeRetrievalMySqlIT` 8/8（`tmp/stage2-fix-knowledge-it.log`，含历史-only 退役不可召回与向量清理补偿）；迁移 1/1；R3 `R3ProductionExecutorChainIT` 5/5；R4 定向 51/51（`tmp/stage2-fix-targeted2.log`，含 `WorkerConsumerLifecycleTest` 8、`DispatchMessageHandlerTest` 12、`RabbitDispatchTransportTest` 5、`PythonLddTaskExecutorCleanupOrderTest` 3）、`RabbitDispatchBrokerIT` 2/2；全量门禁 Temurin 17.0.21 为 **287 单测 + 106 IT**（`tmp/stage2-full-verify-new.log`），Python 11/11，前端构建历史通过（仍有 >500 kB chunk 警告）。真实 RabbitMQ 已执行 R4-01..08，含 7s 延迟 confirm、db→rabbit→db 双向停机切换、旧 dead 与新 attempt 真实竞争；**实现验收通过（隔离），部署验收未执行**，长期 DB 故障/多任务退避与跨主机仍是压力边界。提交 `ee10704`/`cd5a6ae`，run `43846823071` 全绿。
+实际结果（2026-11-16 四项阻断修复后本机，历史快照）：P1 10 项通过（`tmp/round3-p1.log`）；`KnowledgeRetrievalMySqlIT` 8/8（`tmp/stage2-fix-knowledge-it.log`，含历史-only 退役不可召回与向量清理补偿）；迁移 1/1；R3 `R3ProductionExecutorChainIT` 5/5；R4 定向 51/51（`tmp/stage2-fix-targeted2.log`，含 `WorkerConsumerLifecycleTest` 8、`DispatchMessageHandlerTest` 12、`RabbitDispatchTransportTest` 5、`PythonLddTaskExecutorCleanupOrderTest` 3）、`RabbitDispatchBrokerIT` 2/2；全量门禁 Temurin 17.0.21 为 **287 单测 + 106 IT**（`tmp/stage2-full-verify-new.log`），Python 11/11，前端构建历史通过（仍有 >500 kB chunk 警告）。真实 RabbitMQ 已执行 R4-01..08，含 7s 延迟 confirm、db→rabbit→db 双向停机切换、旧 dead 与新 attempt 真实竞争；**实现验收通过（隔离）+ 单机启停演练通过，生产多机部署未验收**，长期 DB 故障/多任务退避与跨主机仍是压力边界。提交 `ee10704`/`cd5a6ae`，run `43846823071` 全绿（历史 CI）。
 
 边界：R3 的 Python 是短协议桩，不运行 LDD、不占 GPU；崩溃窗口测试的 `R3ProductionCrashChildMain` 是测试最小上下文 + 手动异步包装，不是完整 Spring 容器。以上只证明隔离环境链路，不是生产库迁移或生产部署验收。
 

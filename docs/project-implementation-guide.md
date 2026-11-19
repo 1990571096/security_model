@@ -2,6 +2,10 @@
 
 更新时间：2026-10-26
 
+> 当前交付事实、测试计数、R4/单机部署状态和正式 5 epochs 边界以
+> [`sdd/26-current-delivery-facts.md`](sdd/26-current-delivery-facts.md) 为准。
+> 本文保留 2026-10-26 的实现叙事；文中较早的测试数字和状态描述按历史快照理解。
+
 本文按代码执行顺序拆解平台如何工作，包含关键类、协议示例和伪代码。业务设计见[设计思路](project-design-overview.md)，面试表达见[面试准备手册](project-interview-preparation.md)。
 
 ## 1. 仓库与运行边界
@@ -27,7 +31,7 @@ sql/                      数据库脚本（含保留的 eladmin.sql 基础 sche
 | 算法运行时 | Python、PyTorch、外部 VaB 工程及 LDD |
 | 构建 | Maven、npm |
 
-迁移版引入 Spring Data Redis，并通过 `ResourceCatalogCache` 缓存部分数据集、算法和超参数目录查询；MySQL 仍是资源和任务状态的事实数据源，Redis 不可用时缓存访问降级回源 MySQL。Redis 不缓存任务状态，也不是任务队列。默认任务调度仍使用事务提交后的本 JVM 有界 `ThreadPoolTaskExecutor`；R4 RabbitMQ/Outbox/Worker 代码已接入，默认 `dispatch.mode=db`。2026-11-16 本机真实 RabbitMQ + 双 JVM 已完成 R4-01..08 实现验收（含 7s 延迟 confirm、db→rabbit→db 双向停机切换、旧 dead 与新 attempt 竞争；全量 287 单测 + 106 IT 全绿）；部署验收未执行，长期 DB 故障/多任务退避与跨主机仍是压力边界。
+迁移版引入 Spring Data Redis，并通过 `ResourceCatalogCache` 缓存部分数据集、算法和超参数目录查询；MySQL 仍是资源和任务状态的事实数据源，Redis 不可用时缓存访问降级回源 MySQL。Redis 不缓存任务状态，也不是任务队列。默认任务调度仍使用事务提交后的本 JVM 有界 `ThreadPoolTaskExecutor`；R4 RabbitMQ/Outbox/Worker 代码已接入，默认 `dispatch.mode=db`。2026-11-16 本机真实 RabbitMQ + 双 JVM 已完成 R4-01..08 实现验收（含 7s 延迟 confirm、db→rabbit→db 双向停机切换、旧 dead 与新 attempt 竞争；当时全量 287 单测 + 106 IT 全绿，属于历史快照）；单机 db/rabbit 启停演练通过，生产多机部署未验收，长期 DB 故障/多任务退避与跨主机仍是压力边界。
 
 ## 2. 从 HTTP 请求到任务命令
 

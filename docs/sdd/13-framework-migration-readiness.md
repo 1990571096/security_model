@@ -2,6 +2,9 @@
 
 更新时间：2026-10-26
 
+> 本文是迁移就绪历史记录；当前测试计数、R4/单机部署状态和正式 5 epochs 边界以
+> [`26-current-delivery-facts.md`](26-current-delivery-facts.md) 为准。
+
 ## 1. 目标
 
 当前平台已完成 Spring Boot 3、Java 17、Vue 3、Vite、Element Plus 和 Pinia 迁移。
@@ -91,7 +94,7 @@ Java 侧负责参数合并、资源校验、配额准入和快照，Python 侧�
 - 不在迁移期间接入新的防御算法。
 - 不把本地单机配额描述成分布式 CPU、内存或 GPU 调度。
 - Redis 不作为迁移验收前置依赖，迁移版已将其用于可降级的资源目录缓存；Redisson 未接入。
-- 本条是迁移就绪评估时的范围：**RabbitMQ/Outbox/独立 Worker 后续已在 R4 实现**（默认 `dispatch.mode=db`，实现验收通过/部署验收未执行），不再把“消息队列未接入”作为当前事实。见 `21-r4-outbox-rabbitmq-design.md`、`20` §6.8。
+- 本条是迁移就绪评估时的范围：**RabbitMQ/Outbox/独立 Worker 后续已在 R4 实现**（默认 `dispatch.mode=db`，实现验收通过；单机启停演练通过，生产多机未验收），不再把“消息队列未接入”作为当前事实。见 `21-r4-outbox-rabbitmq-design.md`、`26` §5。
 
 ## 7. 验收标准
 

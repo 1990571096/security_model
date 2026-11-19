@@ -1,8 +1,10 @@
 # 当前状态分析
 
-> 本文记录的是旧 ELADMIN 工程的历史基线，不代表迁移版当前运行技术栈。迁移版现状以
-> [09-project-status.md](09-project-status.md) 和 [11-platform-implementation.md](11-platform-implementation.md) 为准。
-> 旧工程源码已归档到 Tag `migration-r4-verified` 与 `legacy` 分支；归档提交 `7e31b3f` 已在当前开发分支 `feature/r3-dispatch-idempotency` 删除 `eladmin/`、`eladmin-web/`，本地 `main` 尚未合入，合并前主分支历史仍保留。`sql/eladmin.sql` 保留。
+> 本文记录的是旧 ELADMIN 工程的历史基线，不代表迁移版当前运行技术栈。迁移版当前交付事实以
+> [26-current-delivery-facts.md](26-current-delivery-facts.md) 为准；实现细节可参考
+> [11-platform-implementation.md](11-platform-implementation.md)。
+> 旧工程源码已归档到 Tag `migration-r4-verified` 与 `legacy` 分支；当前开发分支已删除 `eladmin/`、`eladmin-web/`，
+> 旧工程不再作为当前业务回归或运行基线。`sql/eladmin.sql` 保留为基础 schema。
 
 ## 技术栈
 

@@ -6,7 +6,7 @@
 
 本文档记录“面向数据清洗的安全模型训练系统”当前已落地的平台实现，用于指导后续功能迭代、论文系统说明和答辩演示准备。
 
-> 事实基线：本文正文形成于 2026-10-26，描述 R1/R2 及更早的平台实现。R3 调度意图与启动恢复、R4 Outbox/RabbitMQ/独立 Worker、R6 知识检索、R7 受控助手之后的当前事实，以 `01-system-scope.md`、`09-project-status.md` §5.17、`17-agent-development-guide.md`、`20-stage-execution-and-acceptance.md` §6.8、`21-r4-outbox-rabbitmq-design.md` §16 为准；本文未同步的旧句不得当作当前能力。
+> 事实基线：本文正文形成于 2026-10-26，描述 R1/R2 及更早的平台实现。R3 调度意图与启动恢复、R4 Outbox/RabbitMQ/独立 Worker、R6 知识检索、R7 受控助手之后的当前事实，唯一以 `26-current-delivery-facts.md` 为准；`01-system-scope.md`、`17-agent-development-guide.md`、`20-stage-execution-and-acceptance.md` §6.8、`21-r4-outbox-rabbitmq-design.md` §16 提供设计/历史细节。本文未同步的旧句不得当作当前能力。
 
 本文档描述的是当前工程版本的实际能力，不将规划中的功能、后续拟接入算法或工程验证结果表述为已完成的论文实验结论。
 
@@ -37,7 +37,7 @@
 | --- | --- |
 | 前端 | Vue 3、Vite、Element Plus、Pinia、Vue Router 4 |
 | 后端 | Java 17、Spring Boot 3.5、Spring Security 6、JWT、MyBatis-Plus |
-| 数据与状态 | MySQL 作为事实源；Redis 缓存资源目录；R4 RabbitMQ/Outbox 代码已接入但默认关闭，2026-11-16 本机真实 Broker 已完成 R4-01..08 实现验收（隔离），部署验收未执行（详见 `21` §16、`20` §6.8） |
+| 数据与状态 | MySQL 作为事实源；Redis 缓存资源目录；R4 RabbitMQ/Outbox 代码已接入但默认关闭，2026-11-16 真实 Broker 完成 R4-01..08 实现验收（隔离），2026-11-18 完成单机 db/rabbit 启停演练；生产多机未验收（详见 `26-current-delivery-facts.md` §5、`21` §16、`20` §6.8） |
 | 算法运行时 | Python、PyTorch、外部 VaB 算法工程 |
 | 构建工具 | Maven、npm |
 

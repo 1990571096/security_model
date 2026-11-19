@@ -1,322 +1,285 @@
 # 面向数据清洗的安全模型训练系统
 
-本项目由早期网络安全竞赛项目重构而来，目标是形成一个面向数据清洗与安全模型训练的可视化平台。当前已完成 Spring Boot 3 + Vue 3 全量迁移后的 LDD 训练前数据清洗、结果报告和清洗子集导出闭环，并补齐训练前、训练中、训练后三大防御体系的可视化演示页面；旧 ELADMIN 工程仅作为业务回归和回滚基线保留。
+本项目是一个**单机实验平台工程交付版**：把原有 Python 安全算法重构为可编排的实验平台。Java 侧通过任务快照、状态机、幂等控制和执行器协议隔离算法实现；MySQL 管理任务事实，Redis 缓存热点资源；Outbox/RabbitMQ 支持可选的独立 Worker；基于 SDD 知识库接入 RAG 和受控 Assistant，为参数校验、任务预检、结果分析提供辅助。真实任务执行始终受后端权限和状态机控制。
 
-## 当前定位
+> **当前状态、测试数字和验收边界的唯一权威入口**：
+> [`docs/sdd/26-current-delivery-facts.md`](docs/sdd/26-current-delivery-facts.md)。
+> 本 README 只保留稳定的定位、结构、启动和学习入口，不维护“最新测试数字”。
 
-- 管理数据集、算法和 LDD 超参数模板。
-- 创建并启动 LDD 训练前数据清洗任务，记录清洗结果。
-- 查看失败任务并重试，保留每次启动的实验参数快照。
-- 通过运行标识隔离重试过程，避免旧执行器回调覆盖新任务结果。
-- 保存数据集、算法和运行环境指纹，支持核对历史实验使用的资源版本。
-- 在算法结果中记录实际 Python、PyTorch、NumPy、CUDA 和 GPU 运行环境，并在实验报告中展示。
-- 查看 LDD 实验报告，并按保留索引导出清洗后的 CIFAR-10 子集。
-- 查看任务创建、编辑、启动、重试、取消和清洗子集导出的操作审计记录。
-- 通过统一执行器接口为后续真实算法接入预留边界。
-- 浏览训练前、训练中、训练后三大防御阶段及算法目录；当前只有 LDD 进入真实任务执行链路，其他算法卡片不创建任务。
-- 观测有界任务执行池的线程、队列和饱和状态，并在队列满载时将任务收敛为可重试失败。
-- 通过单机运行任务总数、单用户运行任务数和执行池接收状态进行任务准入，并记录每次尝试的配额快照。
-- 按 SDD 文档驱动方式推进重构，降低返工风险。
+## 交付口径
+
+- 可以说：**单机实验平台工程交付版已完成相关工程验收**。
+- 正式 5 epochs 验收只支持工程执行链路、配置快照、产物、GPU 租约、进程收尾和验收脚本闭环。
+- 不可以说：论文效果验证完成、生产级多机部署完成、真实外部模型生产联调完成、生产库 `eladmin` 已迁移。
+- 旧 ELADMIN 工程已归档到 Tag `migration-r4-verified` 与 `legacy` 分支；当前分支已删除 `eladmin/`、`eladmin-web/`，`sql/eladmin.sql` 仅作为基础 schema 保留，不是当前运行基线。
 
 ## 技术栈
 
-当前平台运行版本采用稳定、成熟的目标技术栈：
+| 层 | 当前实现 |
+|---|---|
+| 后端 | Java 17 编译目标、Spring Boot 3.5、Spring Security 6、JWT、MyBatis-Plus |
+| 前端 | Vue 3、Vite 6、Element Plus、Pinia、Vue Router 4 |
+| 事实数据 | MySQL 8.0/8.4；任务、状态机、快照、租约、Outbox 账本以数据库为准 |
+| 缓存 | Redis 8.0；资源目录缓存、可选知识向量检索；异常时回源 MySQL |
+| 派发 | 默认 `dispatch.mode=db`；可选 `rabbit`（Outbox + Relay + Worker + RabbitMQ 4.1） |
+| 算法 | Python/PyTorch LDD；`algorithm-runtime/vab/algorithm_entry.py` 是仓库内适配器 |
+| 测试 | Maven Surefire + Failsafe、Python unittest、Vite build |
 
-- 后端：Java 17、Spring Boot 3.5、Spring Security 6、JWT、MyBatis-Plus。
-- 前端：Vue 3、Vite、Element Plus、Pinia、Vue Router 4。
-- 数据与运行：MySQL 是事实数据源；Redis 用于资源目录缓存；Python、PyTorch 执行 LDD；RabbitMQ 的 R4 单机派发代码已接入但默认关闭（`dispatch.mode=db`），真实 RabbitMQ 4.1.8 隔离环境已用于 R4-01（含回滚）/02/03/04（GPU_BUSY/毒消息/DB 中断）/05（运行中+完成后取消）/06（启动/drain/v2 旧队列隔离）/07/08（自然 dead 重放+replay/cancel 并发），未执行项见 `docs/sdd/09-project-status.md` §5.17。
-- 构建：Maven、npm。
+### 运行版本基线
 
-旧版 Spring Boot 2.7 + Vue 2 工程已归档到 Tag `migration-r4-verified` 与 `legacy` 分支；归档提交 `7e31b3f` 已在当前开发分支 `feature/r3-dispatch-idempotency` 删除 `eladmin/`、`eladmin-web/`，本地 `main` 尚未合入，合并前仍可从历史提交或 Tag/分支检出。`sql/eladmin.sql` 保留，仍是迁移版 MySQL IT 与初始化使用的基础 schema。
+| 组件 | 基线 | 依据 |
+|---|---|---|
+| JDK | 17 | `pom.xml` 编译目标与 CI `java-version: 17` |
+| Node.js | 20 | CI `node-version: 20`；Vite 6 当前构建实测通过 |
+| Python | 3.11（测试/CI）；3.9（VaB 适配器说明的最低基线） | CI `python-version: 3.11`；`algorithm-runtime/vab/README.md` |
+| MySQL | 8.0 / 8.4 | 本机文档记录 8.0；CI service 使用 `mysql:8.4` |
+| Redis | 8.0 | CI service 使用 `redis:8.0` |
+| RabbitMQ | 4.1 | CI service 使用 `rabbitmq:4.1`；单机 Rabbit 演练记录 4.1.8 |
 
 ## 项目结构
 
 ```text
 .
-├── docs/sdd/                  # SDD 文档与运行手册
-├── migration-backend/         # Spring Boot 3 / Java 17 运行后端
-├── migration-frontend/        # Vue 3 / Vite 运行前端
-├── algorithm-runtime/vab/     # Python / PyTorch LDD 适配器
-└── sql/                       # 数据库初始化与 MVP seed 脚本（含保留的 eladmin.sql 基础 schema）
+├── docs/sdd/                  # SDD、验收清单、部署记录
+├── docs/learning/             # 从架构到源码的学习路线
+├── migration-backend/         # Spring Boot 3 后端
+├── migration-frontend/        # Vue 3 / Vite 前端
+├── algorithm-runtime/vab/     # Python LDD 适配器与测试
+├── scripts/dev/               # 初始化、启停、前端静态托管、LDD 验收
+├── scripts/r4/                # R4 Outbox/RabbitMQ 演练与短桩
+├── sql/                       # 基础 schema、增量迁移与 MVP seed
+└── screenshots/               # 已跟踪的历史界面截图，保留审计
 ```
 
-平台前端通过 `8014` 访问，后端通过 `8100` 访问。认证、资源、LDD 任务、任务进度、
-实验报告、日志和清洗子集导出均由新 Spring Boot 3 后端原生处理。新前端已经提供工作台、
-数据集资源、算法资源、LDD 任务中心和三大防御阶段页面；
-任务中心已接入 LDD 任务创建、启动、任务详情、实验报告摘要、执行日志和按保留索引
-导出清洗子集。训练中和训练后防御页面仅用于展示后续扩展结构，未接入真实执行。报告中的
-完整运行环境、指标图表和产物 PNG 预览已经接入。
+默认端口：后端 `8100`；Vite 开发服务器 `8014`；静态托管脚本默认 `18220`（可用 `-StaticPort 8014` 覆盖）；`rabbit` 模式 Worker 默认 `8101`。
 
-## 算法执行范围
+## 当前能力
 
-当前平台只允许启动 LDD（训练前防御）。历史 mock baseline 仅保留在旧代码和数据库结构中，用于兼容迁移，不属于当前可执行算法范围。
+- 数据集、算法、超参数模板登记与权限控制。
+- LDD 训练前数据清洗任务的创建、编辑、删除、启动、重试、取消。
+- 任务参数快照、`run_id` / `attempt` 隔离、数据库条件更新和请求幂等。
+- 有界执行池、单机/单用户运行配额、MySQL 单槽 GPU 租约和隔离槽位。
+- 失败恢复、调度意图、Outbox、RabbitMQ Worker、重复投递与死信重放。
+- 结果报告、日志增量读取、产物 containment 校验和清洗子集 ZIP 异步导出。
+- RAG 知识索引、ACL-first 检索、路径/凭据/联系方式脱敏和行号引用。
+- Assistant 三场景：参数校验、任务预检、结果解释；写操作只生成预览，必须一次性确认。
+- 运行监控、健康检查、前端生产静态托管和单机启停脚本。
 
-当前真实接入的算法为 LDD。平台通过
-`PythonLddTaskExecutor` 和 `algorithm-runtime/vab/algorithm_entry.py` 调用外部
-VaB 项目中的 `LDD.py`，并将配置、结构化结果和任务产物渲染到训练前任务详情页。
+## 安全初始化（不触碰生产库）
 
-后续真实算法应继续实现后端统一的 `DefenseTaskExecutor` 边界，避免业务 CRUD
-代码直接依赖具体算法实现。
+`DB_NAME` 默认已改为 `security_model`；初始化/启停脚本只允许 `security_model` 前缀库，拒绝 `eladmin`。不要复用任何现有生产库。
 
-## 本地环境
+配置模板见 `.env.example`（复制为不入库的 `.env`）：
 
-迁移版使用 MySQL 保存资源、任务、报告和执行快照。资源目录缓存使用 Redis，默认连接
-`localhost:6379`；缓存异常时查询回源 MySQL，因此 Redis 不可用不会改变事实数据源。
-R4 的 RabbitMQ/Outbox/Worker 代码已接入，默认 `dispatch.mode=db`；默认任务仍由事务提交后的有界 JVM 线程池调度。只有显式启用 `mode=rabbit` 且提供真实 Broker 时才走 Outbox。真实 RabbitMQ 4.1.8 隔离环境已用于 R4 主要场景验收（含自然 dead 重放与 replay/cancel 并发），未执行项见 `docs/sdd/09-project-status.md` §5.17。Redis 连接地址和超时
-可通过 `REDIS_HOST`、`REDIS_PORT`、`REDIS_PASSWORD`、`REDIS_CONNECT_TIMEOUT` 和
-`REDIS_COMMAND_TIMEOUT` 覆盖。
+| 类别 | 变量 | 说明 |
+|---|---|---|
+| 必需 | `SECURITY_MODEL_JWT_SECRET` | 至少 32 字节；缺失或过短拒绝启动 |
+| 必需 | `DB_HOST`、`DB_PORT`、`DB_NAME`、`DB_USER`、`DB_PWD` | `DB_NAME` 必须是 `security_model` 前缀隔离库 |
+| 可选 | `REDIS_HOST`、`REDIS_PORT`、`REDIS_PASSWORD` | 缓存/知识向量；不可用时回源 MySQL |
+| 可选 | `SECURITY_MODEL_DISPATCH_*` | `db` 默认；`rabbit` 需显式配置 |
+| 可选 | `SECURITY_MODEL_EXECUTOR_*` | Python 执行器、工作目录和产物保留策略 |
+| 可选 | `SECURITY_MODEL_KNOWLEDGE_*`、`SECURITY_MODEL_ASSISTANT_*` | 外部模型默认关闭，启用需单独审批 |
 
-- MySQL：`localhost:3306`
-- 数据库：`eladmin`
-- 用户名：`root`
-- 密码：通过 `DB_PWD` 环境变量配置，不在仓库中保存真实密码。
-- JWT 密钥必须通过 `SECURITY_MODEL_JWT_SECRET` 提供，至少 32 字节；未设置或长度不足时
-  后端会拒绝启动。生产环境应使用安全的外部密钥管理设施。
-
-DeepSeek Agent + 本地向量 RAG 的演示启动、演示顺序和事实边界见
-[`docs/agent-rag-demo.md`](docs/agent-rag-demo.md)。
-
-首次初始化数据库：
-
-```sql
-SOURCE sql/eladmin.sql;
-SOURCE sql/security_model_mvp_seed.sql;
-SOURCE sql/security_model_execution_snapshot.sql;
-SOURCE sql/security_model_task_run_context.sql;
-SOURCE sql/security_model_clean_subset_export.sql;
-SOURCE sql/security_model_operation_audit.sql;
-SOURCE sql/security_model_ownership.sql;
-SOURCE sql/security_model_gpu_lease.sql;
-SOURCE sql/security_model_gpu_lease_block.sql;
-```
-
-已有开发库只需补充 MVP 数据：
-
-```sql
-SOURCE sql/security_model_mvp_seed.sql;
-SOURCE sql/security_model_execution_snapshot.sql;
-SOURCE sql/security_model_task_run_context.sql;
-SOURCE sql/security_model_clean_subset_export.sql;
-SOURCE sql/security_model_operation_audit.sql;
-SOURCE sql/security_model_ownership.sql;
-SOURCE sql/security_model_gpu_lease.sql;
-```
-
-已有 `sys_gpu_lease` 表的库只执行一次增量：`SOURCE sql/security_model_gpu_lease_block.sql;`（增加 `blocked_at`/`blocked_reason`）。`security_model_gpu_lease.sql` 创建单槽 GPU 租约表（`default-gpu-0`），任务启动前必须执行；未建表时启动任务会显式失败。它只保存租约，不改变 LDD 配置。
-
-`security_model_ownership.sql` 分两段使用：
-
-1. **第一段（默认，只读）**：直接执行。它只新增 `owner_user_id`、`data_origin`、
-   `owner_backfill_status` 三列与 `idx_owner_status`，然后打印逐行清单、疑似演示行、
-   `running` 但无 `run_id` 的行、按作者分组计数。**不修改任何业务行**（`@apply_backfill = 0`）。
-2. **审核后第二段**：把审核结论写进决策表 `sys_pre_defense_ownership_decision`（一行一个任务，
-   `decision` 取 `demo`/`assign`/`reject`，必须写 `reason` 与 `decided_by`；`assign` 必须给存在的
-   `user_id`），再把 `@apply_backfill` 改为 `1` 重新执行（幂等）。脚本**不再按用户名自动匹配**：
-   `demo` → `owner_user_id=NULL` + `unattributed` + `demo`；`assign` → 指定 owner + `matched` + `legacy`；
-   `reject` → 撤回；没有决策的行一律 `unattributed`，对普通用户不可见。未知任务 ID、未知用户或非法
-   决策值会让整批回填在写入前中止。
-
-```sql
--- 例：仓库真实库的裁定（8–11 号待审核，先不写决策）
-INSERT INTO sys_pre_defense_ownership_decision
-  (task_id, decision, user_id, reason, decided_by, decided_at) VALUES
-  (1,  'demo',   NULL, '2025-07 种子模拟 zscore 结果，无执行快照', 'reviewer', NOW()),
-  (2,  'demo',   NULL, '2025-07 种子模拟 isolation 结果，无执行快照', 'reviewer', NOW()),
-  (3,  'demo',   NULL, '恢复线程写入的失败结果，不代表真实执行', 'reviewer', NOW()),
-  (4,  'demo',   NULL, '恢复线程写入的失败结果，不代表真实执行', 'reviewer', NOW()),
-  (12, 'assign', 1,    'system 为平台批处理作者，人工确认归属 admin', 'reviewer', NOW());
-```
-
-脚本不改状态、结果 JSON、run id 或执行快照；回滚脚本为
-`sql/security_model_ownership_rollback.sql`（只删三列，决策表保留为审计证据）。执行前请先
-`mysqldump` 备份 `sys_pre_defense`，备份放在仓库外。**生产库 `eladmin` 尚未执行迁移**，
-执行前需另行确认时间窗口、备份绝对路径、库名、执行人与回滚方式。
-
-列出的 migration 脚本可重复执行。`execution_snapshot` 保存每次启动时冻结的资源和参数，
-`current_run_id` 与 `current_attempt` 用于校验异步执行器回调是否属于当前运行；
-`sys_pre_defense_export` 保存异步清洗子集导出任务及其进度、产物和失败原因。
-`security_operation_audit` 保存任务命令和清洗子集导出的操作人、状态变化与请求快照。
-
-启动快照默认对可访问的数据集文件计算 SHA-256，并记录文件真实路径、大小和修改时间；
-可通过 `SECURITY_MODEL_FINGERPRINT_CONTENT=false` 关闭内容摘要，或通过
-`SECURITY_MODEL_FINGERPRINT_MAX_BYTES` 设置参与摘要计算的文件大小上限。
-LDD 结果还会记录 Python 适配器版本、解释器版本、PyTorch/NumPy 版本、CUDA 可用性、GPU
-型号和关键 Python 依赖版本，用于区分“启动时配置快照”和“算法实际运行环境”。
-
-## 启动迁移版后端
+`.env`、真实密码、JWT 密钥、数据库 dump、数据集、权重和运行日志都不得提交。
 
 ```powershell
-cd F:\Study\postgraduate\毕业论文\security_model\migration-backend
-mvn spring-boot:run
+$repo = 'F:\Study\postgraduate\毕业论文\security_model'
+Set-Location $repo
+
+# 只放在当前进程；不要写入仓库、命令历史或文档
+$env:MYSQL_IT_PASSWORD = '<本机隔离 MySQL 管理员密码>'
+$env:SECURITY_MODEL_JWT_SECRET = '<至少 32 字节的本地随机密钥>'
+
+# 可选：提供 VaB 数据集根目录；不提供时只注册 LDD 算法与超参模板
+pwsh -File scripts\dev\InitializeSecurityModelDatabase.ps1 `
+  -SchemaName security_model_delivery_20261119 `
+  -VabDatasetRoot '<VaB 数据集目录>'
+
+# 后端打包；启停脚本默认读取这个 jar
+mvn -B -f migration-backend\pom.xml package -DskipTests
+
+# db 模式：单 API 进程，进程内派发
+pwsh -File scripts\dev\Start-SecurityModelStack.ps1 `
+  -Mode db -SchemaName security_model_delivery_20261119 -ApiPort 8100
+
+# 健康检查
+Invoke-RestMethod http://127.0.0.1:8100/actuator/health/readiness
 ```
 
-默认后端地址：
-
-- API 服务：`http://localhost:8100`
-- 健康检查：`http://localhost:8100/actuator/health`
-
-## 启动迁移版前端
+停止并确认端口释放：
 
 ```powershell
-cd F:\Study\postgraduate\毕业论文\security_model\migration-frontend
-npm ci
-npm run dev -- --host 0.0.0.0
+pwsh -File scripts\dev\Stop-SecurityModelStack.ps1 `
+  -StateRoot tmp\deploy-stack\security_model_delivery_20261119\db
+Get-NetTCPConnection -State Listen -LocalPort 8100 -ErrorAction SilentlyContinue
 ```
 
-默认前端地址：
-
-- 旧版：`http://localhost:8013/`
-- 迁移版：`http://localhost:8014/`
-
-默认登录账号：
-
-- `admin / <初始化时设置的密码>`
-
-登录使用迁移版后端验证码与 JWT。真实数据只来自资源、任务、进度、报告、日志、导出和审计接口。
-工作台（`/dashboard`）已接 `GET /api/dashboard/overview` 真实聚合，任务计数、近 7 日趋势、数据集/算法登记数和最近任务来自数据库；攻击成功率、干净准确率与清洗保留率因未接入模型评估链路显示“未采集”。
-案例库（`/cases`）和接口扩展预览（`/training-defense`）仍是前端硬编码演示内容，其中包含虚构的案例编号、实验配置和演示指标，**不代表真实任务、真实实验指标或真实硬件状态**，页面已加“演示”标签，演示时须口头说明。运行监控（`/runtime-monitor`）已改用真实任务统计、执行器线程池和 GPU 槽位接口；“运行中任务”取 MySQL `status=running` 统计（`runningTaskCount`），线程池 `activeCount` 只表示活动线程，不能等同于实验数。
-
-## 验证命令
-
-迁移版后端验证：
+`rabbit` 模式需要额外的 RabbitMQ 与两个 JVM：
 
 ```powershell
-cd F:\Study\postgraduate\毕业论文\security_model\migration-backend
-mvn -B verify
+pwsh -File scripts\dev\Start-SecurityModelStack.ps1 `
+  -Mode rabbit -Role all -SchemaName security_model_delivery_20261119 `
+  -ApiPort 8100 -WorkerPort 8101
 ```
 
-迁移版前端构建：
+`db` 与 `rabbit` 的角色差别：
+
+| 模式 | API 进程 | Worker 进程 | 任务派发 |
+|---|---|---|---|
+| `db` | 必需 | 禁止 | 事务提交后由进程内有界执行池调度 |
+| `rabbit` | 必需 | 必需 | API 写 Outbox，Relay 发布，Worker 消费后执行 |
+
+## 最小可复现演示
+
+演示分两条路径，不要混用：
+
+- **路径 A：只启动看界面**：只需要隔离库、后端和前端，不创建任务，不要求数据集可用。
+- **路径 B：跑通短桩任务**：需要先准备一个可验证的本地演示数据集，并在启动 JVM **之前**设置短桩执行器环境变量。
+
+### 路径 A：只启动看界面
+
+1. 初始化隔离库并打包后端（不提供 `-VabDatasetRoot` 时只注册 LDD 算法和默认超参模板）：
 
 ```powershell
-cd F:\Study\postgraduate\毕业论文\security_model\migration-frontend
-npm ci
-npm run build
+$repo = 'F:\Study\postgraduate\毕业论文\security_model'
+Set-Location $repo
+$env:MYSQL_IT_PASSWORD = '<本机隔离 MySQL 管理员密码>'
+$env:SECURITY_MODEL_JWT_SECRET = '<至少 32 字节的本地随机密钥>'
+
+pwsh -File scripts\dev\InitializeSecurityModelDatabase.ps1 `
+  -SchemaName security_model_delivery_demo
+mvn -B -f migration-backend\pom.xml package -DskipTests
 ```
 
-迁移版前端使用 Vue 3 / Vite，`npm run build` 不需要 `--openssl-legacy-provider`。
-
-迁移版后端通过 Maven `verify` 执行单元测试；使用 `-Pmysql-it` 可额外运行 MySQL 集成测试。
-集成测试覆盖并发原子领取、正常完成与恢复扫描的状态竞争、孤儿任务恢复边界、迁移脚本两段式行为，
-以及真实安全链路的双账号归属验收（每个类都只使用随机命名的临时 schema）。
-密码通过环境变量 `MYSQL_IT_PASSWORD` 提供，不写入仓库、文档或命令历史；交互式运行可用：
+2. 启动 `db` 模式后端，确认 readiness：
 
 ```powershell
+pwsh -File scripts\dev\Start-SecurityModelStack.ps1 `
+  -Mode db -SchemaName security_model_delivery_demo -ApiPort 8100
+Invoke-RestMethod http://127.0.0.1:8100/actuator/health/readiness
+```
+
+3. 构建并托管前端，登录后只浏览界面：
+
+```powershell
+npm --prefix migration-frontend ci
+npm --prefix migration-frontend run build
+pwsh -File scripts\dev\Start-FrontendStatic.ps1 -StaticPort 8014 -ApiPort 8100
+```
+
+打开 `http://127.0.0.1:8014`，使用初始化脚本输出的演示管理员账号登录；共享环境必须立即改密。此路径不创建任务，也不要求数据集状态为 `success`。
+
+### 路径 B：跑通短桩任务
+
+1. 准备一个**非空**的本地演示数据集目录。短桩不读取样本，只要求目录可读且非空；它不是 CIFAR-10 真实数据：
+
+```powershell
+$repo = 'F:\Study\postgraduate\毕业论文\security_model'
+New-Item -ItemType Directory -Force -Path "$repo\runtime\demo-dataset" | Out-Null
+Set-Content -LiteralPath "$repo\runtime\demo-dataset\README.txt" `
+  -Value 'short-stub demo dataset; not real CIFAR-10'
+```
+
+2. 初始化隔离库并打包后端（不传 `-VabDatasetRoot`，避免被误认为真实 CIFAR 数据）：
+
+```powershell
+$env:MYSQL_IT_PASSWORD = '<本机隔离 MySQL 管理员密码>'
+$env:SECURITY_MODEL_JWT_SECRET = '<至少 32 字节的本地随机密钥>'
+pwsh -File scripts\dev\InitializeSecurityModelDatabase.ps1 `
+  -SchemaName security_model_delivery_demo
+mvn -B -f migration-backend\pom.xml package -DskipTests
+```
+
+3. **先设置短桩执行器，再启动后端**。已经运行的 JVM 不会读取之后新设置的变量；改完必须重启后端：
+
+```powershell
+$env:SECURITY_MODEL_EXECUTOR_PYTHON_EXECUTABLE = 'python'
+$env:SECURITY_MODEL_EXECUTOR_PYTHON_SCRIPT = "$repo\scripts\r4\r4_python_stub.py"
+$env:SECURITY_MODEL_EXECUTOR_WORKSPACE = "$repo\runtime\executor"
+
+pwsh -File scripts\dev\Start-SecurityModelStack.ps1 `
+  -Mode db -SchemaName security_model_delivery_demo -ApiPort 8100
+Invoke-RestMethod http://127.0.0.1:8100/actuator/health/readiness
+```
+
+4. 构建并托管前端：
+
+```powershell
+npm --prefix migration-frontend ci
+npm --prefix migration-frontend run build
+pwsh -File scripts\dev\Start-FrontendStatic.ps1 -StaticPort 8014 -ApiPort 8100
+```
+
+5. 打开 `http://127.0.0.1:8014`，登录后完成数据集准备：
+
+- 进入数据集页面，新建数据集：名称 `Stub Demo Dataset`、类型 `image`、路径填 `$repo\runtime\demo-dataset` 的绝对路径、启用。
+- 新登记数据集初始为 `pending`，不会出现在可用数据集列表。
+- 以管理员身份点击“验证/Validate”，或调用 `POST /api/dataset/{datasetId}/validate`；状态变为 `success` 后才可被任务选用。
+- 这一步不是“解析真实 CIFAR-10”，只证明目录存在、可读且非空；短桩任务不依赖真实样本。
+
+6. 在任务中心创建 LDD 任务，选择 `Stub Demo Dataset` 和 `LDD (VaB)`，先做参数校验/预检，再启动。等待任务进入 `success`。
+
+7. 在任务详情查看状态、报告、日志和清洗子集导出入口。
+
+8. 停止并确认端口释放：
+
+```powershell
+pwsh -File scripts\dev\Stop-SecurityModelStack.ps1 `
+  -StateRoot tmp\deploy-stack\security_model_delivery_demo\db
+Get-NetTCPConnection -State Listen -LocalPort 8100 -ErrorAction SilentlyContinue
+```
+
+短桩只用于 UI/API 闭环演示，不代表真实 LDD/GPU 结果。真实 LDD 必须按
+[`docs/sdd/25-ldd-real-acceptance-checklist.md`](docs/sdd/25-ldd-real-acceptance-checklist.md)
+在受控环境另立运行窗口，本轮不启动。
+
+## 构建与验证
+
+```powershell
+# 后端单测（不需要 MySQL）
+mvn -B -f migration-backend\pom.xml test
+
+# 前端
+npm --prefix migration-frontend ci
+npm --prefix migration-frontend run build
+
+# Python 适配器
+python -m unittest discover -s algorithm-runtime/vab/tests
+
+# MySQL/Redis/RabbitMQ 集成测试（需要隔离库凭据；不要用生产库）
+$env:MYSQL_IT_PASSWORD = '<本机隔离 MySQL 管理员密码>'
+$env:REDIS_IT = 'true'
+$env:RABBIT_IT = 'true'
 pwsh -File scripts\run-mysql-it.ps1
 ```
 
-R1 的验收证据分级、接口归属审计表与迁移执行记录模板见 `docs/sdd/18-multiuser-ownership-and-resources.md` §8–§10。
+测试数字、本轮实际结果和未执行项统一记录在
+[`docs/sdd/26-current-delivery-facts.md`](docs/sdd/26-current-delivery-facts.md) §4。
 
-当前最新门禁（2026-11-16 验收口径与 CI 覆盖收口；`docs/sdd/**` 已加入 workflow 的 `push`/`pull_request` 路径，文档提交会触发 backend）：
+## 数据、日志与运行产物
 
-```powershell
-$env:MYSQL_IT_PASSWORD = '<本机 MySQL 密码>'
-$env:REDIS_IT = 'true'
-mvn -B -f migration-backend/pom.xml verify -Pmysql-it
-python -m unittest discover -s algorithm-runtime/vab/tests
-npm --prefix migration-frontend run build
-```
+- 仓库内只提交代码、配置模板、SQL、测试和文档。
+- `.env`、`secrets/`、数据库 dump、数据集、模型权重、运行日志、`runtime/`、`tmp/`、`target/`、`node_modules/`、`dist/` 均不进入 Git。
+- `secrets/` 只报告路径和 Git 跟踪状态，不读取内容。
+- 正式 5 epochs 证据保存在仓库外 `F:\security-model-data\ldd-acceptance-20261118\formal-freeze-20261118`，不要移动或删除。
+- 任务产物默认在系统临时目录下的 `security-model-executor`；保留策略由 `security-model.executor.artifacts.*` 控制，默认不自动删除。
 
-本机 Temurin 17.0.21 在 2026-11-17 三场景界面到可信结果收口后 **327 项单元测试 + 123 项 MySQL/Redis/RabbitMQ 集成测试**全绿（`tmp/stage8-full-verify.log`，0 失败/0 跳过，`RABBIT_IT=true`、`REDIS_IT=true`，BUILD SUCCESS，2:16）；新增 `AssistantScenarioUserPathEndToEndIT` 6/6 覆盖界面场景发送、参数校验、伪造指标/引用、HTTP 403 与任务预检；`WorkerConsumerLifecycleTest` 8/8、`KnowledgeIndexServiceTest` 11/11、`DispatchMessageHandlerTest` 12/12、`MySqlTaskPersistenceIT` 28/28、`KnowledgeRetrievalMySqlIT` 10/10、`DispatchConfigBoundaryRabbitIT` 1/1。Python 11/11；前端构建通过。R4 已在真实 RabbitMQ 4.1.8 + 隔离 MySQL + 双 JVM + 短 Python 桩下完成 R4-01..08 实现验收（含 7s 延迟 confirm、db→rabbit→db 双向停机切换、旧 dead 与新 attempt 竞争）；R4-04 长期 DB 故障/多任务退避仍是压力边界，生产库未迁移、真实 LDD/GPU 未执行，因此结论是“实现验收通过（隔离）/部署验收未执行”，默认仍是 `db` 模式。
+## 文档与学习入口
 
-GitHub Actions 工作流配置了 MySQL 8.4、Redis 8.0 和 RabbitMQ 4.1 service；本轮 `612685e` 的 run `44053148789` backend/frontend/python/init-scripts 四个 job 全部 success，backend 启用 `RABBIT_IT=true`，真实 Broker 配置缺失用例纳入门禁。green CI 不等于生产部署或真实 LDD/GPU 验收通过。
-
-旧版 ELADMIN 工程源码已归档到 Tag `migration-r4-verified` 与 `legacy` 分支；归档提交 `7e31b3f` 已在当前开发分支删除 `eladmin/`、`eladmin-web/`，本地 `main` 尚未合入，不再提供旧后端/旧前端构建命令。历史旧前端使用 Vue CLI/Webpack，在 Node 17+ 下曾需要 `--openssl-legacy-provider`；该提示只属于已归档的旧工程，不适用于迁移版 Vite 构建。归档前的旧定向测试历史记录为 42 项通过；该记录只属于旧工程基线，不能代表迁移版测试数量或覆盖率。迁移版门禁统一使用 `migration-backend` 与 `migration-frontend` 的命令。
-
-## SDD 文档
-
-重构迭代以 `docs/sdd` 为准：
-
-- `docs/sdd/README.md`：文档索引。
-- `docs/sdd/04-refactor-backlog.md`：重构任务与验收标准。
-- `docs/sdd/05-decisions.md`：设计决策记录。
-- `docs/sdd/06-mvp-runbook.md`：MVP 运行、联调和冒烟测试记录。
-- `docs/sdd/07-executor-contract.md`：算法执行器契约。
-- `docs/sdd/08-local-runtime-notes.md`：本地运行环境记录。
-- `docs/sdd/09-project-status.md`：项目整体目标、当前进度、已完成能力和后续待办。
-- `docs/sdd/16-engineering-improvement-roadmap.md`：迁移后质量门禁、任务可靠性、缓存和消息队列的实施状态与后续条件。
-- `docs/sdd/10-vab-integration.md`：VaB 训练前防御算法适配、参数和产物约定。
-- `docs/sdd/11-platform-implementation.md`：当前平台实现、业务流程和实现思路。
-- `docs/sdd/12-resume-project-narrative.md`：简历项目描述与面试讲解提纲。
-- `docs/sdd/13-framework-migration-readiness.md`：Spring Boot 3、Java 17、Vue 3 迁移验收记录。
-- `docs/sdd/17-agent-development-guide.md`：后续逐轮迭代的任务范围、依赖与验收条件（规划文档）。
-- `docs/sdd/20-stage-execution-and-acceptance.md`：开发 Agent 的逐阶段执行任务书，包含实施步骤、默认决策、故障验收矩阵和交接模板；§6.8 为 R3/R6/R7 逐 ID 实现/部署验收表。
-- `docs/sdd/21-r4-outbox-rabbitmq-design.md`：R4 单机 API + 独立 Worker + Transactional Outbox + RabbitMQ 契约（已实现；实现验收通过（隔离），部署验收未执行；默认关闭）。
-- `docs/sdd/18-multiuser-ownership-and-resources.md`：多用户归属、共享资源权限、历史迁移、GPU 租约与导出恢复（R0 设计契约 + R1/R2 当前事实）。
-- `docs/sdd/19-local-data-layout-and-retention.md`：受控本地目录布局与保留策略（R0 草案）。
-- `docs/project-introduction-and-interview-guide.md`：完整项目介绍、业务流程、当前进度和面试讲解稿。
-- `docs/resume-project-entry.md`：简历项目简介和 4-5 条核心项目要点。
+- **当前事实**：[`docs/sdd/26-current-delivery-facts.md`](docs/sdd/26-current-delivery-facts.md)
+- **SDD 索引**：[`docs/sdd/README.md`](docs/sdd/README.md)
+- **源码学习路线**：[`docs/learning/README.md`](docs/learning/README.md)
+- **R4 契约与证据**：[`docs/sdd/21-r4-outbox-rabbitmq-design.md`](docs/sdd/21-r4-outbox-rabbitmq-design.md)
+- **单机部署演练**：[`docs/sdd/24-stage3-single-node-deployment.md`](docs/sdd/24-stage3-single-node-deployment.md)
+- **LDD 正式验收**：[`docs/sdd/25-ldd-real-acceptance-checklist.md`](docs/sdd/25-ldd-real-acceptance-checklist.md)
+- **项目介绍/面试材料**：[`docs/project-introduction-and-interview-guide.md`](docs/project-introduction-and-interview-guide.md)、[`docs/resume-project-entry.md`](docs/resume-project-entry.md)
+- **Agent/RAG 演示**：[`docs/agent-rag-demo.md`](docs/agent-rag-demo.md)
 
 ## 当前限制
 
-- 当前真实运行和答辩展示只覆盖 LDD 训练前数据清洗。
-- 训练中、训练后和其他对比算法暂不接入主流程。
-- **多用户隔离已在 R1 落地**：任务归属以 `owner_user_id` 为准，任务/报告/日志/产物/导出/审计均做 owner 校验；跨用户读对管理员默认关闭（`SECURITY_MODEL_ADMIN_CROSS_USER_READ`），且任何角色都不能跨用户写。R1 为**有条件通过**：隔离库迁移与双账号端到端验收已实跑通过（最新全量为 327 单测 + 123 项 MySQL/Redis/RabbitMQ IT，含 R3/R5/R6/R7），但生产库迁移尚未执行，不能表述为“生产级权限体系已完成”。
-- **恢复护栏（ADR-017）**：`process.json` 使用 `schema_version=2` 与临时文件原子替换；启动前写 `state:starting`，启动后写 pid/启动时间；无记录、旧协议、损坏或启动时间缺失一律 `UNKNOWN`，不误杀。执行器 `finally`、超时、取消、中断和导出超时都由 `ExecutorProcessGuard` 确认整棵树（含 `descendants()` 与 `python-children.json`）退出后才释放租约，否则 `markBlocked("EXECUTOR_TREE_ALIVE")`。隔离槽位 TTL 过期仍返回 `GPU_LEASE_BLOCKED`，60s 重探确认退出才解除；执行器状态 API 和前端展示槽位原因/时间/指引。恢复完成前 `launchTask` 返回 `SCHEDULING_NOT_READY`。Java 最新 327 单测（0 跳过）+ 123 项 MySQL/Redis/RabbitMQ IT（0 跳过）全绿，含独立 JVM 崩溃演练与真实执行器链路；未跑真实 LDD。R3 调度意图与幂等见 ADR-018，生产迁移未执行。
-- **R2 产物治理已落地**：attempt 目录内日志超过 `max-log-bytes`（默认 20 MiB）只在**执行结束后**保留尾部并写截断标记；每次执行写 `manifest.json`（文件名/字节数/SHA-256）；`retention-days` 默认 0（不删除），开启后只清理“终态任务 + 非当前 attempt + 超期 + real-path 在 workspace 内”的目录。日志截断只约束归档大小，**不限制运行期间的磁盘增长**。Java 最新 327 单测（0 跳过）+ 123 项 MySQL/Redis/RabbitMQ IT（0 跳过）全绿；未跑真实 LDD。
-- **R4 单机 Outbox/RabbitMQ 实现验收通过（隔离），部署验收未执行**：2026-11-16 本机真实 RabbitMQ 4.1.8 + 隔离 schema/vhost + 双 JVM + 短 Python 桩已完成 R4-01..08，包括 7s 延迟 confirm、db→rabbit→db 双向停机切换、旧 dead 与新 attempt 竞争；327 单测 + 123 IT 全绿。R4-04 长期 DB 故障/多任务退避仍是压力边界；默认 `dispatch.mode=db`，生产库未迁移。
-- **R5 观测与缓存护栏已落地（待外审）**：`TaskRuntimeMetrics` 采集任务状态、执行池、GPU 槽位、恢复与执行耗时，标签不含 taskId/userId；请求日志带 `X-Request-Id` 和执行 taskId/runId/attempt；Redis 增加 hit/miss/degraded 计数与 key 代际条件回填，避免提交后旧值回填；`/actuator/health` 匿名且隐藏详情，`/actuator/metrics` 与 `/api/observability/summary` 仅管理员；真实 HTTP 鉴权 IT 覆盖匿名 401、普通用户 403、管理员 200。统计页和运行监控页改为真实数据，不再展示硬编码 ASR、CPU/GPU 或节点数字。最新 327 单测 + 123 项 MySQL/Redis/RabbitMQ IT 本机通过，生产库未建表，Redis 宕机场景未执行。
-- 升级到 R1 必须执行 `sql/security_model_ownership.sql`（先跑只读段，审核后写入 `sys_pre_defense_ownership_decision` 决策行，再在同一 MySQL 会话里 `SET @apply_backfill = 1` 重跑）；未执行迁移时任务接口会显式失败。升级前签发的旧 token 没有 `userId`，需重新登录后才能执行任务写操作。
-- 令牌不可单独撤销，但每次请求都会回查 `sys_user.enabled` 与 `is_admin`：禁用账号或撤销管理员后，已签发 token 立即失去权限，无需等 8 小时过期；代价是每个认证请求一次主键查询。
-- 共享数据集/算法/超参数模板的写操作仅管理员；普通用户只读。数据集登记后需管理员调用 `POST /api/dataset/{id}/validate` 才会变为可用（`parse_status='success'`）。
-- 任务产物默认写在系统临时目录（`<tmp>/security-model-executor`），尚未迁到受控数据根目录（R2）。
-- 同一张 GPU 的串行由 MySQL 单槽租约（`sys_gpu_lease`）强制为 1；适配器文件锁是第二道防线。配额不是 GPU 并发控制。无记录/身份不确定时槽位持久隔离，新任务得到 `GPU_LEASE_BLOCKED`，不会自动放行。
-- 新后端已经完成当前 LDD 展示范围内的认证、领域服务、数据访问和 JWT 迁移；旧工程仅作为回退基线。
-- 前端任务中心已接入真实任务接口，覆盖创建表单、启动、报告摘要、日志和清洗子集导出；数据集资源、算法资源和训练前、训练中、训练后防御演示页面已建立。
-- 清洗子集导出已改为异步任务，支持进度查询和失败重试；启动时 `ExportRecoveryRunner` 把遗留 `pending/running` 显式置为 `EXPORT_NOT_STARTED/EXPORT_INTERRUPTED`，不自动重派发，写到一半的 ZIP 不会成为成功下载。
-- 任务详情已支持 stdout/stderr 按 offset 增量轮询，任务中心已展示有界执行池和任务配额状态；SSE/WebSocket 日志流和后续模型训练衔接仍为后续优化项。
-
-## 可用于简历的工程亮点
-
-- 采用 `DefenseTaskExecutor` 统一执行器边界，将 Java 任务编排与 Python/PyTorch 算法运行环境解耦。
-- 采用任务状态机和数据库条件更新实现并发启动保护，使用 `run_id`、`attempt` 和任务专属目录隔离重试。
-- 采用启动时不可变参数快照，支持资源、配置、结果产物和实验报告的可追溯记录。
-- 通过资源内容摘要和服务层引用保护，避免数据集、算法或超参数模板被删除后破坏历史实验。
-- 对外部算法产物执行任务目录 containment 校验，并限制日志读取和 PNG 预览范围。
-- 通过异步导出任务按 LDD 保留样本索引重建 CIFAR-10 子集，形成从算法结果到可下载数据资产的业务闭环。
-
-## 原始项目来源
-
-本项目基于 ELADMIN 工程基础改造。原项目地址：
-
-- GitHub: `https://github.com/elunez/eladmin-mp`
-- Gitee: `https://gitee.com/elunez/eladmin-mp`
-
-## VaB 真实算法接入
-
-LDD（论文提出方法）已通过 `algorithm-runtime/vab/algorithm_entry.py` 接入 Python
-执行器契约。VaB 原始代码、数据集、检查点和实验输出仍保留在外部算法目录，不会复制进本仓库。
-
-当前完成的是平台注册、配置映射、任务隔离、结果协议和前端结果展示。已完成一轮
-CIFAR-10 / SIG / batch size 128 / 5 epoch 的本地真实运行，结果产物保存在外部
-VaB 目录；该运行用于验证工程闭环，不作为论文正式实验结论。
-
-训练前任务详情支持失败重试、每次启动的参数快照和可视化实验报告。对成功的 LDD
-CIFAR-10 任务，报告页可按隔离比例读取 `selected_indices_<ratio>.npy`，重建原始
-CIFAR-10 训练样本并下载 ZIP；压缩包包含 PNG 图片、标签、索引及重建元数据，而非
-VaB 运行期构造的触发器修改张量。
-
-启动使用真实 VaB 算法的迁移版后端前，需要设置：
-
-```powershell
-$env:VAB_ROOT='F:\Study\postgraduate\1下\VB backdoor defence\VaB-main'
-$env:SECURITY_MODEL_EXECUTOR_PYTHON_SCRIPT='F:\Study\postgraduate\毕业论文\security_model\algorithm-runtime\vab\algorithm_entry.py'
-$env:SECURITY_MODEL_EXECUTOR_PYTHON_EXECUTABLE='F:\path\to\the\VaB-python.exe'
-$env:SECURITY_MODEL_JWT_SECRET='<至少32字节的本地密钥>'
-```
-
-`SECURITY_MODEL_EXECUTOR_PYTHON_EXECUTABLE` 必须指向可运行 LDD 的 Python 环境。清洗子集导出仅依赖
-该环境中的 `numpy`，不额外依赖 PyTorch、torchvision 或 Pillow。
-
-然后启动迁移版后端（**不是**旧 `eladmin`）：
-
-```powershell
-cd F:\Study\postgraduate\毕业论文\security_model\migration-backend
-mvn spring-boot:run
-```
-
-注意：`--spring.profiles.active=dev,python-executor` 只在旧 `eladmin` 工程中存在
-（`@Profile("python-executor")`），迁移版没有该 profile，设置它不会产生任何效果。迁移版通过
-`security-model.executor.python.*` 配置键读取上述环境变量。
-
-详细的参数映射、运行约束和验收标准见
-`docs/sdd/10-vab-integration.md`。
+- 只覆盖 LDD 训练前数据清洗；训练中、训练后和其他对比算法不进入真实执行。
+- 默认单机 `db` 模式；`rabbit` 是可选单机双进程模式，不是多机生产部署。
+- 未做生产级多机、Kubernetes、对象存储、跨节点 GPU 调度和 HA。
+- 未做论文效果评估、基线对照、多随机种子/多攻击设置。
+- 取消、超时、重试的真实 GPU 行为，以及长期 Broker 故障压力，仍是未完成边界。
+- Assistant/RAG 外部模型默认关闭，未做真实外部模型生产联调。

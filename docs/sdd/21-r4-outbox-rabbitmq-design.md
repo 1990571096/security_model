@@ -1,8 +1,11 @@
 # R4 契约与实现：单机 API + 独立 Worker + Transactional Outbox + RabbitMQ
 
-状态：**R4 实现验收通过（隔离环境）；部署验收未执行，不得写成生产部署通过**。四项阻断整改已完成：恢复返回 `RecoveryResult`（未安全分类/本地 accepted 未清零/GPU 隔离槽位不空时 gate 不开放）、执行器 accepted 在进程处置与槽位决策后清零、历史-only 文件退役 active 知识并保留源行号、重复投递只 ACK 不提前终结原账本。真实 RabbitMQ 4.1.8 + Erlang 27.3.4.18、隔离 schema/vhost、双 JVM 已实测 R4-01（含事务回滚）、R4-02（重复幂等/不可路由/旧 claim token/真实 confirm-return/7s 延迟 confirm）、R4-03、R4-04（GPU_BUSY/毒消息/DB 中断/无重启自动恢复消费）、R4-05（运行中取消+完成后取消）、R4-06（启动拒绝/drain 拒绝/v2 旧队列隔离/db→rabbit→db 完整双向停机切换）、R4-07、R4-08（Broker 故障自然 dead 后重放+权限+replay/cancel 真实并发+旧 dead 与新 attempt 真实竞争）。剩余边界仅 R4-04 长期 DB 故障/多任务退避压力与跨主机。提交 `ee10704`/`cd5a6ae`，run `43846823071` backend/python/frontend 全绿；本机全量 287 单测 + 106 IT 全绿（`tmp/stage2-full-verify-new.log`）。默认 `dispatch.mode=db`，不启用 RabbitMQ/Outbox/Worker，不迁移业务库**
+> **当前交付事实唯一入口**：[26-current-delivery-facts.md](26-current-delivery-facts.md)。
+> 本文保留 2026-11-16 的设计、实现和验收证据；“部署验收未执行”是当时口径，后续单机 db/rabbit 启停演练见 [24](24-stage3-single-node-deployment.md)。生产级多机部署仍未验收。
+
+状态：**R4 实现验收通过（隔离环境）；单机部署与生命周期演练通过；生产级多机部署未验收**。四项阻断整改已完成：恢复返回 `RecoveryResult`（未安全分类/本地 accepted 未清零/GPU 隔离槽位不空时 gate 不开放）、执行器 accepted 在进程处置与槽位决策后清零、历史-only 文件退役 active 知识并保留源行号、重复投递只 ACK 不提前终结原账本。真实 RabbitMQ 4.1.8 + Erlang 27.3.4.18、隔离 schema/vhost、双 JVM 已实测 R4-01（含事务回滚）、R4-02（重复幂等/不可路由/旧 claim token/真实 confirm-return/7s 延迟 confirm）、R4-03、R4-04（GPU_BUSY/毒消息/DB 中断/无重启自动恢复消费）、R4-05（运行中取消+完成后取消）、R4-06（启动拒绝/drain 拒绝/v2 旧队列隔离/db→rabbit→db 完整双向停机切换）、R4-07、R4-08（Broker 故障自然 dead 后重放+权限+replay/cancel 真实并发+旧 dead 与新 attempt 真实竞争）。剩余边界仅 R4-04 长期 DB 故障/多任务退避压力与跨主机。提交 `ee10704`/`cd5a6ae`，run `43846823071` backend/python/frontend 全绿；该次记录的 287 单测 + 106 IT 是历史快照，当前门禁以 26 为准。默认 `dispatch.mode=db`，不启用 RabbitMQ/Outbox/Worker，不迁移业务库**
 日期：2026-11-16
-事实源：本文件 §16 验收表、`20-stage-execution-and-acceptance.md` §6.8、`09-project-status.md` §5.17 为当前 R4 事实源；其他章节或旧文档中的“RabbitMQ 未安装 / R4-01..08 未执行 / 252+100 为最新”均为历史记录，已被 2026-11-16 验收更新。
+事实源：本文件 §16 验收表与 [26-current-delivery-facts.md](26-current-delivery-facts.md) 为当前入口；`20-stage-execution-and-acceptance.md` §6.8、`09-project-status.md` §5.17 是历史设计/状态记录。其他章节或旧文档中的“RabbitMQ 未安装 / R4-01..08 未执行 / 252+100 为最新”均为历史记录。
 范围：一台机器上的 API 进程 + 一个独立 Worker 进程；复用现有 R3 调度意图、GPU 单槽租约、执行器协议、终态条件更新和恢复组件。
 
 ## 1. 目标与非目标
@@ -20,7 +23,7 @@
 - 不重跑真实 LDD 128/5，不接真实 GPU，不迁移生产库 `eladmin`。
 - 不把 Outbox/MQ 设计写成已实现；未完成真实 RabbitMQ + MySQL + 短 Python 桩验收前，R4 不标记完成。
 
-## 2. 现状与边界
+## 2. 设计起点（2026-11-16 历史）
 
 - 当前 API 在任务事务提交后通过 `AfterCommitTaskDispatcher` / `@Async("taskAsync")` 在 API 进程内派发 Python；没有独立 Worker，没有 MQ。
 - R3 已有 `pending → submitting → submitted` 意图、条件抢占、租约、`DispatchRecoveryCoordinator`、`AttemptProcessRegistry`、`PythonLddTaskExecutor` 和终态条件更新。

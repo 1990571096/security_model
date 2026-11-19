@@ -2,6 +2,10 @@
 
 更新时间：2026-11-17
 
+> 当前测试计数、R4/单机部署状态和正式 5 epochs 边界以
+> [`26-current-delivery-facts.md`](26-current-delivery-facts.md) 为准；本文表格中的 `289/106`
+> 等数字是各阶段历史快照。
+
 状态：**初始化链路已收口、旧工程已归档（2026-11-17）**。已创建并从空库初始化 `security_model`（48 表），已用该库启动后端并验证登录、执行池、知识索引与检索；未迁移旧 `eladmin` 数据库。旧 `eladmin/`、`eladmin-web/` 源码已归档到 Tag `migration-r4-verified` 与 `legacy` 分支，并在当前开发分支 `feature/r3-dispatch-idempotency` 的独立提交 `7e31b3f` 删除（本地 `main` 尚未合入），`sql/eladmin.sql` 保留。阶段 3 五组监控的后端字段与前端页面已实现。
 
 ## 1. “生产库迁移”的含义
@@ -12,12 +16,14 @@
 - 该库是否已有当前代码所需的表、列和索引；
 - 该库中是否有真实历史任务、报告、导出和用户数据。
 
-当前配置默认仍是：
+当前配置默认已是：
 
 ```text
 migration-backend/src/main/resources/application.yml:13
-${DB_NAME:eladmin}
+${DB_NAME:security_model}
 ```
+
+**历史快照（2026-11-17）**：该默认值当时仍是 `${DB_NAME:eladmin}`。当前启动脚本会显式传入 `DB_NAME`；仍然必须在启动后核对实际连接库，不能只凭默认值判断。
 
 迁移脚本会在目标库增加或创建任务归属字段、执行快照、`run_id`/`attempt`、GPU 租约、导出任务、审计表、调度意图/幂等表、知识库与向量清理状态、Assistant 确认、Outbox、消费账本等对象。缺表或缺列时，对应功能会显式失败，不能把“服务能启动”当作迁移完成。
 

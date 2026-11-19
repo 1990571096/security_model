@@ -1,5 +1,9 @@
 # 项目目标与阶段进度说明
 
+> **当前交付事实唯一入口**：[26-current-delivery-facts.md](26-current-delivery-facts.md)。
+> 本文是历史状态汇编，保留各阶段当时的测试数字、故障和结论；引用时必须注明“历史快照/当时状态”，
+> 不得把本文中任意一段旧数字当作当前口径。
+
 更新时间：2026-11-18（真实 1 epoch GPU 验收：任务 `2122913324293771266` 经真实 API、真实 GPU 租约和真实 Python/LDD 子进程成功完成，2 分 25 秒、progress 100、GPU 已释放；此前真实 LDD 验收准备：隔离库 `security_model_ldd_20261118`、数据集 6 路径验证、LDD 算法 14、pending 任务不启动、环境预检脚本与清单；阶段 3 收尾整改：启停脚本身份与排空、liveness/readiness 分离、数据库备份恢复、前端生产静态托管、CI 针对性测试；此前 2026-11-17 阶段 3 运行监控按五组拆分：后端 `GET /api/observability/dispatch` 返回 Outbox / Worker / 消费积压 / GPU 租约明细，前端 `RuntimeMonitorView.vue` 改为五组卡片并区分“不可用/不适用”；新库 `security_model` 已从空库初始化 48 表并以 `DB_NAME=security_model` 启动验证登录、执行池、知识索引 23 文档/574 chunks 与 5 条引用检索；导出恢复用注入的 1 条 `running` + 1 条 `pending` 导出行实测 `scanned=2, recovered=2` 并写审计（故障注入，非真实导出中断）；`sql/eladmin.sql` 的 DROP 行为与文档“全部 IF NOT EXISTS”冲突已修正，新增 `scripts/dev/InitializeSecurityModelDatabase.ps1`。本机 `verify -Pmysql-it` 为 **294 单测 + 106 IT，0 失败/2 跳过**（仅 `RabbitDispatchBrokerIT` 未设 `RABBIT_IT`；Redis 向量/缓存与知识检索 IT 已随 `REDIS_IT=true` 执行），日志 `tmp/stage4-full-verify2.log`；阶段 4 提交 `2783d95`，CI run `44001570656` backend/python/frontend 全绿；功能提交 `f70711f`，CI run `43995845889` backend/python/frontend 全绿；收尾前端标签修复 `2d716a8`，run `43996551480` 同样全绿；阶段 4 工作台已改用 `GET /api/dashboard/overview` 真实聚合并移除 90.0%/4.7% 等演示常量，案例库保留演示占位但加显式警示与“演示”标签，算法详情改按 `algorithmId` 读取真实目录。阶段 5（2026-11-17）把 `security_model_vab_seed.sql` 改为由 `@vab_dataset_root` 注入路径、初始化脚本按 `-VabDatasetRoot` / `SECURITY_MODEL_VAB_DATASET_ROOT` 校验目录后再写数据集；未提供变量时只注册 `LDD (VaB)` 与默认超参模板，不伪造数据集行，重复执行不覆盖既有路径。新库实测 `dataset_count=6`、`parsed_dataset_count=5`（阶段 5 当时；评审收口后 1-4/6 已被历史样例基线重置为 `pending`，5 保持 `parsing`，当前 `parsed_dataset_count=0`）、`sys_algorithm` 14 行、`pre` 阶段 7 个，连续执行两次无新增行，任务创建/详情/删除 API 已走通；同时修复执行器未配置时 `EXECUTOR_NOT_CONFIGURED` 会把 GPU 槽位永久隔离的问题（无脚本时直接释放租约，新增 1 项单测）。本轮仍**未运行真实 LDD/GPU**，不把该失败路径写成执行链路通过。本机 `verify -Pmysql-it` 为 **298 单测 + 106 IT，0 失败/2 跳过**，日志 `tmp/stage5-full-verify.log`（阶段 5 基线）。2026-11-17 评审四项收口后为 **305 单测 + 111 IT，0 失败/2 跳过**（未设 `RABBIT_IT`），日志 `tmp/stage5-closeout-full-verify.log`，收口代码提交 `d025150`；干净库 `security_model_accept_20261117124258` 已用短协议桩完成配置缺失拒绝、权限、Assistant 预览/确认、成功/报告/导出、取消与 retry 预检，真实 LDD/GPU 未运行。2026-11-17 初始化链路再收口基线为 **306 单测 + 111 IT**（同前仅 Rabbit Broker 跳过），RAG/Agent 场景收口后为 **312 单测 + 113 IT，0 失败/0 错误/2 跳过**，新增 6 项场景/评估单测与 `DispatchConfigBoundaryIT` 2 项；`VabSeedPortabilityTest` 6/6、`VabSeedMySqlIT` 5/5。CI run `44033400651`（head `61a32ad`）backend/frontend/python/init-scripts 四个 job 全部 success，其中 `init-scripts` 在 Ubuntu + MySQL 8.4 上跑通保护与完整初始化幂等脚本。旧 `eladmin/`、`eladmin-web/` 已归档到 Tag `migration-r4-verified` 与 `legacy` 分支，并在当前开发分支的独立提交 `7e31b3f` 删除（本地 `main` 尚未合入）；干净 worktree 复跑 306 单测 + 111 IT、guard、完整初始化幂等和 jar 启动健康检查均通过（`tmp/archive-clean-verification.txt`）；归档提交 CI run `44035312196`（head `7e31b3f`）四个 job 全部 success。阶段 5 提交 `18a5a5c`，CI run `44013701508` backend/python/frontend 全绿。此前 2026-11-16 记录：R4 契约已修订并实现；六项评审缺陷已整改；真实 RabbitMQ 4.1.8 + Erlang 27.3.4.18 + 隔离 schema/vhost + 双 JVM + 短 Python 桩已实测 R4-01..R4-08，**R4 整体仍保留长期 DB 故障/多任务退避压测边界，不能写成生产部署通过**；2026-11-16 全量为 **287 单测 + 106 IT**，日志 `tmp/stage2-full-verify-new.log`；run `43846823071` backend/python/frontend 全绿）
 
 2026-11-13 文档与实现迭代：R2 第四切片后实现 R3-A/R3-B 代码（持久调度意图、条件抢占、统一启动恢复、有界 pending 扫描、create/start/retry 请求幂等），并完成 R5 第一批（运行指标、日志关联、Redis 代际缓存、管理员观测接口、Actuator 最小暴露、真实统计页），本机实跑 127 项单测 + 41 项 MySQL IT + 1 项真实 Redis 缓存代际 IT；带意图的真实 JVM 重启、R3-04 崩溃演练、真实 Redis 宕机、生产库建表仍未完成，R3 仍待外部复审。文档中未执行的真实 LDD 与生产库迁移仍保持未验证状态。
@@ -9,7 +13,7 @@
 测试使用临时隔离 schema。迁移后端以 MySQL 保存任务状态，通过有界 JVM 线程池调用 Python
 LDD 进程；R4 的 RabbitMQ/Outbox/Worker 已用真实 Broker + 隔离 MySQL 双 JVM 执行主要场景，默认仍关闭，未执行项见 §5.17。
 
-## 2026-11-18 真实 LDD 1 epoch 与正式 5 epochs 工程验收（当前事实）
+## 2026-11-18 真实 LDD 1 epoch 与正式 5 epochs 工程验收（历史快照）
 
 真实 LDD 已通过 1 epoch 短周期验收，并在 17:03–17:09 通过正式 5 epochs 工程验收：任务经真实 HTTP API、真实 GPU 租约和真实 `D:\Anaconda\python.exe` 子进程跑完。该结果是执行链路与正式配置门禁，**不是论文效果结论**；论文效果仍需独立评估和基线对照。详见 [25-ldd-real-acceptance-checklist.md](25-ldd-real-acceptance-checklist.md)。
 
@@ -25,7 +29,7 @@ LDD 进程；R4 的 RabbitMQ/Outbox/Worker 已用真实 Broker + 隔离 MySQL �
 - 仍未完成：论文效果评估与基线对照、正式实验的多随机种子/多攻击设置；取消、超时、重试的真实 GPU 行为；数据集 6 的样本统计仍为 NULL（仅路径可读验证，不能写成已解析 50000 样本）。2026-08-19 旧工程验证产物不替代论文正式实验。
 - 已知问题：无 captcha 的 `/auth/login` 在 `uuid=null` 时 500 NPE；正常前端 `/auth/code` 流程不受影响，直接 API 必须先取验证码。本轮未修复。
 
-## 2026-11-17 R7 场景联调收口（当前事实）
+## 2026-11-17 R7 场景联调收口（历史快照）
 
 R7 助手已完成“参数策略—模型证据—隔离后端/真实前端/脚本化假模型”浏览器联调，详见 [23-r7-scenario-integration-closeout.md](23-r7-scenario-integration-closeout.md)。
 
@@ -52,7 +56,7 @@ R0 已完成一次以源码为准的事实审计（2026-11-13）：修正了 7 �
 
 当前运行基座为 Spring Boot 3.5、Java 17、Spring Security 6、Vue 3、Vite、Element Plus、
 Pinia、MySQL、Redis 和 Python。R4 的 RabbitMQ/Outbox/Worker 已用真实 Broker + 隔离 MySQL 双 JVM 执行主要场景，默认 `dispatch.mode=db`，未启用迁移版运行链路，未执行项见 §5.17。旧 Spring Boot 2.7 +
-Vue 2 工程继续作为业务回归和回滚基线，不参与迁移版主流程。
+Vue 2 工程**已归档到 Tag `migration-r4-verified` 与 `legacy` 分支**，当前分支已删除 `eladmin/`、`eladmin-web/`；它不是当前业务回归或运行基线。
 
 框架迁移已经完成当前 LDD 业务范围，迁移版保留任务协议和 Python 执行器契约，使算法运行时
 可以独立演进。

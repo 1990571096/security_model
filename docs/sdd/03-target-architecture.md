@@ -2,6 +2,9 @@
 
 更新时间：2026-11-13（R0 事实校准）。本文分两栏：**当前实现**（代码可验证）与**目标设计**（尚未实现）。未标注“已实现”的内容都是规划。
 
+> 当前测试计数、R4/单机部署状态和正式 5 epochs 边界以
+> [`26-current-delivery-facts.md`](26-current-delivery-facts.md) 为准；本文的部署状态句是当时快照。
+
 ## 1. 当前运行架构（已实现）
 
 ```text
@@ -30,7 +33,7 @@ Spring Boot 3.5（migration-backend）
 
 关键边界（已实现的事实）：
 
-- **进程模型**：默认仍为算法在 API 进程的子进程中运行，线程池 `taskAsync` 有界；R4 已实现 Outbox/RabbitMQ/角色化 Worker 代码（`21-r4-outbox-rabbitmq-design.md`、ADR-026），默认 `dispatch.mode=db`。2026-11-16 已在本机真实 RabbitMQ 4.1.8 + 隔离 schema/vhost + 双 JVM 执行 R4-01..08，包括 7s 延迟 confirm、db→rabbit→db 双向停机切换、旧 dead 与新 attempt 竞争；**R4 实现验收通过（隔离），部署验收未执行**：长期 DB 故障/多任务退避与跨主机仍是压力边界，不能写成已启用或已整体验收。
+- **进程模型**：默认仍为算法在 API 进程的子进程中运行，线程池 `taskAsync` 有界；R4 已实现 Outbox/RabbitMQ/角色化 Worker 代码（`21-r4-outbox-rabbitmq-design.md`、ADR-026），默认 `dispatch.mode=db`。2026-11-16 已在本机真实 RabbitMQ 4.1.8 + 隔离 schema/vhost + 双 JVM 执行 R4-01..08，包括 7s 延迟 confirm、db→rabbit→db 双向停机切换、旧 dead 与新 attempt 竞争；**R4 实现验收通过（隔离），单机 db/rabbit 启停演练通过，生产多机部署未验收**：长期 DB 故障/多任务退避与跨主机仍是压力边界，不能写成已启用或已整体验收。
 - **完成语义**：`result.json` 是唯一完成依据；`progress.json` 只是诊断快照。
 - **幂等与竞争**：任务领取是 `pending → running` 的条件更新；进度/结果/结束回调都要求 `status='running'` 且 `current_run_id` 相同。
 - **启动恢复**：`ApplicationReadyEvent` 时把所有 `running` 收敛为 `failed(EXECUTOR_RESTARTED)`，隐含“单实例”前提；导出任务没有启动恢复。
@@ -50,7 +53,7 @@ Spring Boot 3.5（migration-backend）
 - R1（**已完成，2026-11-13**）：任务/报告/日志/产物/导出按 `owner_user_id` 授权；共享资源收敛为管理员维护；数据集增加管理员验证入口。
 - R2：配额与领取同事务；GPU 单槽租约；导出启动恢复；日志与产物限额。
 - R3：`pending` 之前增加数据库调度意图，关闭“提交成功但派发前崩溃”的窗口。
-- R4/R8（可选）：Outbox + RabbitMQ + 独立 Worker / 多实例，只在有真实跨进程测试条件时启用。R4 见 `21-r4-outbox-rabbitmq-design.md` 与 ADR-026；实现验收已在隔离真实环境通过，默认仍关闭，部署验收未执行，不是已对外启用的生产能力。
+- R4/R8（可选）：Outbox + RabbitMQ + 独立 Worker / 多实例，只在有真实跨进程测试条件时启用。R4 见 `21-r4-outbox-rabbitmq-design.md` 与 ADR-026；实现验收已在隔离真实环境通过，默认仍关闭，单机启停演练通过，生产多机未验收，不是已对外启用的生产能力。
 
 ## 3. 后端包结构（当前真实结构）
 
