@@ -267,6 +267,19 @@ DLQ 重放必须区分执行状态：
 | R4-08 | failed 重放拒绝；test 用户重放；Broker 停止后让 Outbox 自然耗尽为 dead，重启 Broker 后重放；真实 HTTP 并发 replay + cancel；旧 dead 与新 attempt 真实竞争 | admin 400、test 403；自然 dead 重放成功；并发 replay/cancel 后终态 canceled、Python 0 次；任务 `2122268541581815809` attempt 1 `RABBIT_UNROUTABLE` dead `74532340-55a4-4114-90b2-a17c57fdcafe`、task failed，重试 attempt 2 运行中 replay 返回 HTTP 400 `DLQ_REPLAY_IDENTITY_MISMATCH`，attempt 2 success、consumption `969a2a34-08e9-4ec2-b622-f9ca1e8604a4`、旧 dead 保持、Python 仅 1 次；`tmp/r4-08-replay-response.json`、`tmp/r4-08-new-attempt-final.json`、`tmp/r4-08-new-attempt-rows.txt` | 通过（自然 dead + 成功重放 + 权限 + replay/cancel 并发 + replay/新 attempt 竞争） | 跨主机/多 Worker 并发未执行；旧 SQL 注入 dead 仅保留历史 |
 
 
+### 16.1 2026-11-19 远端发布前证据复核（只校准口径，不重跑）
+
+以下三项是 2026-11-16 R4 历史实测的精确证据，不与 2026-11-19 单机短验收混写：
+
+- **7 秒 confirm 延迟**：AMQP 代理将 `Basic.Ack` 延迟 **7 秒**（`18:02:52` → `18:02:59`），应用 confirm 超时为 5 秒。任务 `2122269157720920066` 连续 3 次 `RABBIT_PUBLISH_FAILED` 后 Outbox 进入 `dead`，任务保持 `running`，没有把迟到确认误判为发布成功。证据：`tmp/r4-confirm-proxy.log`。
+- **replay 与取消并发**：真实 HTTP 并发执行 replay 与 cancel，最终任务终态为 `canceled`，Python 执行 **0 次**；没有出现取消后又被 replay 拉起。证据：R4-08 行。
+- **新 attempt 已启动后拒绝旧 replay**：任务 `2122268541581815809` 的 attempt 1 因 `RABBIT_UNROUTABLE` 进入 `dead`（dead id `74532340-55a4-4114-90b2-a17c57fdcafe`），任务 `failed`；重试启动 attempt 2 后，对旧 dead 的 replay 返回 HTTP 400 `DLQ_REPLAY_IDENTITY_MISMATCH`；attempt 2 最终 `success`，consumption `969a2a34-08e9-4ec2-b622-f9ca1e8604a4`，旧 dead 保留，Python 仅执行 1 次。证据：`tmp/r4-08-replay-response.json`、`tmp/r4-08-new-attempt-final.json`、`tmp/r4-08-new-attempt-rows.txt`。
+
+口径提醒：本节上方 `287 单测 + 106 IT` 是 **2026-11-16 历史快照**，不是当前交付门禁。
+当前 2026-11-19 门禁为 **351 单测 + 126 IT**；126 项中实际执行 116 项、跳过 10 项，
+专项补跑覆盖 4 项（Redis 1 项、RabbitMQ 3 项），另有 6 项知识检索/向量测试本轮未复跑。
+完整拆分见 `26-current-delivery-facts.md` §4.6，不能把 10 项跳过整体写成“已通过”。
+
 **2026-11-16 阶段 2 追加（代码与测试已落地，真实故障矩阵仍有边界）**：
 
 - `DispatchRecoveryCoordinator.recoverAtStartup()` 返回 `RecoveryResult(safeToConsume, scanned, replayed, converged, deferred, errors, localAccepted, quarantinedSlots, failedTasks)`；单任务异常计入 `errors` 与 `failedTasks`，扫描异常返回 `TASK_SCAN_FAILED`；只有“无单任务错误、本地 accepted=0、GPU 隔离槽位为空”才 `safeToConsume=true`，否则 `markNotReady()`。`WorkerConsumerLifecycle.startAfterRecovery(result)` 先检查该结果，再检查归属、accepted 和容器；归属仍持有与重新取得两分支都检查。

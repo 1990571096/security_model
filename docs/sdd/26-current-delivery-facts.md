@@ -167,12 +167,22 @@
 
 | 门禁 | 执行方式 | 结果 |
 |---|---|---|
-| MySQL | 隔离 MySQL `127.0.0.1:3307`，`mvn -B -f migration-backend/pom.xml verify -Pmysql-it` | 单测 **351/0/0/0**；IT **126 项，0 失败、0 错误、10 跳过**；`BUILD SUCCESS`；日志 `tmp/final-mysql-it.log` |
+| MySQL | 隔离 MySQL `127.0.0.1:3307`，`mvn -B -f migration-backend/pom.xml verify -Pmysql-it` | 单测 **351/0/0/0**；IT **126 项，实际执行 116、跳过 10、0 失败、0 错误**；`BUILD SUCCESS`；日志 `tmp/final-mysql-it.log` |
 | Redis | `REDIS_IT=true`，选中 `ResourceCatalogCacheRedisIT` | **1 项，0 失败、0 错误、0 跳过**；`BUILD SUCCESS`；日志 `tmp/final-redis-it.log` |
 | RabbitMQ | 隔离 RabbitMQ 4.1.8，`5673`，独立 vhost `security_model_r4_delivery20261119`；`RABBIT_IT=true` | `RabbitDispatchBrokerIT` **2 项** + `DispatchConfigBoundaryRabbitIT` **1 项**，合计 **3/0/0/0**；`BUILD SUCCESS`；日志 `tmp/final-rabbit-it.log` |
 
-- MySQL 门禁的 10 项跳过属于该 profile 下未启用/条件不满足的用例；Redis 与 RabbitMQ
-  已用上述专项命令单独真实执行，不能把“跳过”误读为“未验证”。
+MySQL 门禁的 10 项跳过按用例拆分如下：
+
+| 跳过用例 | 跳过数 | 本轮处理 |
+|---|---:|---|
+| `KnowledgeRetrievalMySqlIT` | 3 | **未复跑**；属于知识检索专项 |
+| `KnowledgeVectorStoreRedisIT` | 3 | **未复跑**；属于 Redis 向量专项 |
+| `RabbitDispatchBrokerIT` | 2 | 专项补跑，已通过 |
+| `DispatchConfigBoundaryRabbitIT` | 1 | 专项补跑，已通过（补注入 `MYSQL_IT_*`） |
+| `ResourceCatalogCacheRedisIT` | 1 | 专项补跑，已通过 |
+
+因此本轮专项补跑覆盖其中 **4 项**（Redis 1 + RabbitMQ 3），另有 **6 项知识检索/向量测试未复跑**。
+这 6 项不得写成“本轮通过”；它们没有阻断单机交付，但属于远端完整 CI 必须核对通过/跳过项的未闭合证据。
 - RabbitMQ 首次专项运行 `DispatchConfigBoundaryRabbitIT` 时，因该命令未注入
   `MYSQL_IT_*` 而报 `Access denied ... (using password: NO)`；补上隔离 MySQL 凭据后
   同一用例通过，最终三门禁均为 0 失败。
@@ -205,6 +215,10 @@
 - **R4 实现验收**：2026-11-16 在真实 RabbitMQ 4.1.8、隔离 schema/vhost、双 JVM、
   短 Python 桩下完成 R4-01..08；包括 publisher confirm 丢失/延迟、重复投递、
   DB 中断恢复、取消、死信重放、replay 与新 attempt 竞争。
+- **R4 三项精确证据**：7 秒 confirm 延迟（任务 `2122269157720920066` 未误判成功）；
+  replay 与取消并发（终态 `canceled`、Python 0 次）；新 attempt 启动后拒绝旧 replay
+  （HTTP 400 `DLQ_REPLAY_IDENTITY_MISMATCH`）。详见
+  `21-r4-outbox-rabbitmq-design.md` §16.1。
 - **单机部署验收**：2026-11-18 完成 `db` 与 `rabbit` 两种模式的启动、停止、重启、
   排空、端口释放、前端静态托管和健康检查演练。
 - **默认运行模式**：`dispatch.mode=db`；不启用 RabbitMQ/Outbox/Worker。
