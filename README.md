@@ -195,6 +195,9 @@ mvn -B -f migration-backend\pom.xml package -DskipTests
 ```powershell
 $env:SECURITY_MODEL_EXECUTOR_PYTHON_EXECUTABLE = 'python'
 $env:SECURITY_MODEL_EXECUTOR_PYTHON_SCRIPT = "$repo\scripts\r4\r4_python_stub.py"
+# 下面两个变量必须指向同一个受控目录：
+# python.workspace 决定 attempt 目录写在哪里；executor.workspace 是进程记录的边界。
+$env:SECURITY_MODEL_EXECUTOR_PYTHON_WORKSPACE = "$repo\runtime\executor"
 $env:SECURITY_MODEL_EXECUTOR_WORKSPACE = "$repo\runtime\executor"
 
 pwsh -File scripts\dev\Start-SecurityModelStack.ps1 `
