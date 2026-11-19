@@ -238,7 +238,9 @@ MySQL 门禁的 10 项跳过按用例拆分如下：
 6. 代码清理审计：`infrastructure/legacy/LegacyBackendClient.java` 全仓仅命中自身声明/构造器，
    是 Spring `@Component` 但当前无注入引用；因仍有迁移兼容用途且无专项测试覆盖，本轮保留未删。
    `src/`、`.agents` 为空目录，`secrets/`、`runtime/`、`tmp/` 等 ignored/untracked 内容均未移动或删除。
-7. 本轮未 push、未创建 Tag/Release、未触发 CI；冻结只落在本地提交和本文件。
+7. 远端发布未完成：2026-11-19 尝试推送 `feature/r3-dispatch-idempotency`，GitHub 443
+   连接失败（`Failed to connect to github.com port 443`）；未触发远端 CI，也未创建交付 Tag。
+   本地分支相对已缓存的远端分支仍有未推送提交。冻结仍只落在本地提交和本文件。
 8. 生产部署、真实外部模型联调、论文效果评估继续作为独立事项，不纳入本次冻结。
 
 ## 7. 文档使用规则
