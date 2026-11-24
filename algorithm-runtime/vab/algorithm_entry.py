@@ -829,6 +829,7 @@ def run(args):
                 with execution_log.open("w", encoding="utf-8", buffering=1) as log_file:
                     child_environment = os.environ.copy()
                     child_environment["PYTHONUNBUFFERED"] = "1"
+                    child_environment["PYTHONIOENCODING"] = "utf-8:backslashreplace"
                     process = subprocess.Popen(
                         build_command(generated_script, config),
                         cwd=str(vab_root),
@@ -1097,4 +1098,7 @@ def main():
 
 
 if __name__ == "__main__":
+    # The platform captures the redirected Python streams as UTF-8.
+    sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
     raise SystemExit(main())

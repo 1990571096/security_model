@@ -1,7 +1,8 @@
-"""Unit tests for the VaB adapter runtime lock and failure-code mapping."""
+"""Tests for the VaB adapter's runtime boundaries."""
 
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -116,6 +117,47 @@ class FailureCodeTest(unittest.TestCase):
             "VAB_INTEGRATION_ERROR",
             algorithm_entry.classify_runtime_failure("FileNotFoundError: LDD.py"),
         )
+
+
+class TrainingLogEncodingTest(unittest.TestCase):
+    def test_cli_preserves_unicode_training_output_under_gbk(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            dataset = root / "dataset-\u4e0b"
+            dataset.mkdir()
+            (root / "LDD.py").write_text(
+                "import sys\nprint(sys.argv[-1])\nprint('\\ufffd')\n",
+                encoding="utf-8",
+            )
+            (root / "torch.py").write_text(
+                "class cuda:\n    @staticmethod\n    def is_available(): return True\n",
+                encoding="utf-8",
+            )
+            request = root / "request.json"
+            request.write_text(json.dumps({
+                "dataset": {"path": str(dataset)},
+                "algorithm": {
+                    "path": "vab://pre-defense/ldd",
+                    "configJson": json.dumps({
+                        "dataset": "cifar10", "trigger_type": "SIG", "poisoned_portion": 0.1,
+                    }),
+                },
+            }), encoding="utf-8")
+            result = root / "result.json"
+            env = dict(os.environ, VAB_ROOT=str(root), PYTHONPATH=str(root), PYTHONIOENCODING="gbk:strict")
+            env.pop("SECURITY_MODEL_VAB_RESULT_ROOT", None)
+            execution = subprocess.run(
+                [sys.executable, algorithm_entry.__file__, "--stage", "pre_defense",
+                 "--request", str(request), "--result", str(result)],
+                env=env, capture_output=True, timeout=30,
+            )
+
+            report = json.loads(result.read_text(encoding="utf-8"))
+            self.assertEqual(0, execution.returncode, report.get("failure_reason"))
+            self.assertEqual("success", report["status"])
+            log = (root / "artifacts" / "execution.log").read_text(encoding="utf-8")
+            self.assertEqual("{}\n\ufffd\n".format(dataset), log)
+            self.assertEqual(log.splitlines(), execution.stdout.decode("utf-8").splitlines())
 
 
 if __name__ == "__main__":
