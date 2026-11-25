@@ -16,8 +16,10 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.core.io.FileSystemResource;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.datasource.init.ScriptUtils;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
@@ -120,6 +122,272 @@ class AssistantScenarioUserPathEndToEndIT {
         jdbc.update("DELETE FROM sys_assistant_usage_daily");
         jdbc.update("DELETE FROM sys_request_idempotency WHERE operation LIKE 'assistant.%'");
         MODEL.reset();
+    }
+
+    @Test
+    void singleWindowAnswersCapabilityQuestionsAndSavesOnlySafeToolActivity() throws Exception {
+        String alice = login("alice");
+        String sessionId = null;
+        for (String question : List.of("解释一下你的能力", "介绍你自己", "你的功能是什么")) {
+            ObjectNode input = MAPPER.createObjectNode()
+                    .put("question", question).put("scenario", "experiment_assistant");
+            if (sessionId != null) {
+                input.put("sessionId", sessionId);
+            }
+            MvcResult result = mockMvc.perform(post("/api/assistant/chat")
+                            .header("Authorization", alice).contentType(MediaType.APPLICATION_JSON)
+                            .content(input.toString()))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.answerSource").value("server_capability"))
+                    .andExpect(jsonPath("$.toolCalls").value(0))
+                    .andExpect(jsonPath("$.answer").value(org.hamcrest.Matchers.containsString("实验助手")))
+                    .andReturn();
+            sessionId = MAPPER.readTree(result.getResponse().getContentAsByteArray()).path("sessionId").asText();
+        }
+        ObjectNode input = MAPPER.createObjectNode().put("sessionId", sessionId)
+                .put("scenario", "experiment_assistant").put("question", "当前有哪些记录");
+        mockMvc.perform(post("/api/assistant/chat")
+                        .header("Authorization", alice).contentType(MediaType.APPLICATION_JSON)
+                        .content(input.toString()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("needs_context"))
+                .andExpect(jsonPath("$.modelCalls").value(0))
+                .andExpect(jsonPath("$.toolCalls").value(0))
+                .andExpect(jsonPath("$.answer").value(org.hamcrest.Matchers.containsString("对话历史")));
+        input.put("question", "这个怎么算？");
+        mockMvc.perform(post("/api/assistant/chat")
+                        .header("Authorization", alice).contentType(MediaType.APPLICATION_JSON)
+                        .content(input.toString()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("needs_context"))
+                .andExpect(jsonPath("$.toolCalls").value(0));
+        input.put("question", "清洗纯度是什么？");
+        mockMvc.perform(post("/api/assistant/chat")
+                        .header("Authorization", alice).contentType(MediaType.APPLICATION_JSON)
+                        .content(input.toString()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.toolResults[0].toolName").value("explain_clean_purity"))
+                .andExpect(jsonPath("$.toolResults[0].status").value("ok"));
+        input.put("question", "这个怎么算？");
+        mockMvc.perform(post("/api/assistant/chat")
+                        .header("Authorization", alice).contentType(MediaType.APPLICATION_JSON)
+                        .content(input.toString()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.toolResults[0].toolName").value("explain_clean_purity"));
+        mockMvc.perform(get("/api/assistant/sessions/{sessionId}", sessionId).header("Authorization", alice))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.summary.turns.length()").value(7))
+                .andExpect(jsonPath("$.summary.turns[5].toolResults[0].toolName").value("explain_clean_purity"))
+                .andExpect(jsonPath("$.summary.turns[5].toolResults[0].data").doesNotExist());
+        mockMvc.perform(get("/api/assistant/sessions/{sessionId}", sessionId)
+                        .header("Authorization", login("bob")))
+                .andExpect(status().isNotFound());
+        mockMvc.perform(get("/api/assistant/tools").param("scope", "experiment_assistant")
+                        .header("Authorization", alice))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(org.hamcrest.Matchers.greaterThanOrEqualTo(5)))
+                .andExpect(jsonPath("$[*].write").value(org.hamcrest.Matchers.everyItem(org.hamcrest.Matchers.is(false))));
+        assertEquals(0, MODEL.index.get());
+    }
+
+    @Test
+    void singleWindowUsesPlatformDefinitionsAndLiveOwnerScopedTaskData() throws Exception {
+        String alice = login("alice");
+        long preciseId = 9123248940453748738L;
+        jdbc.update("""
+                INSERT INTO sys_pre_defense (task_id, task_name, status, dataset_id, algorithm_id, progress,
+                    create_by, create_time, owner_user_id, data_origin)
+                VALUES (?, 'precise-id-task', 'running', 4, 14, 20, 'alice', NOW(), 2, 'user')
+                """, preciseId);
+        try {
+            for (String question : List.of("清洗纯度可以说明什么", "干净样本占比高就够了吗？")) {
+                mockMvc.perform(experimentChat(alice, question))
+                        .andExpect(status().isOk())
+                        .andExpect(jsonPath("$.answerSource").value("server_evidence"))
+                        .andExpect(jsonPath("$.answer").value(org.hamcrest.Matchers.containsString("保留样本数")))
+                        .andExpect(jsonPath("$.structured.evidence.metric.definition").isString())
+                        .andExpect(jsonPath("$.modelCalls").value(0));
+            }
+            var list = mockMvc.perform(experimentChat(alice, "看看当前有哪些任务"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.toolResults[0].toolName").value("list_my_tasks"))
+                    .andExpect(jsonPath("$.structured.evidence.taskList.tasks[0].taskId").value(Long.toString(preciseId)))
+                    .andReturn();
+            var tasks = MAPPER.readTree(list.getResponse().getContentAsByteArray())
+                    .path("structured").path("evidence").path("taskList").path("tasks");
+            for (var task : tasks) {
+                assertFalse(List.of("200", "300", "400").contains(task.path("taskId").asText()));
+            }
+            mockMvc.perform(experimentChat(alice, "我有哪些正在运行的任务？"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.structured.evidence.taskList.status").value("running"))
+                    .andExpect(jsonPath("$.structured.evidence.taskList.tasks[*].status")
+                            .value(org.hamcrest.Matchers.everyItem(org.hamcrest.Matchers.is("running"))));
+            mockMvc.perform(experimentChat(alice, "看看有哪些已取消的任务"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.structured.evidence.taskList.tasks").isEmpty());
+            mockMvc.perform(experimentChat(alice, "帮我解读报告"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.status").value("needs_context"))
+                    .andExpect(jsonPath("$.structured.evidence.taskList.tasks[0].taskId").value(Long.toString(preciseId)));
+            mockMvc.perform(experimentChat(alice, "解读任务 #501 的报告"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.answer").value(org.hamcrest.Matchers.containsString("91.2%")));
+            jdbc.update("""
+                    UPDATE sys_pre_defense SET cleaning_result =
+                        '{"metrics":{"clean_purity_percent_by_isolation_ratio":{"10":91.2},
+                        "selected_sample_count_by_isolation_ratio":{"10":420}}}'
+                    WHERE task_id = ?
+                    """, REPORT_TASK);
+            mockMvc.perform(experimentChat(alice, "解读任务 #501 的报告"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.answer").value(org.hamcrest.Matchers.containsString("10% · 清洗纯度 91.2% · 保留样本 420 个")));
+            mockMvc.perform(experimentChat(login("bob"), "解读任务 #501 的报告"))
+                    .andExpect(status().isForbidden());
+            assertEquals(0, MODEL.index.get());
+        } finally {
+            jdbc.update("DELETE FROM sys_pre_defense WHERE task_id = ?", preciseId);
+        }
+    }
+
+    private org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder experimentChat(
+            String authorization, String question, String sessionId) {
+        return post("/api/assistant/chat").header("Authorization", authorization)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(MAPPER.createObjectNode().put("scenario", "experiment_assistant")
+                        .put("question", question).put("sessionId", sessionId).toString());
+    }
+
+    @Test
+    void assistantRoutesParaphrasesAndKeepsNegatedStatusInOwnerScopedSql() throws Exception {
+        String alice = login("alice");
+        jdbc.update("UPDATE sys_pre_defense SET status = 'failed' WHERE task_id = ?", PREFLIGHT_TASK);
+        MODEL.script(answer("{\"kind\":\"TASKS\"}"), answer("{\"kind\":\"METRIC\"}"));
+        mockMvc.perform(experimentChat(alice, "把我手头的实验都列一下"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.toolResults[0].toolName").value("list_my_tasks"))
+                .andExpect(jsonPath("$.modelCalls").value(0));
+        mockMvc.perform(experimentChat(alice, "实验记录给我过一眼"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.toolResults[0].toolName").value("list_my_tasks"))
+                .andExpect(jsonPath("$.modelCalls").value(1));
+        mockMvc.perform(experimentChat(alice, "留下来的数据里没被污染的比例代表啥？"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.toolResults[0].toolName").value("explain_clean_purity"))
+                .andExpect(jsonPath("$.modelCalls").value(0));
+        mockMvc.perform(experimentChat(alice, "筛出的子集有多干净，该怎么理解这个数？"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.toolResults[0].toolName").value("explain_clean_purity"))
+                .andExpect(jsonPath("$.modelCalls").value(1));
+        mockMvc.perform(experimentChat(alice, "哪些任务没有失败？"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.structured.evidence.taskList.excludeStatus").value("failed"))
+                .andExpect(jsonPath("$.structured.evidence.taskList.tasks[?(@.status == 'failed')]").isEmpty())
+                .andExpect(jsonPath("$.structured.evidence.taskList.tasks[*].taskId")
+                        .value(org.hamcrest.Matchers.hasItem(Long.toString(REPORT_TASK))))
+                .andExpect(jsonPath("$.answer", org.hamcrest.Matchers.containsString("排除「已失败」")))
+                .andExpect(jsonPath("$.modelCalls").value(0));
+        mockMvc.perform(experimentChat(alice, "有哪些指标能评价实验效果？"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.toolResults[0].toolName").value("search_knowledge"))
+                .andExpect(jsonPath("$.modelCalls").value(0));
+        for (String question : List.of("列出昨天失败的任务", "哪些任务还没完成", "列出成功和失败的任务",
+                "帮我取消任务 #501")) {
+            mockMvc.perform(experimentChat(alice, question))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.status").value("needs_context"))
+                    .andExpect(jsonPath("$.toolCalls").value(0));
+        }
+        assertEquals(2, MODEL.index.get());
+    }
+
+    @Test
+    void assistantReusesOnlyLastVerifiedTaskAndRejectsInvalidModelRoutes() throws Exception {
+        String alice = login("alice");
+        var first = mockMvc.perform(experimentChat(alice, "查询任务 #501 的进度"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.toolResults[0].toolName").value("get_my_task_summary"))
+                .andReturn();
+        String session = MAPPER.readTree(first.getResponse().getContentAsByteArray()).path("sessionId").asText();
+        mockMvc.perform(experimentChat(alice, "那它的报告呢？", session))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.toolResults[0].toolName").value("get_my_report_summary"))
+                .andExpect(jsonPath("$.structured.evidence.taskId").value("501"));
+        MODEL.script(answer("{\"kind\":\"REPORT\",\"taskId\":\"300\"}"),
+                toolCall("get_my_task_summary", MAPPER.createObjectNode().put("taskId", "501")),
+                answer("{\"kind\":\"TASKS\",\"status\":\"running\",\"excludeStatus\":\"failed\"}"),
+                answer("这是未经过校验的模型文本"));
+        for (String question : List.of("顺便核一下它好了没有", "请处理这个", "给我过一眼实验记录", "再看看")) {
+            mockMvc.perform(experimentChat(alice, question))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.status").value("needs_context"))
+                    .andExpect(jsonPath("$.modelStatus").value("intent_invalid"))
+                    .andExpect(jsonPath("$.toolCalls").value(0));
+        }
+        assertEquals(4, MODEL.index.get());
+        for (JsonNode captured : MODEL.requests) {
+            assertFalse(captured.has("tools"));
+            assertEquals(2, captured.path("messages").size());
+            assertEquals("json_object", captured.path("response_format").path("type").asText());
+        }
+    }
+
+    private org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder experimentChat(
+            String authorization, String question) {
+        return post("/api/assistant/chat").header("Authorization", authorization)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(MAPPER.createObjectNode().put("scenario", "experiment_assistant")
+                        .put("question", question).toString());
+    }
+
+    @Test
+    void singleWindowRoutesKnowledgeAndOwnedFailureWithoutCallingTheModel() throws Exception {
+        String alice = login("alice");
+        mockMvc.perform(post("/api/assistant/chat")
+                        .header("Authorization", alice)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"question":"未登记的测试术语","scenario":"experiment_knowledge"}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.answerSource").value("server_evidence"))
+                .andExpect(jsonPath("$.modelStatus").value("not_called"))
+                .andExpect(jsonPath("$.toolResults[0].toolName").value("search_knowledge"));
+
+        jdbc.update("""
+                UPDATE sys_pre_defense SET status='failed', current_run_id='diagnosis-run', current_attempt=1,
+                    cleaning_result='{"run_id":"diagnosis-run","attempt":1,"error_code":"GPU_OOM"}'
+                WHERE task_id=?
+                """, PREFLIGHT_TASK);
+        mockMvc.perform(get("/api/task-progress/pre_defense/{taskId}", PREFLIGHT_TASK)
+                        .header("Authorization", alice))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.currentRunId").value("diagnosis-run"))
+                .andExpect(jsonPath("$.currentAttempt").value(1));
+        String diagnosis = """
+                {"question":"分析失败","failureContext":{"taskId":"502","runId":"diagnosis-run","attempt":"1"}}
+                """;
+        mockMvc.perform(post("/api/assistant/chat")
+                        .header("Authorization", alice)
+                        .contentType(MediaType.APPLICATION_JSON).content(diagnosis))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.scenario").value("failure_diagnosis"))
+                .andExpect(jsonPath("$.sessionId").isString())
+                .andExpect(jsonPath("$.toolResults[0].toolName").value("diagnose_task_failure"))
+                .andExpect(jsonPath("$.structured.diagnosis.taskId").value("502"))
+                .andExpect(jsonPath("$.structured.diagnosis.stage").value("执行阶段"))
+                .andExpect(jsonPath("$.answer").value(org.hamcrest.Matchers.containsString("GPU_OOM")));
+        mockMvc.perform(post("/api/assistant/chat")
+                        .header("Authorization", login("bob"))
+                        .contentType(MediaType.APPLICATION_JSON).content(diagnosis))
+                .andExpect(status().isForbidden());
+        jdbc.update("UPDATE sys_pre_defense SET status='pending' WHERE task_id=?", PREFLIGHT_TASK);
+        mockMvc.perform(post("/api/assistant/chat")
+                        .header("Authorization", alice)
+                        .contentType(MediaType.APPLICATION_JSON).content(diagnosis))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("ASSISTANT_DIAGNOSIS_STALE"));
+        assertEquals(0, MODEL.index.get());
     }
 
     @Test
@@ -354,16 +622,8 @@ class AssistantScenarioUserPathEndToEndIT {
     }
 
     private String login(String username) throws Exception {
-        String codeResponse = mockMvc.perform(get("/auth/code"))
-                .andExpect(status().isOk())
-                .andReturn().getResponse().getContentAsString();
-        String uuid = MAPPER.readTree(codeResponse).path("uuid").asText();
-        String image = MAPPER.readTree(codeResponse).path("img").asText();
-        String svg = new String(java.util.Base64.getDecoder().decode(image.split(",")[1]));
-        var captcha = java.util.regex.Pattern.compile("<text[^>]*>(\\d{4})</text>").matcher(svg);
-        assertTrue(captcha.find());
         String body = MAPPER.writeValueAsString(Map.of(
-                "uuid", uuid, "code", captcha.group(1), "username", username,
+                "username", username,
                 "password", OwnershipE2ESupport.RAW_PASSWORD));
         String response = mockMvc.perform(post("/auth/login")
                         .contentType(MediaType.APPLICATION_JSON).content(body))
@@ -396,6 +656,8 @@ class AssistantScenarioUserPathEndToEndIT {
         try (Connection connection = DriverManager.getConnection(
                 OwnershipE2ESupport.schemaUrl(), OwnershipE2ESupport.USERNAME, OwnershipE2ESupport.PASSWORD);
              Statement statement = connection.createStatement()) {
+            ScriptUtils.executeSqlScript(connection, new FileSystemResource("../sql/security_model_knowledge.sql"));
+            ScriptUtils.executeSqlScript(connection, new FileSystemResource("../sql/security_model_task_dispatch.sql"));
             statement.execute("""
                     CREATE TABLE IF NOT EXISTS sys_assistant_confirmation (
                       confirmation_id BIGINT NOT NULL AUTO_INCREMENT,
@@ -455,6 +717,7 @@ class AssistantScenarioUserPathEndToEndIT {
         private final HttpServer server;
         private final AtomicInteger index = new AtomicInteger();
         private final List<String> responses = new java.util.concurrent.CopyOnWriteArrayList<>();
+        private final List<JsonNode> requests = new java.util.concurrent.CopyOnWriteArrayList<>();
 
         private ScriptedModel(HttpServer server) {
             this.server = server;
@@ -468,6 +731,7 @@ class AssistantScenarioUserPathEndToEndIT {
                     String request = new String(exchange.getRequestBody().readAllBytes(),
                             StandardCharsets.UTF_8);
                     assertFalse(request.contains(API_KEY));
+                    result.requests.add(MAPPER.readTree(request));
                     int current = result.index.getAndIncrement();
                     String response = current < result.responses.size()
                             ? result.responses.get(current) : answer("默认回答");
@@ -486,6 +750,7 @@ class AssistantScenarioUserPathEndToEndIT {
 
         void reset() {
             responses.clear();
+            requests.clear();
             index.set(0);
         }
 

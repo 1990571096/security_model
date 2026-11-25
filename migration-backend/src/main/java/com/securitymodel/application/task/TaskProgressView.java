@@ -11,6 +11,8 @@ public class TaskProgressView {
     private String description;
     private String taskType = "pre_defense";
     private String status;
+    private String currentRunId;
+    private Integer currentAttempt;
     private Integer progress;
     private LocalDateTime startTime;
     private LocalDateTime endTime;

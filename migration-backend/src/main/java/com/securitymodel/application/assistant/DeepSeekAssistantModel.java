@@ -39,7 +39,10 @@ public class DeepSeekAssistantModel implements AssistantModel {
             不要编造任务状态、指标、路径或用户信息。创建、启动、重试、取消、导出等写操作
             只能生成预览，必须由用户另行确认后才执行。回答使用简体中文，简洁说明依据。
 
-            按以下三个场景处理用户请求，不要越过服务端工具和权限：
+            当仅提供 search_knowledge 时，用它检索实验方法、报告术语和排查知识。
+            需要查具体失败任务时，提示从该任务详情打开失败诊断。这个模式不操作或查询任务。
+
+            其他受控场景遵循以下规则，不要越过服务端工具和权限：
             1) LDD 参数校验：先用 get_parameter_guide 读取已启用算法、默认参数和 schema，
                需要解释方法或阈值时用 search_knowledge；参数合法且用户要创建时，只能调用
                preview_create_task 生成预览，不写库、不启动。非 LDD 算法、资源不可用或参数
@@ -139,7 +142,8 @@ public class DeepSeekAssistantModel implements AssistantModel {
 
         long budgetMillis = Math.max(1, Math.min(timeoutMillis, request.timeoutMillis()));
         int attempts = 0;
-        for (int attempt = 0; attempt <= maxRetries; attempt++) {
+        int retries = request.systemPrompt() == null ? maxRetries : 0;
+        for (int attempt = 0; attempt <= retries; attempt++) {
             attempts++;
             try {
                 HttpRequest httpRequest = HttpRequest.newBuilder(uri)
@@ -158,7 +162,7 @@ public class DeepSeekAssistantModel implements AssistantModel {
                     return ModelReply.unavailable("model_invalid_response", "助手模型返回格式不可校验");
                 }
                 if ((response.statusCode() == 429 || response.statusCode() >= 500)
-                        && attempt < maxRetries) {
+                        && attempt < retries) {
                     continue;
                 }
                 log.warn("助手模型返回非成功状态: status={}, attempt={}",
@@ -168,13 +172,13 @@ public class DeepSeekAssistantModel implements AssistantModel {
                 }
                 return ModelReply.unavailable("model_unavailable", "助手模型暂不可用");
             } catch (HttpTimeoutException exception) {
-                if (attempt < maxRetries) {
+                if (attempt < retries) {
                     continue;
                 }
                 log.warn("助手模型超时: attempt={}", attempts);
                 return ModelReply.unavailable("model_timeout", "助手模型超时");
             } catch (IOException exception) {
-                if (attempt < maxRetries) {
+                if (attempt < retries) {
                     continue;
                 }
                 log.warn("助手模型网络失败: attempt={}, reason={}", attempts,
@@ -196,14 +200,18 @@ public class DeepSeekAssistantModel implements AssistantModel {
         ObjectNode root = objectMapper.createObjectNode();
         root.put("model", model);
         root.put("stream", false);
-        root.put("temperature", 0.2);
-        root.put("max_tokens", maxOutputTokens);
+        boolean classification = request.systemPrompt() != null;
+        root.put("temperature", classification ? 0 : 0.2);
+        root.put("max_tokens", classification ? Math.min(maxOutputTokens, 192) : maxOutputTokens);
+        if (classification) {
+            root.putObject("response_format").put("type", "json_object");
+        }
 
         ArrayNode messages = root.putArray("messages");
         ObjectNode system = messages.addObject();
         system.put("role", "system");
-        system.put("content", SYSTEM_PROMPT + "\n本轮最多还能调用 "
-                + request.remainingToolCalls() + " 次工具。");
+        system.put("content", request.systemPrompt() != null ? request.systemPrompt()
+                : SYSTEM_PROMPT + "\n本轮最多还能调用 " + request.remainingToolCalls() + " 次工具。");
         for (ModelMessage message : request.messages()) {
             ObjectNode item = messages.addObject();
             if ("tool".equals(message.role())) {
@@ -276,6 +284,11 @@ public class DeepSeekAssistantModel implements AssistantModel {
     /** Status hook; never exposes the key or full endpoint. */
     public boolean isConfigured() {
         return enabled && !endpoint.isBlank() && !model.isBlank() && !apiKey.isBlank();
+    }
+
+    @Override
+    public boolean supportsIntentClassification() {
+        return isConfigured();
     }
 
     public String getModel() {

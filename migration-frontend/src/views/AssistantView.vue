@@ -1,555 +1,619 @@
 <template>
-  <div class="page" v-loading="loading">
-    <section class="hero-band assistant-hero">
+  <div class="page experiment-assistant">
+    <header class="assistant-heading">
       <div>
-        <span class="eyebrow">R7 · CONTROLLED EXPERIMENT ASSISTANT</span>
-        <h2>受控实验助手</h2>
-        <p>只读工具先经服务端授权；创建、启动、取消、重试、导出只生成预览和一次性确认凭据，必须由你再次确认后才会执行。</p>
+        <h2>实验助手</h2>
       </div>
-      <div class="hero-summary assistant-summary">
-        <span>模型状态</span>
-        <strong>{{ modelLabel }}</strong>
-        <small>{{ modelEnabled ? '已启用适配器' : '未配置外部模型，不伪造回答' }}</small>
+      <div class="assistant-actions">
+        <el-button :icon="Plus" @click="newConversation">新对话</el-button>
+        <el-button class="mobile-history" :icon="ChatDotRound" @click="historyOpen = true">历史</el-button>
+        <el-button :icon="Tools" @click="openTools">工具</el-button>
+        <el-button :icon="Document" @click="openNotes">笔记</el-button>
       </div>
+    </header>
+
+    <div class="assistant-layout">
+      <aside class="history-sidebar" aria-label="对话历史">
+        <h3>对话历史</h3>
+        <div class="history-list" v-loading="historyLoading">
+          <p v-if="historyError" class="muted">读取失败 <el-button link type="primary" @click="loadHistory">重试</el-button></p>
+          <p v-else-if="!sessions.length && !historyLoading" class="muted">暂无历史会话</p>
+          <div v-for="session in sessions" :key="session.sessionId" class="history-row"
+            :class="{ active: session.sessionId === sessionId }">
+            <button type="button" class="history-select" :aria-current="session.sessionId === sessionId ? 'true' : undefined"
+              @click="useSession(session)">
+              <span>{{ session.title }}</span>
+              <small>{{ formatDate(session.updatedAt) }}</small>
+            </button>
+            <el-tooltip content="删除会话">
+              <el-button :icon="Delete" text aria-label="删除会话" @click="removeSession(session)" />
+            </el-tooltip>
+          </div>
+        </div>
+      </aside>
+
+      <div class="assistant-main">
+    <section v-if="taskId" class="diagnostic-context">
+      <strong>任务 {{ taskId }} · {{ headerContextLabel }}</strong>
+      <router-link :to="{ path: '/tasks', query: { taskId } }">返回任务详情</router-link>
     </section>
 
-    <section class="content-grid assistant-grid">
-      <el-card shadow="never">
-        <template #header>
-          <div class="card-heading">
-            <div>
-              <strong>提出问题</strong>
-              <span class="table-caption">最多 500 字；工具调用、模型调用和总时长均有服务端上限</span>
-            </div>
-            <el-tag type="info" effect="light">{{ status?.provider || 'disabled' }}</el-tag>
+    <section ref="conversation" class="conversation" aria-label="实验助手对话" aria-live="polite"
+      v-loading="loadingSession">
+      <el-empty v-if="!turns.length && !loadingSession" description="暂无消息" />
+      <article v-for="(turn, index) in turns" :key="index" class="conversation-turn">
+        <p class="user-question">{{ turn.question }}</p>
+        <div class="assistant-reply">
+          <el-alert v-if="turn.error" type="error" :closable="false" :title="turn.error" />
+          <p v-else-if="!turn.response" class="muted">{{ taskId && index === 0 ? '正在核对失败证据…' : '正在处理…' }}</p>
+          <p v-else class="answer-text">{{ turn.response.answer }}</p>
+          <ul v-if="turn.response?.status === 'needs_context' && turn.response?.taskChoices?.length" class="task-choices">
+            <li v-for="task in turn.response.taskChoices" :key="task.taskId">
+              <el-button link type="primary" :disabled="loading || loadingSession"
+                @click="chooseTask(task, turn.response.structured?.taskChoiceAction, turn)">
+                {{ task.taskName || '任务' }} · #{{ task.taskId }}
+              </el-button>
+            </li>
+          </ul>
+          <details v-if="turn.response?.toolResults?.length" class="tool-activity">
+            <summary><el-icon><Tools /></el-icon> 工具调用（{{ turn.response.toolResults.length }}）</summary>
+            <ul>
+              <li v-for="(tool, toolIndex) in turn.response.toolResults" :key="toolIndex">
+                <strong>{{ toolLabel(tool.toolName) }}</strong>
+                <span v-if="tool.status" :class="{ 'tool-failed': tool.status === 'failed' }">
+                  {{ tool.status === 'failed' ? '失败' : '完成' }}
+                </span>
+                <span v-if="tool.durationMs != null">{{ tool.durationMs }} ms</span>
+                <p v-if="tool.summary">{{ tool.summary }}</p>
+              </li>
+            </ul>
+          </details>
+          <el-collapse v-if="turn.response?.citations?.length" class="citations">
+            <el-collapse-item v-for="citation in turn.response.citations" :key="citation.citationId"
+              :name="citation.citationId" :title="citation.title">
+              <span class="muted">{{ citation.sourceKey }} · L{{ citation.startLine }}–{{ citation.endLine }}</span>
+              <el-button v-if="citation.targetPath" link type="primary" @click="openCitation(citation)">打开对应报告</el-button>
+              <p class="answer-text">{{ citation.snippet }}</p>
+            </el-collapse-item>
+          </el-collapse>
+          <div v-if="noteSnapshot(turn.response)" class="note-actions">
+            <el-button size="small" :icon="Document" :disabled="loading" @click="saveNote(turn)">
+              保存为私有实验笔记
+            </el-button>
           </div>
-        </template>
-        <div class="assistant-scenario">
-          <span class="table-caption">回答模式</span>
-          <el-select v-model="scenario" placeholder="通用聊天（不启用场景约束）" clearable class="scenario-select">
-            <el-option label="通用聊天（不启用场景约束）" value="" />
-            <el-option
-              v-for="item in scenarios"
-              :key="item.name"
-              :label="item.title"
-              :value="item.name"
-            />
-          </el-select>
-          <span v-if="selectedScenario" class="table-caption scenario-example">{{ selectedScenario.inputExample }}</span>
+          <div v-if="draftOf(turn.response)" class="note-actions">
+            <el-button size="small" type="primary" plain :disabled="loading" @click="openDraft(turn.response.structured.evidence.draft)">
+              打开参数草案
+            </el-button>
+            <span class="muted">只回填现有任务表单，助手不会创建任务。</span>
+          </div>
         </div>
-        <el-input
-          v-model="question"
-          type="textarea"
-          :rows="4"
-          maxlength="500"
-          show-word-limit
-          placeholder="例如：查看任务 123 的报告摘要，并说明能否导出"
-          @keydown.ctrl.enter="ask"
-        />
-        <div class="assistant-actions">
-          <el-button type="primary" :loading="loading" @click="ask">发送</el-button>
-          <el-button text @click="clearResult">清空当前结果</el-button>
-          <span class="table-caption">今日剩余 {{ status?.quotaRemaining ?? '—' }} / {{ status?.dailyRequestLimit ?? '—' }} 次</span>
-        </div>
-        <el-alert
-          v-if="!modelEnabled"
-          class="assistant-alert"
-          type="warning"
-          :closable="false"
-          show-icon
-          title="外部模型未配置"
-          description="当前只保留受控工具和确认接口；配置 AssistantModel 适配器后才启用自然语言编排。核心任务、报告和知识检索接口不受影响。"
-        />
-      </el-card>
-
-      <el-card shadow="never">
-        <template #header>
-          <div class="card-heading">
-            <div><strong>回答与工具结果</strong><span class="table-caption">工具结果只展示给当前登录用户</span></div>
-            <el-tag v-if="result" :type="statusType" effect="dark">{{ statusLabel }}</el-tag>
-          </div>
-        </template>
-        <el-empty v-if="!result" description="提交问题后展示回答、引用和工具结果" />
-        <template v-else>
-          <el-alert
-            v-if="result.status === 'model_disabled'"
-            type="warning"
-            :closable="false"
-            show-icon
-            title="模型未配置，未执行任何工具"
-            :description="result.modelMessage"
-          />
-          <el-alert
-            v-else-if="result.status === 'tool_error' || result.status === 'timeout' || result.status === 'limit_reached'"
-            type="error"
-            :closable="false"
-            show-icon
-            :title="failureTitle"
-            :description="result.modelMessage"
-          />
-          <div v-else class="assistant-answer">{{ result.answer }}</div>
-
-          <div v-if="structured" class="assistant-structured">
-            <div class="structured-head">
-              <strong>服务端权威结果</strong>
-              <el-tag size="small" :type="result.answerSource === 'server_evidence' ? 'success' : 'info'" effect="light">
-                {{ result.answerSource === 'server_evidence' ? '证据组装' : '降级结果' }}
-              </el-tag>
-            </div>
-            <el-alert
-              v-if="structured.failure"
-              type="error"
-              :closable="false"
-              show-icon
-              :title="`场景未完成：${structured.failure.code}`"
-              :description="structured.failure.message"
-            />
-
-            <div v-if="validation" class="evidence-block">
-              <div class="evidence-title">
-                <strong>参数校验</strong>
-                <el-tag size="small" :type="validation.valid ? 'success' : 'danger'" effect="dark">
-                  {{ validation.valid ? '通过' : '未通过' }}
-                </el-tag>
-              </div>
-              <p class="table-caption">{{ validation.code }} · {{ validation.message }}</p>
-              <p v-if="validation.algorithm || validation.dataset" class="table-caption">
-                算法 {{ validation.algorithm?.name || validation.algorithmId || '—' }}
-                · 数据集 {{ validation.dataset?.name || validation.datasetId || '—' }}
-                · 校验来源 {{ validation.parameterSource }}
-              </p>
-              <div v-if="parameterRows.length" class="parameter-grid">
-                <span v-for="row in parameterRows" :key="row.key" class="parameter-item">
-                  <code>{{ row.key }}</code> = {{ row.value }}
-                </span>
-              </div>
-            </div>
-
-            <div v-if="taskEvidence" class="evidence-block">
-              <div class="evidence-title">
-                <strong>任务状态与阻塞项</strong>
-                <el-tag size="small" effect="plain">{{ taskEvidence.status || 'unknown' }}</el-tag>
-              </div>
-              <p class="table-caption">
-                任务 #{{ taskEvidence.taskIdText || taskEvidence.taskId }}「{{ taskEvidence.taskName }}」· 进度 {{ taskEvidence.progress ?? 0 }}%
-                · 执行器 {{ executorLabel(taskEvidence.executorConfiguration) }}
-              </p>
-              <div v-if="structured.evidence.blockers?.length" class="evidence-list">
-                <span v-for="item in structured.evidence.blockers" :key="item.code" class="evidence-pill danger">
-                  {{ item.code }} · {{ item.message }}
-                </span>
-              </div>
-              <div v-if="structured.evidence.warnings?.length" class="evidence-list">
-                <span v-for="item in structured.evidence.warnings" :key="item.code" class="evidence-pill warning">
-                  {{ item.code }} · {{ item.message }}
-                </span>
-              </div>
-              <p v-if="!structured.evidence.blockers?.length && !structured.evidence.warnings?.length"
-                 class="table-caption">服务端未返回阻塞项或提示。</p>
-            </div>
-
-            <div v-if="reportEvidence" class="evidence-block">
-              <div class="evidence-title">
-                <strong>服务端指标</strong>
-                <el-tag size="small" effect="plain">{{ reportEvidence.taskStatus || 'unknown' }}</el-tag>
-              </div>
-              <p v-if="reportEvidence.metrics?.state === 'unavailable'" class="table-caption">
-                指标不可用：服务端未采集到可信结果，不展示模型猜测的数值。
-              </p>
-              <div v-else class="parameter-grid">
-                <span class="parameter-item">
-                  <code>隔离比例清洗纯度</code> =
-                  {{ reportEvidence.metrics?.cleanPurityPercentByIsolationRatio ?? '—' }}%
-                </span>
-                <span class="parameter-item">
-                  <code>隔离比例选取样本数</code> =
-                  {{ reportEvidence.metrics?.selectedSampleCountByIsolationRatio ?? '—' }}
-                </span>
-              </div>
-              <p class="table-caption">
-                导出：{{ reportEvidence.exportAvailability ? '可用' : '不可用' }}
-                <span v-if="reportEvidence.failureSummary"> · 失败摘要：{{ reportEvidence.failureSummary }}</span>
-              </p>
-            </div>
-
-            <div v-if="structured.evidence.findings?.length" class="evidence-block">
-              <div class="evidence-title"><strong>算法目录证据</strong></div>
-              <div class="evidence-list">
-                <span v-for="item in structured.evidence.findings" :key="item.algorithmId" class="evidence-pill">
-                  #{{ item.algorithmId }} {{ item.name }} · {{ item.type }}
-                </span>
-              </div>
-            </div>
-
-            <div v-if="structured.citations?.length" class="evidence-block">
-              <div class="evidence-title"><strong>服务端引用</strong></div>
-              <div v-for="citation in structured.citations" :key="citation.citationId" class="citation-line">
-                <code>{{ citation.citationId }}</code>
-                {{ citation.sourceKey }} · L{{ citation.startLine }}-{{ citation.endLine }}
-                <p class="table-caption">{{ citation.snippet }}</p>
-              </div>
-            </div>
-
-            <el-collapse class="structured-raw">
-              <el-collapse-item title="查看服务端完整结构" name="structured">
-                <pre class="assistant-json">{{ pretty(structured) }}</pre>
-              </el-collapse-item>
-            </el-collapse>
-          </div>
-
-          <p class="table-caption assistant-meta">
-            状态 {{ result.status }} · 模型 {{ result.modelStatus }} · 模型调用 {{ result.modelCalls }} 次 · 工具调用 {{ result.toolCalls }} 次
-          </p>
-
-          <div v-if="result.toolResults?.length" class="assistant-tools-result">
-            <div v-for="tool in result.toolResults" :key="`${tool.toolName}-${tool.durationMs}`" class="tool-result">
-              <div class="tool-result-head">
-                <strong>{{ tool.toolName }}</strong>
-                <el-tag size="small" effect="plain">{{ tool.durationMs }} ms</el-tag>
-              </div>
-              <p class="table-caption">{{ tool.summary }}</p>
-              <el-collapse>
-                <el-collapse-item title="查看结构化结果" :name="tool.toolName">
-                  <pre class="assistant-json">{{ pretty(tool.data) }}</pre>
-                </el-collapse-item>
-              </el-collapse>
-            </div>
-          </div>
-        </template>
-      </el-card>
+      </article>
     </section>
 
-    <section v-if="result?.pendingConfirmations?.length" class="assistant-pending">
-      <el-card v-for="pending in result.pendingConfirmations" :key="pending.confirmationId" shadow="never">
-        <div class="pending-head">
+    <form class="assistant-composer" @submit.prevent="ask">
+      <el-input v-model="question" type="textarea" :rows="3" maxlength="500" show-word-limit
+        aria-label="实验问题" placeholder="例如：清洗纯度与保留样本数分别说明什么？"
+        @keydown.ctrl.enter.prevent="ask" />
+      <el-button native-type="submit" type="primary" :loading="loading"
+        :disabled="loadingSession || !question.trim()">发送</el-button>
+    </form>
+      </div>
+    </div>
+
+    <el-drawer v-model="historyOpen" title="对话历史" size="min(100%, 420px)">
+      <div v-loading="historyLoading">
+        <p v-if="historyError">读取失败 <el-button link type="primary" @click="loadHistory">重试</el-button></p>
+        <el-empty v-else-if="!sessions.length && !historyLoading" description="暂无历史会话" />
+        <div v-for="session in sessions" :key="session.sessionId" class="history-row">
+          <button type="button" class="history-select" @click="useSession(session)">
+            <span>{{ session.title }}</span><small>{{ formatDate(session.updatedAt) }}</small>
+          </button>
+          <el-button :icon="Delete" text aria-label="删除会话" @click="removeSession(session)" />
+        </div>
+      </div>
+    </el-drawer>
+
+    <el-drawer v-model="toolsOpen" title="助手工具" size="min(100%, 420px)">
+      <div v-loading="toolsLoading">
+        <p v-if="toolsError">读取失败 <el-button link type="primary" @click="openTools">重试</el-button></p>
+        <div v-for="tool in tools" :key="tool.name" class="tool-entry">
+          <strong>{{ toolLabel(tool.name) }}</strong>
+          <el-tag size="small" effect="plain">只读</el-tag>
+          <p>{{ tool.description }}</p>
+        </div>
+        <div class="tool-entry">
+          <strong>失败诊断</strong>
+          <el-tag size="small" effect="plain">任务详情入口</el-tag>
+          <p>核对失败任务及该次尝试的记录。</p>
+        </div>
+      </div>
+    </el-drawer>
+
+    <el-drawer v-model="notesOpen" title="私有实验笔记" size="min(100%, 520px)">
+      <div v-loading="notesLoading">
+        <p v-if="notesError">读取失败 <el-button link type="primary" @click="loadNotes">重试</el-button></p>
+        <el-empty v-else-if="!notes.length && !notesLoading" description="暂无笔记；在对照结果上点击「保存为私有实验笔记」" />
+        <div v-for="note in notes" :key="note.noteId" class="note-entry">
+          <strong>{{ note.title }}</strong>
+          <small>{{ formatDate(note.analysisTime) }}</small>
+          <el-tag v-if="note.accessState && note.accessState !== 'verified'" size="small" type="warning" effect="plain">
+            证据已按当前权限复核，部分指标不可见
+          </el-tag>
+          <p v-if="note.nextStep">{{ note.nextStep }}</p>
           <div>
-            <strong>待确认：{{ operationLabel(pending.operation) }}</strong>
-            <span class="table-caption">确认凭据 #{{ pending.confirmationId }} · {{ formatTime(pending.expiresAt) }} 前有效</span>
-          </div>
-          <el-tag type="warning" effect="dark">一次性</el-tag>
-        </div>
-        <p class="table-caption">{{ pending.preview?.warning || '确认后才会执行；不确认不会写入业务数据。' }}</p>
-        <div class="assistant-actions">
-          <el-button type="danger" :loading="confirmingId === pending.confirmationId" @click="confirmAction(pending)">
-            确认执行
-          </el-button>
-          <span class="table-caption">令牌只在本页内存中保存，服务端仅存 SHA-256 摘要。</span>
-        </div>
-      </el-card>
-    </section>
-
-    <section v-if="result?.citations?.length" class="assistant-citations">
-      <el-card v-for="citation in result.citations" :key="citation.citationId" shadow="never">
-        <strong>{{ citation.citationId }} · {{ citation.title }}</strong>
-        <span class="table-caption">
-          {{ citation.sourceKey }} · L{{ citation.startLine }}-{{ citation.endLine }}
-        </span>
-        <p class="citation-snippet">{{ citation.snippet }}</p>
-      </el-card>
-    </section>
-
-    <section class="content-grid assistant-bottom">
-      <el-card shadow="never">
-        <template #header>
-          <div class="card-heading">
-            <div><strong>允许的工具</strong><span class="table-caption">显式 allow-list；写工具只返回预览</span></div>
-            <el-tag effect="light">{{ tools.length }} 个</el-tag>
-          </div>
-        </template>
-        <div class="assistant-tool-list">
-          <div v-for="tool in tools" :key="tool.name" class="assistant-tool-item">
-            <div>
-              <strong>{{ tool.name }}</strong>
-              <p class="table-caption">{{ tool.description }}</p>
-            </div>
-            <el-tag size="small" :type="tool.write ? 'warning' : 'success'" effect="light">
-              {{ tool.write ? '写操作·需确认' : '只读' }}
-            </el-tag>
+            <el-button link type="primary" @click="editNote(note)">编辑</el-button>
+            <el-button link type="primary" @click="downloadNote(note)">导出 Markdown</el-button>
+            <el-button link type="danger" @click="removeNote(note)">删除</el-button>
           </div>
         </div>
-      </el-card>
-
-      <el-card shadow="never">
-        <template #header>
-          <div class="card-heading">
-            <div><strong>我的会话</strong><span class="table-caption">仅本人可见，7 天后清理；摘要用于界面恢复与审计，不进入模型上下文</span></div>
-            <el-button text :loading="loadingSessions" @click="loadSessions">刷新</el-button>
-          </div>
-        </template>
-        <el-empty v-if="!sessions.length" description="暂无会话" />
-        <div v-else class="assistant-session-list">
-          <div v-for="session in sessions" :key="session.sessionId" class="assistant-session">
-            <div>
-              <strong>{{ session.title }}</strong>
-              <span class="table-caption">{{ formatTime(session.updatedAt) }}</span>
-            </div>
-            <div>
-              <el-button text @click="useSession(session)">继续</el-button>
-              <el-button text type="danger" @click="removeSession(session)">删除</el-button>
-            </div>
-          </div>
-        </div>
-      </el-card>
-    </section>
+      </div>
+    </el-drawer>
   </div>
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { ChatDotRound, Delete, Document, Edit, Plus, Tools } from '@element-plus/icons-vue'
 import {
-  chatWithAssistant,
-  confirmAssistantAction,
-  deleteAssistantSession,
-  getAssistantSessions,
-  getAssistantScenarios,
-  getAssistantStatus,
-  getAssistantTools
+  chatWithAssistant, createExperimentNote, deleteAssistantSession, deleteExperimentNote,
+  exportExperimentNote, getAssistantSession, getAssistantSessions, getAssistantTools,
+  getExperimentNotes, updateExperimentNote
 } from '../api/assistant'
 
-const loading = ref(false)
-const loadingSessions = ref(false)
-const confirmingId = ref(null)
+const assistantScope = 'experiment_assistant'
+const route = useRoute()
+const router = useRouter()
 const question = ref('')
-const scenario = ref('')
-const result = ref(null)
-const status = ref(null)
-const tools = ref([])
-const scenarios = ref([])
-const sessions = ref([])
+const turns = ref([])
+const loading = ref(false)
 const sessionId = ref(null)
+const historyOpen = ref(false)
+const historyLoading = ref(false)
+const historyError = ref(false)
+const sessions = ref([])
+const loadingSession = ref(false)
+const conversation = ref(null)
+const toolsOpen = ref(false)
+const toolsLoading = ref(false)
+const toolsError = ref(false)
+const tools = ref([])
+const notesOpen = ref(false)
+const notesLoading = ref(false)
+const notesError = ref(false)
+const notes = ref([])
+const noteRequests = new WeakMap()
+let generation = 0
+let historyRequest = 0
+let sessionRequest = 0
+const taskId = computed(() => {
+  const value = route.query.taskId
+  return typeof value === 'string' && /^[1-9]\d{0,18}$/.test(value) ? value : null
+})
+const failureContext = computed(() => taskId.value && route.query.source !== 'report' ? {
+  taskId: taskId.value,
+  runId: route.query.runId || null,
+  attempt: route.query.attempt || null
+} : null)
+const experimentContext = computed(() => taskId.value && route.query.source === 'report' ? {
+  taskId: taskId.value,
+  runId: typeof route.query.runId === 'string' ? route.query.runId : null,
+  attempt: Number(route.query.attempt) || null
+} : null)
+const headerContextLabel = computed(() => {
+  if (experimentContext.value) return '实验报告'
+  return failureContext.value?.attempt ? `第 ${failureContext.value.attempt} 次尝试` : '失败诊断'
+})
 
-const modelEnabled = computed(() => Boolean(status.value?.modelEnabled))
-const modelLabel = computed(() => modelEnabled.value ? '已配置' : '未配置')
-const selectedScenario = computed(() => scenarios.value.find(item => item.name === scenario.value) || null)
-const structured = computed(() => result.value?.structured || null)
-const structuredEvidence = computed(() => structured.value?.evidence || null)
-const validation = computed(() => structuredEvidence.value?.validation || null)
-const taskEvidence = computed(() => structuredEvidence.value?.task || null)
-const reportEvidence = computed(() => {
-  const evidence = structuredEvidence.value
-  if (!evidence || !evidence.metrics) return null
+function toolLabel(name) {
   return {
-    taskId: evidence.taskId,
-    taskStatus: evidence.taskStatus,
-    metrics: evidence.metrics,
-    exportAvailability: evidence.exportAvailability,
-    failureSummary: evidence.failureSummary
-  }
-})
-const parameterRows = computed(() => {
-  const params = validation.value?.normalizedParameters
-  if (!params || typeof params !== 'object') return []
-  return Object.entries(params)
-    .filter(([, value]) => typeof value !== 'object')
-    .slice(0, 12)
-    .map(([key, value]) => ({ key, value }))
-})
-const statusLabel = computed(() => ({
-  answered: '已回答',
-  scenario_incomplete: '场景证据不足',
-  model_disabled: '模型未配置',
-  tool_error: '工具失败',
-  timeout: '超时',
-  limit_reached: '额度用尽',
-  model_unavailable: '模型不可用',
-  model_invalid: '模型输出无效'
-}[result.value?.status] || '未知状态'))
-const statusType = computed(() => ({
-  answered: 'success',
-  scenario_incomplete: 'danger',
-  model_disabled: 'warning',
-  tool_error: 'danger',
-  timeout: 'danger',
-  limit_reached: 'warning',
-  model_unavailable: 'danger',
-  model_invalid: 'danger'
-}[result.value?.status] || 'info'))
-const failureTitle = computed(() => ({
-  tool_error: '工具调用失败',
-  timeout: '助手请求超时',
-  limit_reached: '调用额度用尽'
-}[result.value?.status] || '助手请求失败'))
-
-async function loadStatus() {
-  try {
-    const response = await getAssistantStatus()
-    status.value = response.data || null
-  } catch (error) {
-    status.value = null
-  }
+    search_knowledge: '知识检索',
+    explain_clean_purity: '清洗纯度口径',
+    compare_experiment_runs: '运行对照',
+    list_my_tasks: '本人任务查询',
+    diagnose_task_failure: '失败诊断',
+    get_my_task_summary: '任务摘要',
+    get_my_report_summary: '报告摘要',
+    validate_ldd_parameters: '参数校验',
+    get_parameter_guide: '参数指南',
+    preview_create_task: '创建任务预览',
+    preview_start_task: '启动任务预览'
+  }[name] || name
 }
 
-async function loadTools() {
-  try {
-    const response = await getAssistantTools()
-    tools.value = response.data || []
-  } catch (error) {
-    tools.value = []
-  }
+function formatDate(value) {
+  const date = new Date(value)
+  return value && !Number.isNaN(date.getTime())
+    ? date.toLocaleString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+    : ''
 }
 
-async function loadScenarios() {
-  try {
-    const response = await getAssistantScenarios()
-    scenarios.value = response.data || []
-  } catch (error) {
-    scenarios.value = []
-  }
+async function scrollToLatest() {
+  await nextTick()
+  if (conversation.value) conversation.value.scrollTop = conversation.value.scrollHeight
 }
 
-async function loadSessions() {
-  loadingSessions.value = true
+async function send(value, context) {
+  const requestGeneration = generation
+  turns.value.push({ question: value, response: null, error: '' })
+  const index = turns.value.length - 1
+  loading.value = true
+  scrollToLatest()
   try {
-    const response = await getAssistantSessions()
-    sessions.value = response.data || []
+    const { data } = await chatWithAssistant(
+      value, sessionId.value, assistantScope,
+      context?.failureContext || null,
+      context?.experimentContext || null
+    )
+    loadHistory()
+    if (requestGeneration !== generation) return
+    turns.value[index].response = {
+      ...data,
+      taskChoices: data.structured?.evidence?.taskList?.tasks || []
+    }
+    sessionId.value = data.sessionId || sessionId.value
   } catch (error) {
-    sessions.value = []
+    if (requestGeneration !== generation) return
+    turns.value[index].error = error.response?.data?.message || '助手请求失败，请稍后重试。'
   } finally {
-    loadingSessions.value = false
+    if (requestGeneration === generation) {
+      loading.value = false
+      scrollToLatest()
+    }
   }
 }
 
-async function ask() {
+function ask() {
   const value = question.value.trim()
-  if (!value) {
-    ElMessage.warning('请先输入问题')
+  if (loading.value || loadingSession.value || !value) return
+  question.value = ''
+  send(value)
+}
+
+function chooseTask(task, action, turn) {
+  if (loading.value || loadingSession.value) return
+  if (action === 'COMPARE') {
+    const response = turn?.response
+    const selection = response?.structured?.evidence?.taskList?.selection
+    const primary = selection?.primaryTaskId
+      || response?.answer?.match(/任务 #([1-9]\d{0,18})/)?.[1]
+      || (taskId.value && taskId.value !== task.taskId ? taskId.value : null)
+    if (!primary || String(primary) === String(task.taskId)) {
+      ElMessage.warning('请先明确主运行，再选择对照运行。')
+      return
+    }
+    const ratio = selection?.ratio
+      || turn?.question?.match(/(\d{1,3})%/)?.[1]
+      || '30'
+    const runs = [{
+      taskId: String(primary),
+      runId: selection?.primaryRunId || experimentContext.value?.runId || null,
+      attempt: selection?.primaryAttempt || experimentContext.value?.attempt || null
+    }, {
+      taskId: String(task.taskId),
+      runId: task.runId || null,
+      attempt: task.attempt || null
+    }]
+    send(`对比任务 #${primary} 和 #${task.taskId}，保留比例 ${ratio}%`, {
+      experimentContext: { runs, ratio: Number(ratio) }
+    })
     return
   }
-  loading.value = true
+  send(action === 'TASK' ? `查询任务 #${task.taskId} 的进度` : `解读任务 #${task.taskId} 的报告`)
+}
+
+function resetConversation() {
+  generation++
+  sessionRequest++
+  turns.value = []
+  sessionId.value = null
+  question.value = ''
+  loading.value = false
+  loadingSession.value = false
+}
+
+function newConversation() {
+  resetConversation()
+  if (taskId.value) router.replace({ path: '/assistant' })
+}
+
+async function loadHistory() {
+  const request = ++historyRequest
+  historyLoading.value = true
+  historyError.value = false
   try {
-    const response = await chatWithAssistant(value, sessionId.value, scenario.value)
-    result.value = response.data || null
-    sessionId.value = response.data?.sessionId || sessionId.value
-    await Promise.all([loadStatus(), loadSessions()])
-  } catch (error) {
-    result.value = null
-    ElMessage.error(error.response?.data?.message || '助手请求失败')
+    const { data } = await getAssistantSessions()
+    if (request === historyRequest) sessions.value = data || []
+  } catch {
+    if (request === historyRequest) historyError.value = true
   } finally {
-    loading.value = false
+    if (request === historyRequest) historyLoading.value = false
   }
 }
 
-async function confirmAction(pending) {
-  confirmingId.value = pending.confirmationId
+async function useSession(session) {
+  if (taskId.value) await router.replace({ path: '/assistant' })
+  const request = ++sessionRequest
+  loadingSession.value = true
+  historyOpen.value = false
   try {
-    const response = await confirmAssistantAction(pending.confirmationId, pending.token)
-    ElMessage.success(response.data?.message || '操作已确认并执行')
-    result.value = result.value ? {
-      ...result.value,
-      pendingConfirmations: (result.value.pendingConfirmations || [])
-        .filter(item => item.confirmationId !== pending.confirmationId)
-    } : null
-    await loadSessions()
+    const { data } = await getAssistantSession(session.sessionId)
+    if (request !== sessionRequest) return
+    resetConversation()
+    sessionId.value = data.sessionId
+    turns.value = (data.summary?.turns || []).map(turn => ({
+      question: turn.question,
+      response: {
+        answer: turn.answer,
+        toolResults: turn.toolResults || (turn.tools || []).map(toolName => ({ toolName }))
+      }
+    }))
+    scrollToLatest()
   } catch (error) {
-    ElMessage.error(error.response?.data?.message || '确认失败，未执行任何写操作')
+    if (request === sessionRequest) ElMessage.error(error.response?.data?.message || '历史会话读取失败')
   } finally {
-    confirmingId.value = null
+    if (request === sessionRequest) loadingSession.value = false
+  }
+}
+
+function draftOf(response) {
+  const draft = response?.structured?.evidence?.draft
+  return response?.status === 'answered' && draft?.proposedParams ? draft : null
+}
+
+function openDraft(draft) {
+  if (!draft?.taskId) return
+  sessionStorage.setItem('ea-draft-prefill', JSON.stringify({ taskId: draft.taskId, draft }))
+  router.push(draft.formPath || `/tasks?prefillTaskId=${draft.taskId}`)
+}
+
+function noteSnapshot(response) {
+  if (response?.status !== 'answered') return null
+  const evidence = response?.structured?.evidence || {}
+  if (evidence.comparison?.runs?.length) {
+    return {
+      runRefs: evidence.comparison.runs.map(run => ({
+        taskId: run.taskId, runId: run.runId, attempt: run.attempt, ratio: evidence.comparison.ratio
+      })),
+      title: `实验对照 ${evidence.comparison.runs.map(run => `#${run.taskId}`).join(' vs ')}`
+    }
+  }
+  if (evidence.subset?.available?.length || evidence.subset?.taskId) {
+    return {
+      runRefs: [{
+        taskId: evidence.subset.taskId, runId: evidence.subset.runId || null,
+        attempt: evidence.subset.attempt || null, ratio: evidence.subset.recommendedRatio
+      }],
+      title: `保留比例筛选 任务 #${evidence.subset.taskId}`
+    }
+  }
+  return null
+}
+
+async function saveNote(turn) {
+  const payload = noteSnapshot(turn.response)
+  if (!payload) return
+  let title
+  try {
+    const result = await ElMessageBox.prompt('笔记只对当前账号可见，保存的是分析时快照。', '保存实验笔记', {
+      inputValue: payload.title, inputPattern: /\S+/, inputErrorMessage: '标题不能为空',
+      confirmButtonText: '保存', cancelButtonText: '取消'
+    })
+    title = result.value
+  } catch (error) {
+    if (error === 'cancel' || error === 'close') return
+    throw error
+  }
+  let requestKey = noteRequests.get(turn)
+  if (!requestKey) {
+    requestKey = (globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`).replace(/-/g, '').slice(0, 64)
+    noteRequests.set(turn, requestKey)
+  }
+  try {
+    await createExperimentNote({
+      title,
+      nextStep: '复核证据缺口和条件差异后，再决定下一轮配置。',
+      requestKey,
+      runRefs: payload.runRefs
+    })
+    noteRequests.delete(turn)
+    ElMessage.success('笔记已保存')
+    if (notesOpen.value) loadNotes()
+  } catch (error) {
+    ElMessage.error(error.response?.data?.message || '笔记保存失败')
+  }
+}
+
+async function openNotes() {
+  notesOpen.value = true
+  await loadNotes()
+}
+
+async function loadNotes() {
+  notesLoading.value = true
+  notesError.value = false
+  try {
+    const { data } = await getExperimentNotes()
+    notes.value = data || []
+  } catch {
+    notesError.value = true
+  } finally {
+    notesLoading.value = false
+  }
+}
+
+async function downloadNote(note) {
+  try {
+    const { data } = await exportExperimentNote(note.noteId)
+    const url = URL.createObjectURL(new Blob([data], { type: 'text/markdown;charset=utf-8' }))
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `${note.title || '实验笔记'}.md`
+    link.click()
+    URL.revokeObjectURL(url)
+  } catch (error) {
+    ElMessage.error(error.response?.data?.message || '笔记导出失败')
+  }
+}
+
+async function removeNote(note) {
+  try {
+    await ElMessageBox.confirm('删除后该私有笔记不可恢复。', '删除笔记', {
+      type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消'
+    })
+    await deleteExperimentNote(note.noteId)
+    notes.value = notes.value.filter(item => item.noteId !== note.noteId)
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') ElMessage.error(error.response?.data?.message || '笔记删除失败')
+  }
+}
+
+function openCitation(citation) {
+  if (!citation?.targetPath) return
+  router.push(citation.targetPath)
+}
+
+async function editNote(note) {
+  try {
+    const titleResult = await ElMessageBox.prompt('修改笔记标题', '编辑私有笔记', {
+      inputValue: note.title, inputPattern: /\S+/, inputErrorMessage: '标题不能为空',
+      confirmButtonText: '下一步', cancelButtonText: '取消'
+    })
+    const stepResult = await ElMessageBox.prompt('修改下一步备注（可留空）', '编辑私有笔记', {
+      inputValue: note.nextStep || '', inputType: 'textarea',
+      confirmButtonText: '保存', cancelButtonText: '取消'
+    })
+    await updateExperimentNote(note.noteId, {
+      title: titleResult.value,
+      nextStep: stepResult.value || ''
+    })
+    ElMessage.success('笔记已更新')
+    await loadNotes()
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') ElMessage.error(error.response?.data?.message || '笔记更新失败')
+  }
+}
+
+async function openTools() {
+  toolsOpen.value = true
+  if (toolsLoading.value || tools.value.length) return
+  toolsLoading.value = true
+  toolsError.value = false
+  try {
+    const { data } = await getAssistantTools(assistantScope)
+    tools.value = data || []
+  } catch {
+    toolsError.value = true
+  } finally {
+    toolsLoading.value = false
   }
 }
 
 async function removeSession(session) {
   try {
-    await ElMessageBox.confirm('删除后该会话摘要不可恢复，确认继续？', '删除会话', {
+    await ElMessageBox.confirm('删除后该会话摘要不可恢复。', '删除会话', {
       type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消'
     })
     await deleteAssistantSession(session.sessionId)
-    if (sessionId.value === session.sessionId) {
-      sessionId.value = null
-      result.value = null
-    }
-    await loadSessions()
+    sessions.value = sessions.value.filter(item => item.sessionId !== session.sessionId)
+    if (sessionId.value === session.sessionId) resetConversation()
+    loadHistory()
   } catch (error) {
-    if (error !== 'cancel' && error !== 'close') {
-      ElMessage.error(error.response?.data?.message || '删除失败')
-    }
+    if (error !== 'cancel' && error !== 'close') ElMessage.error(error.response?.data?.message || '会话删除失败')
   }
 }
 
-function useSession(session) {
-  sessionId.value = session.sessionId
-  result.value = null
-  ElMessage.info(`已切换到会话 #${session.sessionId}；历史摘要不会作为模型上下文，本轮问题仍需完整描述`)
-}
+watch(failureContext, context => {
+  if (route.path !== '/assistant') return
+  resetConversation()
+  if (context) send('分析这次实验失败的原因和下一步检查项', { failureContext: context })
+}, { immediate: true })
 
-function clearResult() {
-  result.value = null
-}
+watch(experimentContext, context => {
+  if (route.path !== '/assistant' || !context) return
+  resetConversation()
+  send(`以任务 #${context.taskId} 为主运行，帮我选择第二次运行并按相同保留比例对照清洗纯度和样本数。`, {
+    experimentContext: {
+      runs: [{ taskId: context.taskId, runId: context.runId || null, attempt: context.attempt || null }],
+      ratio: 30
+    }
+  })
+}, { immediate: true })
 
-function operationLabel(operation) {
-  return ({
-    create: '创建任务',
-    start: '启动任务',
-    cancel: '取消任务',
-    retry: '重试任务',
-    export: '导出清洗子集'
-  }[operation] || operation)
-}
-
-function executorLabel(value) {
-  return ({
-    configured: '本机已配置',
-    missing: '本机未配置',
-    worker_unknown: '需 Worker 校验'
-  }[value] || '未返回')
-}
-
-function pretty(value) {
-  try {
-    return JSON.stringify(value, null, 2)
-  } catch (error) {
-    return String(value)
-  }
-}
-
-function formatTime(value) {
-  if (!value) return '—'
-  return String(value).replace('T', ' ').slice(0, 19)
-}
-
-onMounted(async () => {
-  await Promise.all([loadStatus(), loadTools(), loadScenarios(), loadSessions()])
-})
+onMounted(loadHistory)
+onUnmounted(() => { generation++; historyRequest++; sessionRequest++ })
 </script>
 
 <style scoped>
-.assistant-hero { background: linear-gradient(135deg, #0f2742 0%, #1d4b66 100%); }
-.assistant-summary { min-width: 210px; }
-.assistant-grid { margin-top: 18px; }
-@media (max-width: 900px) {
-  .assistant-grid { grid-template-columns: 1fr; }
+.experiment-assistant { width: 100%; }
+.assistant-heading, .assistant-actions, .diagnostic-context {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
 }
-.assistant-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 14px; }
-.assistant-alert { margin-top: 14px; }
-.assistant-scenario { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
-.scenario-select { width: 260px; }
-.scenario-example { flex: 1; min-width: 220px; }
-.assistant-answer { white-space: pre-wrap; line-height: 1.8; font-size: 15px; }
-.assistant-structured { margin-top: 16px; padding: 14px; border: 1px solid #dbe5f0; border-radius: 10px; background: #f8fbfe; }
-.structured-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
-.evidence-block { margin-top: 12px; padding-top: 10px; border-top: 1px dashed #e5eaf1; }
-.evidence-title { display: flex; align-items: center; gap: 8px; }
-.evidence-list { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
-.evidence-pill { padding: 4px 8px; border-radius: 6px; background: #eef4fb; font-size: 12px; }
-.evidence-pill.danger { background: #fef0f0; color: #b42318; }
-.evidence-pill.warning { background: #fff7e6; color: #8a5b00; }
-.parameter-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; margin-top: 8px; }
-.parameter-item { padding: 6px 8px; border-radius: 6px; background: #fff; border: 1px solid #e5eaf1; font-size: 12px; }
-.citation-line { padding: 8px 0; border-bottom: 1px dashed #e5eaf1; }
-.citation-line:last-child { border-bottom: 0; }
-.structured-raw { margin-top: 12px; }
-.assistant-meta { margin-top: 10px; }
-.assistant-tools-result { margin-top: 18px; display: grid; gap: 12px; }
-.tool-result { border: 1px solid #e5eaf1; border-radius: 10px; padding: 14px; background: #fbfcfe; }
-.tool-result-head, .pending-head, .assistant-session { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
-.assistant-json { margin: 0; max-height: 260px; overflow: auto; white-space: pre-wrap; word-break: break-word; font-size: 12px; }
-.assistant-pending { margin-top: 18px; display: grid; gap: 12px; }
-.assistant-citations { margin-top: 18px; display: grid; gap: 12px; }
-.assistant-bottom { margin-top: 18px; }
-.assistant-tool-list { display: grid; gap: 10px; }
-.assistant-tool-item { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding-bottom: 10px; border-bottom: 1px dashed #e5eaf1; }
-.assistant-tool-item:last-child { border-bottom: 0; padding-bottom: 0; }
-.assistant-session-list { display: grid; gap: 12px; }
-.assistant-session { padding-bottom: 12px; border-bottom: 1px dashed #e5eaf1; }
-.assistant-session:last-child { border-bottom: 0; padding-bottom: 0; }
+.assistant-heading h2 { margin: 0; font-size: 22px; }
+.assistant-actions :deep(.el-button) { margin-left: 0; }
+.assistant-actions .mobile-history { display: none; }
+.assistant-layout {
+  display: grid; grid-template-columns: minmax(190px, 235px) minmax(0, 1fr);
+  gap: 24px; margin-top: 18px;
+}
+.history-sidebar { border-right: 1px solid var(--el-border-color-light); padding-right: 16px; min-width: 0; }
+.history-sidebar h3 { margin: 6px 0 12px; font-size: 14px; }
+.history-list { max-height: min(640px, 68vh); overflow-y: auto; }
+.assistant-main { min-width: 0; display: flex; flex-direction: column; }
+.diagnostic-context { padding: 12px 0; border-bottom: 1px solid var(--el-border-color-light); }
+.conversation { min-height: 260px; max-height: max(260px, calc(100dvh - 295px)); overflow-y: auto; }
+.conversation-turn { display: grid; gap: 12px; padding-block: 16px; }
+.conversation-turn + .conversation-turn { border-top: 1px solid var(--el-border-color-light); }
+.user-question {
+  justify-self: end; max-width: 85%; margin: 0; padding: 10px 14px; border-radius: 8px;
+  background: var(--el-fill-color-light); white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.assistant-reply { min-width: 0; }
+.answer-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.8; }
+.citations { margin-top: 12px; }
+.task-choices { margin: 8px 0; padding: 0; list-style: none; }
+.task-choices :deep(.el-button) {
+  justify-content: flex-start; height: auto; min-height: 32px; text-align: left;
+  white-space: normal; overflow-wrap: anywhere; max-width: 100%;
+}
+.tool-activity { margin-top: 12px; font-size: 13px; color: #48586d; }
+.tool-activity summary { cursor: pointer; width: fit-content; }
+.tool-activity summary .el-icon { vertical-align: middle; }
+.tool-activity ul { margin: 8px 0 0; padding: 0 0 0 14px; list-style: none; }
+.tool-activity li { padding: 8px 0; border-top: 1px solid var(--el-border-color-light); overflow-wrap: anywhere; }
+.tool-activity li span { margin-left: 8px; }
+.tool-activity .tool-failed { color: var(--el-color-danger-dark-2); }
+.tool-activity p, .tool-entry p { margin: 5px 0 0; line-height: 1.6; }
+.tool-entry { padding: 12px 0; border-bottom: 1px solid var(--el-border-color-light); overflow-wrap: anywhere; }
+.note-actions { margin-top: 12px; }
+.note-entry { padding: 12px 0; border-bottom: 1px solid var(--el-border-color-light); overflow-wrap: anywhere; }
+.note-entry small { display: block; margin-top: 4px; color: #66758a; }
+.note-entry p { margin: 6px 0; line-height: 1.6; }
+.tool-entry .el-tag { margin-left: 8px; }
+.assistant-composer { display: flex; align-items: flex-end; gap: 12px; padding-block: 12px; }
+.assistant-composer :deep(.el-textarea) { min-width: 0; }
+.history-row {
+  display: grid; grid-template-columns: minmax(0, 1fr) 36px; align-items: center;
+  border-radius: 6px; margin-bottom: 4px;
+}
+.history-row:is(.active, :hover) { background: var(--el-fill-color-light); }
+.history-row.active .history-select { color: var(--el-color-primary-dark-2); }
+.history-row :deep(.el-button) { width: 36px; padding-inline: 0; }
+.history-select {
+  display: grid; gap: 3px; padding: 8px; background: transparent; border: 0;
+  text-align: left; color: inherit; font: inherit; font-size: 13px; cursor: pointer; min-width: 0;
+}
+.history-select span { white-space: nowrap; text-overflow: ellipsis; overflow: hidden; }
+.history-select small { color: #66758a; }
+@media (max-width: 1000px) {
+  .assistant-actions .mobile-history { display: inline-flex; }
+  .assistant-layout { grid-template-columns: minmax(0, 1fr); }
+  .history-sidebar { display: none; }
+}
+@media (max-width: 640px) {
+  .assistant-composer { flex-direction: column; }
+  .assistant-composer :deep(.el-textarea) { width: 100%; }
+}
 </style>

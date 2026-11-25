@@ -13,9 +13,17 @@ public interface AssistantModel {
 
     ModelReply respond(ModelRequest request);
 
+    default boolean supportsIntentClassification() {
+        return true;
+    }
+
     record ModelRequest(String question, List<ModelMessage> messages,
                         List<AssistantToolDescriptor> tools, int remainingToolCalls,
-                        long timeoutMillis) {
+                        long timeoutMillis, String systemPrompt) {
+        public ModelRequest(String question, List<ModelMessage> messages,
+                            List<AssistantToolDescriptor> tools, int remainingToolCalls, long timeoutMillis) {
+            this(question, messages, tools, remainingToolCalls, timeoutMillis, null);
+        }
     }
 
     record ModelMessage(String role, String content) {

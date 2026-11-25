@@ -29,7 +29,7 @@ public class KnowledgeSearchTool implements AssistantTool {
         ObjectNode schema = AssistantSchemas.object();
         AssistantSchemas.text(schema, "question", "检索问题，最多 500 字", 500, true);
         return new AssistantToolDescriptor("search_knowledge",
-                "按当前用户权限检索本地 SDD/算法/私有报告片段，返回带章节和行号的引用；不调用外部模型",
+                "按当前用户权限检索共享知识库、算法和私有报告片段，返回带章节和行号的引用",
                 false, schema);
     }
 

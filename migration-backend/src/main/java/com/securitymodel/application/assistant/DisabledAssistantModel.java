@@ -10,6 +10,11 @@ import org.springframework.stereotype.Component;
 public class DisabledAssistantModel implements AssistantModel {
 
     @Override
+    public boolean supportsIntentClassification() {
+        return false;
+    }
+
+    @Override
     public ModelReply respond(ModelRequest request) {
         return ModelReply.unavailable("model_disabled",
                 "助手模型未配置。配置供应商适配器后可启用自然语言编排；核心任务与知识检索接口不受影响。");

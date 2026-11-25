@@ -51,9 +51,15 @@ public class ReportSummaryTool implements AssistantTool {
         data.put("taskName", KnowledgeSanitizer.forModel(task.getTaskName(), 120));
         data.put("status", task.getStatus());
         data.put("progress", task.getProgress());
+        data.put("runId", task.getCurrentRunId());
+        data.put("attempt", task.getCurrentAttempt());
         if (task.getCleaningResult() != null && !task.getCleaningResult().isBlank()) {
             try {
                 JsonNode root = objectMapper.readTree(task.getCleaningResult());
+                data.put("reportRunId", root.path("run_id").asText(null));
+                if (root.path("attempt").isInt()) {
+                    data.put("reportAttempt", root.path("attempt").asInt());
+                }
                 copyText(root, data, "error_code", "errorCode");
                 String errorCode = root.path("error_code").asText(null);
                 if (errorCode != null && !errorCode.isBlank()) {

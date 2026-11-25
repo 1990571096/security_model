@@ -1,6 +1,7 @@
 package com.securitymodel.interfaces.web;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.securitymodel.application.assistant.AssistantAuditService;
 import com.securitymodel.application.assistant.AssistantChatResponse;
 import com.securitymodel.application.assistant.AssistantChatService;
@@ -12,6 +13,8 @@ import com.securitymodel.application.assistant.AssistantQuotaService;
 import com.securitymodel.application.assistant.AssistantScenarioCatalog;
 import com.securitymodel.application.assistant.AssistantSessionService;
 import com.securitymodel.application.assistant.AssistantToolRegistry;
+import com.securitymodel.application.assistant.ExperimentSelection;
+import com.securitymodel.application.assistant.TaskFailureDiagnosis;
 import com.securitymodel.application.audit.CurrentUserService;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.ResponseEntity;
@@ -34,6 +37,8 @@ import java.util.Map;
 public class AssistantController {
 
     private final AssistantChatService chatService;
+    private final TaskFailureDiagnosis failureDiagnosis;
+    private final ObjectMapper objectMapper;
     private final AssistantConfirmationService confirmationService;
     private final AssistantPreviewService previewService;
     private final AssistantSessionService sessionService;
@@ -47,6 +52,8 @@ public class AssistantController {
 
     public AssistantController(
             AssistantChatService chatService,
+            TaskFailureDiagnosis failureDiagnosis,
+            ObjectMapper objectMapper,
             AssistantConfirmationService confirmationService,
             AssistantPreviewService previewService,
             AssistantSessionService sessionService,
@@ -58,6 +65,8 @@ public class AssistantController {
             @Value("${security-model.assistant.model.provider:disabled}") String provider,
             @Value("${security-model.assistant.model.enabled:false}") boolean modelEnabled) {
         this.chatService = chatService;
+        this.failureDiagnosis = failureDiagnosis;
+        this.objectMapper = objectMapper;
         this.confirmationService = confirmationService;
         this.previewService = previewService;
         this.sessionService = sessionService;
@@ -72,7 +81,34 @@ public class AssistantController {
 
     @PostMapping("/chat")
     public AssistantChatResponse chat(@RequestBody @jakarta.validation.Valid AssistantChatRequest request) {
-        return chatService.chat(request.sessionId(), request.question(), request.scenario());
+        if (request.failureContext() != null) {
+            var context = request.failureContext();
+            long started = System.nanoTime();
+            var diagnosis = failureDiagnosis.diagnose(context.taskId(), context.runId(), context.attempt());
+            var trace = new AssistantChatResponse.AssistantToolTrace("diagnose_task_failure",
+                    "已核对失败任务与该次尝试的记录。", null, (System.nanoTime() - started) / 1_000_000);
+            var session = sessionService.getOrCreate(request.sessionId(),
+                    currentUserService.requireStableIdentity().userId(), request.question());
+            sessionService.appendTurn(session, request.question(), "answered", diagnosis.answer(),
+                    List.of(trace.toolName()), List.of(), List.of(), List.of(trace));
+            return new AssistantChatResponse(session.getSessionId(), "answered", diagnosis.answer(), "server_evidence",
+                    List.of(trace), List.of(), List.of(), "not_called", null, 0, 1, quotaService.remaining(),
+                    "failure_diagnosis", objectMapper.valueToTree(Map.of("diagnosis", diagnosis)));
+        }
+        return chatService.chat(request.sessionId(), request.question(), request.scenario(),
+                toSelection(request.experimentContext()));
+    }
+
+    private ExperimentSelection toSelection(AssistantChatRequest.ExperimentContext context) {
+        if (context == null || context.runs() == null || context.runs().isEmpty()) {
+            return null;
+        }
+        var runs = context.runs().stream()
+                .map(run -> new ExperimentSelection.RunReference(
+                        String.valueOf(run.taskId()), run.runId(), run.attempt()))
+                .toList();
+        return new ExperimentSelection(runs,
+                context.ratio() == null ? null : context.ratio().stripTrailingZeros().toPlainString());
     }
 
     @PostMapping("/confirmations/confirm")
@@ -98,8 +134,11 @@ public class AssistantController {
     }
 
     @GetMapping("/tools")
-    public List<Map<String, Object>> tools() {
-        return registry.descriptors().stream().map(descriptor -> {
+    public List<Map<String, Object>> tools(@RequestParam(required = false) String scope) {
+        return registry.descriptors().stream()
+                .filter(descriptor -> !AssistantChatService.EXPERIMENT_ASSISTANT.equals(scope)
+                        || AssistantChatService.isExperimentTool(descriptor))
+                .map(descriptor -> {
             Map<String, Object> view = new LinkedHashMap<>();
             view.put("name", descriptor.name());
             view.put("description", descriptor.description());

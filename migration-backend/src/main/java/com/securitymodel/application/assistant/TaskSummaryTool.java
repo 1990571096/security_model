@@ -81,7 +81,7 @@ public class TaskSummaryTool implements AssistantTool {
         } else if (!executor.isConfigured()) {
             data.put("executorConfiguration", "missing");
             blockers.addObject().put("code", "EXECUTOR_NOT_CONFIGURED")
-                    .put("message", "本机执行器未配置，启动会被拒绝");
+                    .put("message", "本机执行器未配置或配置无效，请检查 Python 脚本、解释器及执行工作区");
         } else {
             data.put("executorConfiguration", "configured");
         }

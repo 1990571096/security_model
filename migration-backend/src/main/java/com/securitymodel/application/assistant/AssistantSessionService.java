@@ -69,6 +69,13 @@ public class AssistantSessionService {
     public boolean appendTurn(AssistantSession session, String question, String answerStatus,
                               String answer, List<String> toolNames, List<Long> confirmationIds,
                               List<String> citationIds) {
+        return appendTurn(session, question, answerStatus, answer, toolNames, confirmationIds,
+                citationIds, List.of());
+    }
+
+    public boolean appendTurn(AssistantSession session, String question, String answerStatus,
+                              String answer, List<String> toolNames, List<Long> confirmationIds,
+                              List<String> citationIds, List<AssistantChatResponse.AssistantToolTrace> traces) {
         // Retry a few times because two chats may finish at once. The update only succeeds
         // when the stored summary is still the one this attempt merged from; it never writes
         // status back, so a deleted session cannot be resurrected.
@@ -79,7 +86,7 @@ public class AssistantSessionService {
                 return false;
             }
             String summary = mergeSummary(current.getSummaryJson(), question, answerStatus,
-                    answer, toolNames, confirmationIds, citationIds);
+                    answer, toolNames, confirmationIds, citationIds, traces);
             LocalDateTime now = LocalDateTime.now();
             int updated = sessionMapper.appendTurnIfActive(session.getSessionId(), session.getUserId(),
                     current.getSummaryJson(), summary, now, now.plusDays(sessionTtlDays));
@@ -95,7 +102,7 @@ public class AssistantSessionService {
 
     private String mergeSummary(String rawSummary, String question, String answerStatus,
                                 String answer, List<String> toolNames, List<Long> confirmationIds,
-                                List<String> citationIds) {
+                                List<String> citationIds, List<AssistantChatResponse.AssistantToolTrace> traces) {
         ObjectNode root = readSummary(rawSummary);
         ArrayNode turns = root.has("turns") && root.get("turns").isArray()
                 ? (ArrayNode) root.get("turns") : root.putArray("turns");
@@ -105,11 +112,32 @@ public class AssistantSessionService {
         turn.put("answer", KnowledgeSanitizer.forModel(answer == null ? "" : answer, 1_500));
         ArrayNode tools = turn.putArray("tools");
         toolNames.forEach(tools::add);
+        if (!traces.isEmpty()) {
+            ArrayNode activity = turn.putArray("toolResults");
+            for (var trace : traces) {
+                ObjectNode item = activity.addObject();
+                item.put("toolName", trace.toolName());
+                item.put("status", trace.status());
+                item.put("summary", KnowledgeSanitizer.forModel(trace.summary(), 180));
+                if (trace.durationMs() != null) {
+                    item.put("durationMs", trace.durationMs());
+                }
+                if ("answered".equals(answerStatus) && "ok".equals(trace.status()) && trace.data() != null
+                        && ("get_my_task_summary".equals(trace.toolName())
+                        || "get_my_report_summary".equals(trace.toolName()))) {
+                    String taskId = trace.data().path("taskId").asText();
+                    if (taskId.matches("[1-9][0-9]{0,18}")) {
+                        turn.put("readTaskId", taskId);
+                    }
+                }
+            }
+        }
         ArrayNode confirms = turn.putArray("confirmationIds");
         confirmationIds.forEach(confirms::add);
         ArrayNode citations = turn.putArray("citationIds");
         citationIds.forEach(citations::add);
         turn.put("at", LocalDateTime.now().toString());
+        rememberComparison(root, traces);
 
         while (turns.size() > MAX_TURNS) {
             turns.remove(0);
@@ -122,6 +150,68 @@ public class AssistantSessionService {
             }
         }
         return summary;
+    }
+
+    public String lastKnowledgeQuestion(AssistantSession session) {
+        JsonNode turns = readSummary(session.getSummaryJson()).path("turns");
+        for (int index = turns.size() - 1; index >= 0; index--) {
+            JsonNode turn = turns.path(index);
+            if (!"answered".equals(turn.path("status").asText())) {
+                continue;
+            }
+            for (JsonNode tool : turn.path("tools")) {
+                String question = turn.path("question").asText("");
+                if ((AssistantChatService.KNOWLEDGE_TOOL.equals(tool.asText())
+                        || ExperimentMetricTool.NAME.equals(tool.asText())) && !question.isBlank()
+                        && !AssistantChatService.isKnowledgeFollowUp(question)
+                        && !AssistantChatService.isCapabilityQuestion(question)
+                        && !AssistantChatService.isUnspecifiedRecordsQuestion(question)) {
+                    return question;
+                }
+            }
+        }
+        return null;
+    }
+
+    public String lastReadTaskId(AssistantSession session) {
+        JsonNode turns = readSummary(session.getSummaryJson()).path("turns");
+        return turns.path(turns.size() - 1).path("readTaskId").asText(null);
+    }
+
+    /** Last server-confirmed experiment comparison, used only for a follow-up such as "只看 30%". */
+    public JsonNode lastComparison(AssistantSession session) {
+        JsonNode context = readSummary(session.getSummaryJson()).path("experimentContext");
+        return context.isObject() ? context : null;
+    }
+
+    private void rememberComparison(ObjectNode root, List<AssistantChatResponse.AssistantToolTrace> traces) {
+        for (AssistantChatResponse.AssistantToolTrace trace : traces) {
+            JsonNode data = trace.data();
+            if (data == null || !"ok".equals(trace.status())
+                    || !ExperimentComparisonTool.NAME.equals(trace.toolName())
+                    || !"comparison".equals(data.path("kind").asText())
+                    || !"ok".equals(data.path("status").asText())) {
+                continue;
+            }
+            ObjectNode context = root.putObject("experimentContext");
+            context.put("primaryTaskId", data.path("primaryTaskId").asText());
+            context.set("baselineTaskIds", data.path("baselineTaskIds").deepCopy());
+            context.put("ratio", data.path("ratio").asText());
+            JsonNode runs = data.path("runs");
+            if (runs.isArray() && !runs.isEmpty()) {
+                ArrayNode bound = context.putArray("runs");
+                for (JsonNode run : runs) {
+                    bound.addObject().put("taskId", run.path("taskId").asText())
+                            .put("runId", run.path("runId").asText(null))
+                            .put("attempt", run.path("attempt").isInt() ? run.path("attempt").asInt() : null);
+                }
+                JsonNode primary = runs.get(0);
+                context.put("primaryRunId", primary.path("runId").asText(null));
+                context.put("primaryAttempt", primary.path("attempt").isInt()
+                        ? primary.path("attempt").asInt() : null);
+            }
+            context.put("updatedAt", LocalDateTime.now().toString());
+        }
     }
 
     public List<Map<String, Object>> listMine(Long userId, int limit) {

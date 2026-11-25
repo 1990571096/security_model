@@ -65,7 +65,38 @@ public class TaskProgressQueryService {
 
     public record TaskPage(List<TaskProgressView> records, long total, int page, int size) {}
 
+    public OwnTaskPage findMinePage(String status, int size) {
+        return findMinePage(status, null, size);
+    }
+
+    public OwnTaskPage findMinePage(String status, String excludeStatus, int size) {
+        if (size < 1 || size > 100) {
+            throw new IllegalArgumentException("页大小须为 1 到 100");
+        }
+        var query = ownTasks(taskQuery(status, null));
+        if (excludeStatus != null) {
+            query.ne(PreDefenseTask::getStatus, excludeStatus);
+        }
+        Page<PreDefenseTask> result = taskMapper.selectPage(new Page<>(1, size),
+                query.select(PreDefenseTask::getTaskId, PreDefenseTask::getTaskName,
+                        PreDefenseTask::getStatus, PreDefenseTask::getProgress,
+                        PreDefenseTask::getCurrentRunId, PreDefenseTask::getCurrentAttempt));
+        return new OwnTaskPage(result.getRecords().stream()
+                .map(task -> new OwnTask(task.getTaskId(), task.getTaskName(), task.getStatus(),
+                        task.getProgress(), task.getCurrentRunId(), task.getCurrentAttempt()))
+                .toList(), result.getTotal());
+    }
+
+    public record OwnTaskPage(List<OwnTask> records, long total) {}
+
+    public record OwnTask(Long taskId, String name, String status, Integer progress,
+                          String currentRunId, Integer currentAttempt) {}
+
     private LambdaQueryWrapper<PreDefenseTask> query(String status, String blurry) {
+        return applyScope(taskQuery(status, blurry));
+    }
+
+    private LambdaQueryWrapper<PreDefenseTask> taskQuery(String status, String blurry) {
         var query = Wrappers.<PreDefenseTask>lambdaQuery().orderByDesc(PreDefenseTask::getTaskId);
         if (status != null && !status.isBlank()) {
             query.eq(PreDefenseTask::getStatus, status);
@@ -76,7 +107,7 @@ public class TaskProgressQueryService {
                     .or()
                     .like(PreDefenseTask::getDescription, blurry));
         }
-        return applyScope(query);
+        return query;
     }
 
     /**
@@ -87,6 +118,10 @@ public class TaskProgressQueryService {
         if (taskAccessGuard.canReadAcrossUsers()) {
             return query;
         }
+        return ownTasks(query);
+    }
+
+    private LambdaQueryWrapper<PreDefenseTask> ownTasks(LambdaQueryWrapper<PreDefenseTask> query) {
         query.ne(PreDefenseTask::getDataOrigin, DEMO_ORIGIN);
         Long userId = currentUserService.userId();
         return query.eq(PreDefenseTask::getOwnerUserId, userId == null ? NO_OWNER_SENTINEL : userId);
@@ -204,6 +239,8 @@ public class TaskProgressQueryService {
         view.setTaskName(task.getTaskName());
         view.setDescription(task.getDescription());
         view.setStatus(task.getStatus());
+        view.setCurrentRunId(task.getCurrentRunId());
+        view.setCurrentAttempt(task.getCurrentAttempt());
         view.setProgress(task.getProgress());
         view.setStartTime(task.getStartTime());
         view.setEndTime(task.getEndTime());

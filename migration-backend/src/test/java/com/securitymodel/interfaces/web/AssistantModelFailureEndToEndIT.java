@@ -109,16 +109,8 @@ class AssistantModelFailureEndToEndIT {
     }
 
     private String login(String username) throws Exception {
-        String codeResponse = mockMvc.perform(get("/auth/code"))
-                .andExpect(status().isOk())
-                .andReturn().getResponse().getContentAsString();
-        String uuid = objectMapper.readTree(codeResponse).path("uuid").asText();
-        String image = objectMapper.readTree(codeResponse).path("img").asText();
-        String svg = new String(java.util.Base64.getDecoder().decode(image.split(",")[1]));
-        var captcha = java.util.regex.Pattern.compile("<text[^>]*>(\\d{4})</text>").matcher(svg);
-        assertTrue(captcha.find());
         String body = objectMapper.writeValueAsString(Map.of(
-                "uuid", uuid, "code", captcha.group(1), "username", username,
+                "username", username,
                 "password", OwnershipE2ESupport.RAW_PASSWORD));
         String response = mockMvc.perform(post("/auth/login")
                         .contentType(MediaType.APPLICATION_JSON).content(body))
