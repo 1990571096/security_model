@@ -8,14 +8,33 @@
 
 先读 [设计思路](project-design-overview.md) 建立整体图，再用 [实现指南](project-implementation-guide.md) 对照具体代码。
 
+## 场景索引
+
+| 编号 | 场景 | 主要验证点 |
+| --- | --- | --- |
+| 0 | 全局角色与状态 | 页面职责、`running` 的真实含义 |
+| 1 | 登记并验证真实数据集 | 类型、状态、路径与运行根目录 |
+| 2 | CIFAR-10 正常任务（`db`） | 创建、启动、线程池、结果回写 |
+| 3 | GTSRB 任务 | HDF5 与 VaB 相对路径 |
+| 4 | Tiny ImageNet | 可登记、可核验、不可执行 |
+| 5 | `rabbit` 模式正常任务 | Outbox、Broker、Worker、ACK |
+| 6 | 用户取消 | 状态与 GPU 回收分离 |
+| 7 | 失败与重试 | 新 runId/attempt，旧快照保留 |
+| 8 | 服务重启与恢复 | 意图、accepted、进程证据 |
+| 9 | 清洗子集导出 | 独立导出生命周期 |
+| 10 | 实验助手预览与确认 | 写操作不绕过确认 |
+| 11 | 数据集整体读取失败 | 后端/登录问题与单行解析问题的区分 |
+| 12 | 运行监控与消息队列核查 | 当前 `db`/`rabbit` 判定 |
+| 13 | 数据统计复盘 | 图表口径、范围与边界 |
+
 ## 0. 全局角色与状态
 
 ### 0.1 系统角色
 
 | 角色 | 看什么 | 能做什么 |
 | --- | --- | --- |
-| 实验者 | 数据集、算法、任务、报告 | 建任务、启动、取消、重试、导出 |
-| 管理员 | 资源目录、账号、监控 | 登记/验证数据集、维护算法配置、查看全局状态 |
+| 实验者 | 数据集、算法、任务、报告、统计 | 建任务、启动、取消、重试、导出 |
+| 管理员 | 资源目录、账号、监控、全量统计 | 登记/验证数据集、维护算法配置、查看全局状态 |
 | API JVM | HTTP、事务、Outbox | 接收命令，写任务事实 |
 | Worker JVM | Rabbit 消息、执行器 | 领取意图、执行 Python |
 | Python 适配器 | `request.json`、VaB | 训练、写进度和结果 |
@@ -35,6 +54,20 @@ pending ──确认启动──> running ──结果通过──> success
 2. 对应 `<workspace>/pre_defense-{taskId}/attempt-{attempt}/request.json`；
 3. `db` 模式的 accepted 标记；
 4. `rabbit` 模式的 Outbox/消费账本。
+
+### 0.3 页面职责边界
+
+| 页面 | 回答的问题 | 不放在这里的内容 |
+| --- | --- | --- |
+| 工作台 | 现在整体怎样、下一步做什么 | 深层趋势分析和统计口径 |
+| 数据集资源 | 数据是否登记、是否已核验、是否启用 | 训练执行和 GPU 状态 |
+| 算法资源 | 算法阶段、参数和默认配置 | 任务运行状态 |
+| 安全防御任务 | 创建、启动、取消、重试、报告和日志 | 执行池、接入范围、Outbox |
+| 运行监控 | 本机资源、执行池、GPU、平台接入、消息派发 | 任务的完整业务操作 |
+| 数据统计 | 一段时间内的状态结构、趋势和质量 | 创建/启动等业务动作 |
+
+任务页移除执行池和接入范围，不是“删功能”，而是把它们放到运行监控中按资源、能力、派发分类展示。这样任务页负责业务，监控页负责运行状态，统计页负责分析。
+
 
 ## 1. 场景一：登记并验证真实数据集
 
@@ -107,6 +140,33 @@ Java 解析所选 gtsrb_dataset.h5
 - Tiny 缺目录：`Tiny ImageNet 目录缺少必要条目：train, val`
 
 只有 `enabled=true && parseStatus=success` 的数据集才会进入任务创建。
+
+### 1.6 页面怎样展示类型和状态
+
+列表页不需要把后端领域值全部展开。当前 `DatasetView.vue` 做如下映射：
+
+```text
+image_classification → image
+text_classification  → text
+tabular              → table
+```
+
+类型列宽度从 140 缩到 90，让训练样本、类别数、状态和操作有空间。这个映射只发生在展示层；接口里的 `datasetType` 仍然是 `image_classification` 等原值。
+
+状态列只保留两个结论：
+
+```text
+parseStatus=success 且 sampleCount/classCount 都是整数 → 已核验
+其余情况                                                 → 待验证
+```
+
+- `failed` 和“只验证了路径”都进入“待验证”，鼠标悬停仍能看到 `parseMessage`；
+- `pending` 也是“待验证”；
+- `success` 但统计字段缺失时仍显示“待验证”，避免出现“解析成功但没有统计”的误导；
+- 停用不是第三种验证状态，改为名称旁的“已停用”标签；
+- 顶部摘要分成“已核验 / 待验证 / 已启用”三项。
+
+Tiny ImageNet 会是“已核验”，因为目录和统计校验通过；但创建任务时仍返回 `DATASET_RUNTIME_UNSUPPORTED`。页面上的“已核验”回答的是文件是否通过内容校验，不是“所有算法都能跑”。
 
 ## 2. 场景二：CIFAR-10 正常任务（`db` 模式）
 
@@ -389,7 +449,7 @@ Worker JVM（:18211，role=worker）
 MySQL / Redis
 ```
 
-也可以 `role=all` 让一个 JVM 同时是 API 和 Worker，但消息仍经过 Broker。启动脚本和参数见 [实现指南第 12 节](project-implementation-guide.md#12-rabbitmq-关键细节)。
+也可以让一个 JVM 以 `role=all` 同时提供 API 和消费者，但消息仍经过 Broker。注意仓库的 `Start-SecurityModelStack.ps1 -Role all` 实际启动 API 和 Worker 两个 JVM；单 JVM 需要直接设置 `--security-model.dispatch.role=all`。启动脚本和参数见 [实现指南第 12 节](project-implementation-guide.md#12-rabbitmq-关键细节)。
 
 ## 6. 场景六：用户取消
 
@@ -575,7 +635,137 @@ GET /api/pre-defense/cleaned-dataset/exports/{exportId}/download
   → 200 但某行 failed：查该行 parseMessage 和路径
 ```
 
-## 12. 一页串起全链路
+## 12. 场景十二：运行监控与消息队列核查
+
+### 12.1 页面看什么
+
+运行监控不是任务页的复制。它分为：
+
+```text
+本机运行环境      CPU / 物理内存 / JVM 堆 / 磁盘
+执行资源          执行池与运行配额 / GPU 租约
+平台接入          可执行算法 / 训练前登记 / 仅目录展示
+消息派发          Outbox 积压 / Worker 状态 / 消费积压
+当前运行任务      当前账号 owner 范围内的 running 任务
+全局观测          仅管理员，聚合层不含 taskId/userId
+```
+
+任务页移除执行池和当前接入范围后，用户要回答“为什么现在不能接单”“后台有没有接手”，应来这里看，而不是在任务列表猜。
+
+### 12.2 当前模式怎么查
+
+管理员请求：
+
+```text
+GET /api/observability/dispatch
+```
+
+判断顺序：
+
+| 现象 | 含义 |
+| --- | --- |
+| `mode=db`、`role=api` | 任务由 API 的 `taskAsync` 线程池直接执行 |
+| `mode=rabbit`、`role=worker/all` | 任务应经过 Broker 和 Worker |
+| `dispatchReady=true` | 当前派发链路完成恢复，可以接单；不等于 RabbitMQ 已启用 |
+| `workerConsumerExpected=false` | 当前角色不应有独立消费者，通常是 `db` 模式 |
+| `outbox=0` 且 `mode=db` | 正常，`db` 不写 Outbox |
+| `outboxBacklog>0` 且 `mode=rabbit` | 消息积压，检查 Relay 和 Broker |
+| `consumptionProcessing>0` | 有 Worker 已领取但尚未收敛的消息 |
+
+再核对 Broker：
+
+```text
+5672 / 5673 / 15672 没有监听
+没有 rabbit / erl 进程
+→ 即使安装了 RabbitMQ，也不是正在使用消息队列
+```
+
+### 12.3 2026-11-25 本地实例
+
+| 项目 | 实测 |
+| --- | --- |
+| 派发 | `mode=db`、`role=api` |
+| Worker | 不适用，`workerConsumerStarted=false` |
+| Outbox | 各状态为 0 |
+| RabbitMQ | 程序目录存在，但端口未监听、进程未启动 |
+| 结论 | 当前没有启用消息队列，任务走本机线程池 |
+
+因此“代码支持 RabbitMQ”与“当前实例启用了 RabbitMQ”必须分开表述。
+
+### 12.4 单机切到 RabbitMQ 的验证
+
+1. 启动本机 Broker，确认 AMQP 和管理端口。
+2. 使用隔离 schema/vhost，启动 `mode=rabbit` 的 API 和 Worker；验证阶段不要直接写生产库。
+3. 检查 `workerConsumerExpected=true`、`workerConsumerStarted=true`、`workerOwned=true`。
+4. 创建短任务，观察 Outbox `new → publishing → published`、消费账本 `processing → terminal`、任务终态和 ACK。
+5. 停 Broker，确认 Outbox 积压和重试行为，而不是把任务直接判成训练失败。
+6. 停止时先 drain，再切回 `db`；有 running 任务或未清空 Outbox 时不做热切换。
+
+仓库脚本 `-Role all` 实际启动 API 和 Worker 两个 JVM。代码允许单 JVM `role=all`，但必须直接设置 `--security-model.dispatch.role=all`；两种方式消息都经过 Broker。
+
+## 13. 场景十三：数据统计复盘
+
+### 13.1 页面动作
+
+用户打开“数据统计”，选择近 7 / 14 / 30 天，看：
+
+- 任务总数、成功率、待处理任务、报告就绪率；
+- 五状态环图；
+- 每日任务趋势堆叠柱；
+- 任务成功率、报告就绪率、资源启用率三个质量环；
+- 训练前/训练中/训练后算法数量；
+- 最近任务明细；
+- 统计范围、趋势窗口、报告就绪定义、未采集指标、采样时间。
+
+### 13.2 数据从哪里来
+
+```text
+GET /api/task-progress/statistics
+  → 任务总数、成功/失败/等待/运行/取消、状态分布
+
+GET /api/dashboard/overview?days=7|14|30
+  → 任务趋势、资源统计、报告就绪、最近任务、范围、采样时间
+```
+
+没有新增“统计专用”接口，也没有前端伪造数据。图表的任务数、成功数和资源数来自 MySQL 聚合；`demo` 来源任务和未归属任务不进入当前范围。
+
+### 13.3 口径
+
+```text
+成功率       = 成功任务 / 任务总数
+待处理       = 等待中 + 运行中
+报告就绪率   = 有清洗结果的成功任务 / 成功任务
+资源启用率   = (数据集启用率 + 算法启用率) / 2
+趋势         = 按任务创建时间落到每日桶
+```
+
+“报告就绪”不是生成了 PDF；它表示成功任务已写入可追溯的清洗结果。页面没有真实采集源的 ASR、GPU 利用率、样本保留率不展示估算值。
+
+### 13.4 和工作台的区别
+
+| 工作台 | 数据统计 |
+| --- | --- |
+| 行动入口，告诉你现在能做什么 | 分析页，告诉你一段时间的结果结构 |
+| 固定 7 日趋势 | 可切换 7/14/30 日 |
+| 任务/资源概览、最近任务、执行池 | 状态环、质量环、阶段构成、统计口径 |
+| 面向日常操作 | 面向复盘、验收和答辩 |
+
+同一个“任务成功率”在两个页面都存在是允许的，因为它服务于不同决策；区别在于统计页给出窗口、口径、分布和明细，而不是复制一张概览卡片。
+
+### 13.5 2026-11-25 验收样例
+
+| 指标 | 值 |
+| --- | --- |
+| 任务总数 / 成功 / 失败 / 等待 / 运行 | 7 / 4 / 1 / 2 / 0 |
+| 任务成功率 | 57% |
+| 报告就绪 | 4 / 4 |
+| 数据集 / 算法 | 11 / 14，全部启用 |
+| 防御阶段 | 训练前 7 / 训练中 5 / 训练后 2 |
+| 近 7 日任务 | 5 个，成功 2 个 |
+
+这些数字只是当前数据库快照，不能写进固定产品文案；每次验收应重新采样并记录时间。
+
+## 14. 一页串起全链路
 
 ```text
 [浏览器]
@@ -610,8 +800,9 @@ GET /api/pre-defense/cleaned-dataset/exports/{exportId}/download
   轮询详情 → 报告 → 日志 → 按需导出 ZIP
 ```
 
-记住三句话：
+记住四句话：
 
 1. **创建只是建档，启动才分配 runId。**
 2. **数据库事务先提交，异步执行/消息后发生。**
 3. **任务事实在 MySQL，消息和缓存都不是事实源。**
+4. **业务操作在任务页，运行状态在监控页，历史趋势在统计页。**

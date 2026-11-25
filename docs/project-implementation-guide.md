@@ -460,15 +460,20 @@ Redis 异常只记 debug 并降级，不让资源维护接口失败。代价是�
 
 ### 12.3 单机也可以是真的消息队列
 
-不需要“假 MQ”。在本机启动 RabbitMQ，再用两个 JVM：
+不需要“假 MQ”。在本机启动 RabbitMQ，再使用两种拓扑之一：
 
 ```text
-API   :8102  role=api
-Worker:8103  role=worker
+拓扑 A（双 JVM）:
+API   :8100  role=api
+Worker:8101  role=worker
+Broker:localhost:5672/5673
+
+拓扑 B（单 JVM）:
+API + Consumer:8100  role=all
 Broker:localhost:5672/5673
 ```
 
-或一个 JVM `role=all` 同时提供 API 和消费者，仍然经过 Broker。脚本：
+拓扑 A 是仓库脚本的默认演练方式，API 与 Worker 是两个 JVM。拓扑 B 需要直接以 `--security-model.dispatch.role=all` 启动一个 JVM；代码支持这种角色，但脚本 `-Role all` 实际会启动 API 和 Worker 两个进程，不应把脚本行为误写成“单 JVM”。
 
 ```powershell
 .\scripts\r4\R4.StartRabbit.ps1 -NodePort 5673 -SecretsPath .\tmp\r4-secrets.json
@@ -480,7 +485,7 @@ Broker:localhost:5672/5673
   -RabbitUser $user -RabbitPassword $password -RabbitVhost $vhost
 ```
 
-具体参数以 [单机部署文档](sdd/24-stage3-single-node-deployment.md) 为准。
+这里的 `-Role all` 表示启动 API 和 Worker 两个进程，而不是把二者合并成一个 JVM。消息仍经过 Broker；即使使用单 JVM `role=all`，也不存在绕过 Broker 的直派捷径。具体参数以 [单机部署文档](sdd/24-stage3-single-node-deployment.md) 为准。
 
 ## 13. 数据集故障的排查顺序
 
@@ -515,3 +520,277 @@ F:\Study\postgraduate\1下\VB backdoor defence\VaB-main\dataset\tiny-imagenet-20
 7. `rabbit` 模式再加看 Outbox 状态、消费账本、Broker 队列和 DLQ。
 
 排查时不要先改数据。先确定事实停在哪一层，再决定修复动作。
+
+## 15. 前端页面与数据映射
+
+### 15.1 页面与路由
+
+`migration-frontend/src/router/index.js` 把页面分为业务操作、资源维护、观测分析和扩展能力四组：
+
+| 路由 | 组件 | 职责 |
+| --- | --- | --- |
+| `/dashboard` | `DashboardView.vue` | 工作台：行动概览、固定 7 日趋势、最近任务、执行池 |
+| `/datasets` | `DatasetView.vue` | 数据集登记、验证、启停 |
+| `/algorithms` | `AlgorithmView.vue` | 算法目录、参数配置入口 |
+| `/algorithms/:algorithmKey` | `AlgorithmDetailView.vue` | 参数配置中心、算法详情 |
+| `/tasks` | `TaskCenterView.vue` | 任务创建、启动、取消、重试、报告、日志、导出 |
+| `/runtime-monitor` | `RuntimeMonitorView.vue` | 本机遥测、执行资源、平台接入、消息派发 |
+| `/statistics` | `StatisticsView.vue` | 任务状态、趋势、质量和资源构成分析 |
+| `/knowledge` | `KnowledgeView.vue` | 知识检索与引用查看 |
+| `/assistant` | `AssistantView.vue` | 实验助手会话、预览确认 |
+| `/cases` | `CaseView.vue` | 防御案例展示 |
+| `/accounts` | `AccountAdminView.vue` | 管理员账号维护 |
+
+前端只做展示、表单预校验和轮询，不作为业务事实源。最终的资源可用性、参数范围、任务归属和启动资格都由 Java 服务重新校验。
+
+### 15.2 数据集页的类型与状态
+
+`DatasetView.vue` 中存在两个容易混淆的层次：
+
+```text
+后端领域值: image_classification / text_classification / tabular
+页面显示值: image / text / table
+```
+
+映射由 `displayDatasetType(type)` 完成。它只改变列宽和可读性，不改变接口请求、数据库值或后端校验。
+
+“已核验”不是只看 `parseStatus`，而是：
+
+```javascript
+function hasVerifiedStats(row) {
+  return row.parseStatus === 'success'
+    && Number.isInteger(row.sampleCount)
+    && Number.isInteger(row.classCount)
+}
+```
+
+因此：
+
+- `parseStatus=pending` → 待验证；
+- `parseStatus=failed` → 待验证，tooltip 显示 `parseMessage`；
+- `parseStatus=success` 但统计字段缺失或不是整数 → 待验证；
+- `parseStatus=success` 且样本数、类别数完整 → 已核验。
+
+停用信息通过名称旁的 `el-tag` 表达，不再占用状态列。顶部摘要分别计算 `已核验`、`待验证`、`已启用`。
+
+注意：Tiny ImageNet 也会显示“已核验”，因为目录结构和统计字段通过；但 `PreDefenseTaskCommandService` 在创建任务时会返回 `DATASET_RUNTIME_UNSUPPORTED`。页面不应把 `已核验` 解释为“当前 LDD 可训练”。
+
+### 15.3 任务页与运行监控
+
+`TaskCenterView.vue` 现在只展示任务业务信息：
+
+- 4 个统计卡：全部任务、运行中、已完成、失败；
+- 任务列表和筛选；
+- 详情抽屉中的报告、执行日志、操作记录、导出和实验助手入口；
+- 创建、启动、取消、重试和失败分析动作。
+
+执行池和接入范围已经从任务页删除。`TaskCenterView` 不再调用 `getExecutorStatus`，也不保存本地 `executor` 状态。
+
+`RuntimeMonitorView.vue` 负责运行态，分三段：
+
+| 分区 | 卡片/内容 | 数据来源 |
+| --- | --- | --- |
+| 本机运行环境 | CPU、物理内存、JVM 堆、磁盘、系统与 JVM uptime | `GET /api/task-progress/executor-status` 的 `host` |
+| 执行资源 | 执行池、运行配额、队列、GPU 租约 | `executor-status` 的线程池字段、`gpuSlot` |
+| 平台接入 | 可执行算法数、训练前登记数、仅目录展示数 | `GET /api/algorithms` |
+| 消息派发 | Outbox 积压、Worker 状态、消费积压 | `GET /api/observability/dispatch` |
+| 当前运行任务/全局观测 | 当前账号 running 任务；管理员全局摘要 | `GET /api/task-progress/running`、`GET /api/observability/summary` |
+
+平台接入的计算条件必须与后端执行入口一致：
+
+```text
+enabled === true
+&& defenseStage === 'pre'
+&& implementationPath === 'vab://pre-defense/ldd'
+```
+
+“仅目录展示”不是把训练中/训练后算法算成失败，而是明确它们当前没有执行契约。
+
+### 15.4 数据统计页
+
+`StatisticsView.vue` 使用两个现有接口，不新增后端统计接口：
+
+| 数据块 | 接口/字段 | 展示方式 |
+| --- | --- | --- |
+| 4 个 KPI | `GET /api/task-progress/statistics`：totalCount、successCount、pendingCount、runningCount、failedCount | KPI 卡 + 进度条 |
+| 状态分布 | `statusStats` 五个状态 | `conic-gradient` 环图 + 图例 |
+| 任务趋势 | `GET /api/dashboard/overview?days=7/14/30` 的 `taskTrend` | 每日堆叠柱，悬停显示明细 |
+| 完成质量 | 统计接口 + `reportReadiness` + `resources` | 三个圆环 |
+| 防御阶段构成 | `overview.resources.algorithmsByStage` | 横向比例条 |
+| 最近明细 | `overview.recentTasks` | 小型表格，后端最多 5 条 |
+| 统计口径 | `overview.scope/sampledAt` 与前端定义 | 说明卡 |
+
+关键计算：
+
+```text
+successRate = round(successCount / totalCount * 100)
+pendingWork = pendingCount + runningCount
+reportRate  = reportReadyCount / successCount
+resourceRate = round((datasetEnableRate + algorithmEnableRate) / 2)
+```
+
+`reportReadiness.tasksWithCleaningResult` 统计的是“成功且已写入清洗结果”的任务，不是生成的 PDF/Word 报告数量。`demo` 来源任务和未归属任务不纳入统计。管理员可得到 `scope=all-users`，普通用户看到当前账号范围。
+
+### 15.5 图表实现与限制
+
+状态环图和完成质量环都使用 CSS `conic-gradient`，趋势图使用按比例分配高度的 DOM 柱段。选它的原因是当前数据量小、无额外图表依赖、与现有卡片风格一致，并且可以直接复用 Vue tooltip。
+
+限制也要写清：
+
+- 不支持缩放、刷选、导出图片；
+- 数据量增大后柱段和标签会过密；
+- 多指标联动、图例筛选和大数据降采样需要专门图表库。
+
+如果将来加入 ECharts，应替换图表层，不要改任务事实接口。统计页的“未采集指标”仍应保留，避免为了好看伪造 ASR 或 GPU 利用率。
+
+### 15.6 窄屏布局的必修点
+
+本项目前端在约 `855px` 视口做过浏览器验收，踩过两个问题：
+
+1. Element Plus 的 `el-card` 会包一层 `.el-card__body`，原来用 `.analytics-kpi-card > strong` 的选择器匹配不到真正的子元素。修复方式是给数值和注释显式加 `kpi-value`、`kpi-note` 类，而不是依赖组件内部结构。
+2. 7/14/30 单选按钮在窄屏下竖排并压住标题。修复方式是改用窄宽度 `el-select`，减少按钮组的最小宽度。
+
+因此改统计页或监控页布局后，至少检查 `855px` 和桌面宽度两个场景，不能只看宽屏截图。
+
+## 16. 当前运行状态与消息队列核查
+
+### 16.1 先看派发接口
+
+管理员调用：
+
+```http
+GET /api/observability/dispatch
+Authorization: Bearer <token>
+```
+
+字段含义：
+
+| 字段 | 含义 |
+| --- | --- |
+| `mode` | `db`：API 进程直派；`rabbit`：Outbox + Broker + Worker |
+| `role` | `api`、`worker` 或 `all` |
+| `dispatchReady` | 当前派发链路完成恢复、可接单；**不等于 MQ 已启用** |
+| `workerConsumerExpected` | 当前角色是否应该有消费者 |
+| `workerConsumerStarted` | 消费者容器是否实际启动 |
+| `workerOwned` | Worker 是否持有本机归属锁 |
+| `outboxAvailable` | Outbox 表是否可读 |
+| `outboxNew/Publishing/Failed/Dead/Backlog` | Outbox 各阶段积压 |
+| `consumptionProcessing/Retry/Terminal` | 消费账本状态 |
+| `gpuSlot.state` | `idle`、`leased`、`blocked` 或 `unknown` |
+
+`db` 模式下 `workerConsumerExpected=false`、`outbox=0` 是正常现象；`dispatchReady=true` 只代表本地线程池派发可用。
+
+### 16.2 再看 Broker 和进程
+
+```powershell
+Get-NetTCPConnection -LocalPort 5672,5673,15672 -State Listen -ErrorAction SilentlyContinue
+Get-Process | Where-Object { $_.ProcessName -match 'rabbit|erl' }
+```
+
+如果端口没有监听、没有 `rabbit`/`erl` 进程，即使 RabbitMQ 安装目录存在，也不能说消息队列正在工作。再看启动参数或环境变量：
+
+```text
+--security-model.dispatch.mode=db|rabbit
+--security-model.dispatch.role=api|worker|all
+```
+
+`db + worker` 是非法组合；`rabbit` 的 API 进程只写 Outbox，不启动 Python。
+
+### 16.3 2026-11-25 本地验收快照
+
+| 项目 | 实测值 |
+| --- | --- |
+| 后端 | `8102`，PID `30744`，readiness 200 |
+| 派发 | `mode=db`、`role=api`、`dispatchReady=true` |
+| Worker | `workerConsumerExpected=false`、`workerConsumerStarted=false`、`workerOwned=false` |
+| Outbox | new/publishing/failed/published/dead/backlog 全部 0 |
+| Rabbit 端口 | `5672/5673/15672` 均无监听 |
+| 本机进程 | 无 `rabbit`/`erl` 进程 |
+| 结论 | 代码支持 RabbitMQ，但当前实例没有启用消息队列 |
+
+这些数字是带时间的运行快照，不是永恒配置。写论文或答辩时应写“当前实例为 `db/api`”，不要写“平台默认使用 RabbitMQ”。
+
+### 16.4 如果要把当前实例切换到 rabbit
+
+切换是运行态变更，不是改一个前端标签。最低验证步骤：
+
+1. 启动本机 RabbitMQ，确认 Broker 端口和管理端口可用。
+2. 使用隔离 schema/vhost 或明确的目标库，避免把验收消息写进生产事实。
+3. 以 `mode=rabbit`、`role=api` 启动 API；以 `role=worker` 启动 Worker，或按验证目的使用单 JVM `role=all`。
+4. 检查 `workerConsumerExpected/Started/Owned` 和队列 consumers。
+5. 创建一条短任务，观察 `Outbox new → publishing → published`、消费账本 `processing → terminal`，以及任务终态。
+6. 停止时先 drain：确认没有 running 任务、没有未发布 Outbox、没有处理中的消费账本，再切回 `db`。
+
+不要热切换模式，也不要在有活跃任务时删除 Outbox 表或修改队列拓扑。
+
+## 17. 构建、测试与浏览器验收
+
+### 17.1 前端构建
+
+```powershell
+Set-Location migration-frontend
+npm run build
+```
+
+当前生产构建结果：`1712` 个模块转换成功，输出到 `migration-frontend/dist`，仅保留既有的大 chunk 警告。前端没有独立的组件测试套件，本轮以生产构建和浏览器逐页复验为准。
+
+### 17.2 后端测试
+
+后端代码在 UI 改造轮次没有改动。此前的完整 Surefire 基线是 **390 项，0 失败、0 错误、0 跳过**。如果改动了 Java、SQL 或 Rabbit 配置，不能沿用这个结果，必须重新执行：
+
+```powershell
+Set-Location migration-backend
+mvn -q test
+```
+
+涉及 MySQL、Redis、RabbitMQ 的改动还要执行对应的集成门禁，不能用单元测试代替。
+
+### 17.3 浏览器验收清单
+
+至少打开：
+
+```text
+/datasets        类型短名、已核验/待验证、已停用标签
+/tasks           4 个任务统计、任务列表；不再出现执行池和接入范围
+/runtime-monitor 执行资源 / 平台接入 / 消息派发三组
+/statistics       KPI、状态环、7/14/30 趋势、质量环、阶段条、明细、口径
+```
+
+验收时同时检查：
+
+- 当前账号与管理员范围的标签；
+- 统计页切换 14/30 天是否重新请求并渲染；
+- 窄屏下 KPI、下拉和趋势标签是否重叠；
+- 运行监控的 `db` 提示是否明确；
+- 数据集 Tiny 的“已核验但不可执行”是否仍能从提示中看出来。
+
+### 17.4 前端与后端改动边界
+
+这轮 UI 改造只改了 5 个前端文件：
+
+```text
+DatasetView.vue
+TaskCenterView.vue
+RuntimeMonitorView.vue
+StatisticsView.vue
+styles.css
+```
+
+后端接口、数据表和派发逻辑没有改。不要把“页面显示短类型”误写成“后端类型改成 image”，也不要把“统计页增加图表”误写成“新增统计接口”。
+
+## 18. 一页代码索引
+
+| 关注点 | 先看 |
+| --- | --- |
+| 路由和页面 | `migration-frontend/src/router/index.js`、`src/views` |
+| 数据集展示 | `DatasetView.vue` 的 `displayDatasetType`、`hasVerifiedStats` |
+| 任务页动作 | `TaskCenterView.vue` 的创建、启动、重试、取消、报告 |
+| 运行监控 | `RuntimeMonitorView.vue`、`task.js`、`algorithm.js` |
+| 统计页 | `StatisticsView.vue`、`dashboard.js`、`task.js` |
+| 派发模式 | `DispatchRuntimePolicy.java` |
+| 启动事务 | `PreDefenseTaskCommandService.launchTask` |
+| Outbox/Relay | `TaskOutboxService.java`、`TaskOutboxRelay.java` |
+| 消费/ACK | `DispatchMessageListener.java`、`DispatchMessageHandler.java` |
+| 恢复 | `DispatchRecoveryCoordinator.java` |
+| 执行器 | `PythonLddTaskExecutor.java` |
+| Python 入口 | `algorithm-runtime/vab/algorithm_entry.py` |

@@ -86,6 +86,27 @@
 | 53. 如何证明设计有效？ | 单测覆盖协议/边界，MySQL 集成覆盖事务，隔离环境验收覆盖真实链路，真实 GPU 证据覆盖运行范围。 | `docs/sdd/26-current-delivery-facts.md` |
 | 54. 项目最大工程难点？ | 用“触发场景 → 原行为 → 改动 → 测试 → 边界”回答，不要泛泛说“高并发”。 | 自己的改动记录 |
 
+## 七、前端、监控与统计
+
+| 问题 | 建议回答 | 代码锚点 |
+| --- | --- | --- |
+| 55. 为什么把执行池和接入范围从任务页移走？ | 任务页回答“怎样完成一条实验”，运行监控回答“系统现在能不能接单、后台是否接手”。两者混在一起会让业务操作和资源状态互相干扰。执行池、GPU、平台接入和 Outbox 现在按“执行资源/平台接入/消息派发”展示。 | `TaskCenterView.vue`、`RuntimeMonitorView.vue` |
+| 56. 数据集类型为什么显示 `image`？ | 后端仍保存 `image_classification`，页面用 `displayDatasetType()` 映射成短名，只是为了列宽和可读性，不改变领域模型和接口。 | `DatasetView.vue` |
+| 57. 状态为什么只留“已核验/待验证”？ | 用户需要快速判断文件是否通过内容校验，不需要看到 pending/failed/仅路径可用等内部差异。失败原因仍在 tooltip 的 `parseMessage`；停用移出状态列，放名称旁标签。 | `hasVerifiedStats(row)` |
+| 58. “已核验”到底代表什么？ | `parseStatus=success` 且 `sampleCount/classCount` 是整数。它只说明文件和统计已验证，不代表当前算法可执行。Tiny ImageNet 可以已核验，但创建 LDD 时仍会 `DATASET_RUNTIME_UNSUPPORTED`。 | `VabTinyImageNetDataset`、`PreDefenseTaskCommandService` |
+| 59. 工作台和数据统计有什么区别？ | 工作台是行动导向：任务/资源概览、固定 7 日趋势、最近任务、执行池和入口。统计页是分析导向：7/14/30 日趋势、五状态环、完成质量、防御阶段、明细和口径。 | `DashboardView.vue`、`StatisticsView.vue` |
+| 60. 统计页的数据从哪里来？ | 没有新增专用后端接口，任务计数和状态来自 `/api/task-progress/statistics`，趋势、资源、报告就绪和最近任务来自 `/api/dashboard/overview?days=`。 | `getTaskStatistics`、`getDashboardOverview` |
+| 61. 统计指标怎么算？ | 成功率=成功/总数；待处理=等待+运行；报告就绪率=有清洗结果的成功任务/成功任务；资源启用率=数据集启用率与算法启用率的平均。 | `StatisticsView.vue` 的 computed |
+| 62. 为什么只提供 7/14/30 天？ | 后端允许 1–30 天，页面只暴露三个常用窗口，兼顾可读性和请求量。30 天以上标签会过密，且当前没有大数据降采样。 | `DashboardOverviewService.overview` |
+| 63. 为什么不用 ECharts？ | 当前数据量小，CSS `conic-gradient` 和堆叠柱足够，能减少依赖和包体。代价是没有缩放、刷选、导出；数据量增大或多图联动时再引入图表库。 | `StatisticsView.vue` |
+| 64. 为什么统计页没有 ASR、GPU 利用率？ | 没有真实采集源。平台只展示任务、资源、报告和状态聚合；未知指标明确写“未采集”，不用 0 或常量冒充实验结论。 | 统计口径卡片 |
+| 65. 怎么判断当前有没有启用消息队列？ | 查 `/api/observability/dispatch` 的 `mode/role/workerConsumerExpected/workerConsumerStarted/workerOwned`，再查 5672/5673/15672 和 `rabbit/erl` 进程。当前实例是 `db/api`、Broker 未启动。 | `DispatchOperationsService` |
+| 66. `dispatchReady=true` 等于 MQ 已就绪吗？ | 不等于。它只说明当前派发模式完成启动恢复、可以接单；可能是 `db` 线程池，也可能是 `rabbit` Worker。必须结合 `mode` 和消费者字段。 | `DispatchRecoveryCoordinator` |
+| 67. `db` 和 `rabbit` 的核心区别？ | `db` 是事务提交后 API 进程内直接派发；`rabbit` 是同事务写 Outbox，Relay 发 Broker，Worker 消费。两者都以 MySQL 为事实源，`db` 不是假队列，`rabbit` 也不替代数据库。 | `DispatchRuntimePolicy`、`AfterCommitTaskDispatcher`、`TaskOutboxRelay` |
+| 68. Rabbit 模式数据库故障时会不会一直重投？ | 不热循环 `nack requeue`。消费层把数据库故障转延迟队列，保留未确认消息；恢复后重新 claim，先用消费账本和任务身份判断能否执行。 | `DispatchMessageHandler` |
+| 69. 前端窄屏布局踩过什么坑？ | Element Plus `el-card` 包了 `.el-card__body`，直接子选择器会失效；7/14/30 单选在 855px 下竖排压标题。改为显式 `kpi-value` 类名和窄 `el-select`，并按窄屏复验。 | `StatisticsView.vue`、`styles.css` |
+| 70. 页面显示短类型会改变后端数据吗？ | 不会。类型和状态映射都在 Vue 展示层，后端继续保存 `image_classification`、`parse_status` 和统计字段；改 UI 不等于改数据模型。 | `DatasetView.vue` |
+
 ## 模拟一：从项目介绍问到跨语言
 
 **面试官**：你说 Java 和 Python 用 JSON，具体是哪一层？
@@ -148,14 +169,44 @@
 
 **回答**：资源目录读回源 MySQL，写不阻塞；只有性能下降，任务正确性不变。知识向量也回退词法检索。
 
+## 模拟六：从“统计页和工作台重复”问到指标口径
+
+**面试官**：你的数据统计页是不是把工作台又做了一遍？
+
+**回答**：不是同一层。工作台是行动视角，固定 7 日趋势、最近任务、执行池和快捷入口，回答“现在做什么”；统计页是分析视角，支持 7/14/30 日窗口、五状态环、完成质量、防御阶段、最近明细和统计口径，回答“这段时间结果结构怎样”。两边共享真实接口，但统计页多了窗口、分布和定义。
+
+**追问**：为什么没有 ASR 或 GPU 利用率？
+
+**回答**：当前没有对应的真实采集源。页面只展示从 MySQL 聚合得出的任务、资源和报告指标；没有采样链路就不展示估算值，避免用户把界面数字当成实验结论。
+
+**再追问**：那你怎么证明图表不是假数据？
+
+**回答**：每个块都能追到接口：任务计数来自 statistics，趋势和资源来自 dashboard overview；页面还显示采样时间和统计范围。当前样例是 7 个任务、成功 4 个、失败 1 个、等待 2 个，能和数据表逐项核对。
+
+## 模拟七：从“消息队列启用了吗”问到 db/rabbit
+
+**面试官**：你说支持 RabbitMQ，现在到底启用了吗？
+
+**回答**：当前实例没有启用。`GET /api/observability/dispatch` 返回 `mode=db`、`role=api`，`workerConsumerExpected=false`、`workerConsumerStarted=false`、`workerOwned=false`；5672/5673/15672 也没监听，没有 Rabbit/Erlang 进程。代码支持和当前运行状态是两件事。
+
+**追问**：`dispatchReady=true` 不是说明已经 ready 吗？
+
+**回答**：它只说明当前派发链路完成启动恢复、可以接单。`db` 模式下 ready 指的是本地线程池，不代表 Broker 已连接。要看 `mode` 和消费者字段才能判断 RabbitMQ。
+
+**再追问**：那 db 和 rabbit 的本质区别是什么？
+
+**回答**：`db` 是事务提交后由 API 的 `taskAsync` 直接执行；`rabbit` 是同事务写 Outbox，Relay 发到 Broker，Worker 消费并手动 ACK。两者都复用同一套任务、意图、Python 协议和 MySQL 事实源；`db` 不是“假 MQ”，`rabbit` 也不是“把任务状态搬到 MQ”。
+
 ## 快速自检
 
-合上文档，能连续说出这五句即可：
+合上文档，能连续说出这七句即可：
 
 1. 创建是 `pending`，启动才产生 `runId/attempt`。
 2. 事务内写任务、快照、意图；提交后才执行/发消息。
 3. Java 和 Python 用请求/结果 JSON 文件，不用 stdout 当结果。
 4. 旧轮结果被 `current_run_id + running` 条件挡住。
 5. Redis 只加速目录，Rabbit 只负责派发，MySQL 才是任务事实。
+6. `dispatchReady=true` 不等于 MQ 启用；当前实例是 `db/api`。
+7. 页面展示短类型和二态状态不改后端模型，统计页没有真实采集源的指标不编造。
 
 再准备一个自己真正改过的文件、一个测试、一个失败场景。面试时沿这条证据链往下讲，比背架构图更可信。
