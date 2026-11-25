@@ -81,8 +81,7 @@ const form = ref(emptyForm())
 const rules = { datasetName: [{ required: true, message: '请输入数据集名称', trigger: 'blur' }], datasetType: [{ required: true, message: '请选择数据类型', trigger: 'change' }], filePath: [{ required: true, message: '请输入数据集路径', trigger: 'blur' }] }
 function unwrap(data) { return data?.data ?? data ?? {} }
 function hasVerifiedStats(row) {
-  return row.parseStatus === 'success' && row.parseMessage?.startsWith('CIFAR 官方批次校验通过')
-    && Number.isInteger(row.sampleCount) && Number.isInteger(row.classCount)
+  return row.parseStatus === 'success' && Number.isInteger(row.sampleCount) && Number.isInteger(row.classCount)
 }
 async function loadDatasets() {
   loading.value = true
@@ -93,7 +92,11 @@ async function loadDatasets() {
     datasets.value = records
   } catch (error) {
     datasets.value = []
-    message.value = error.response?.data?.message || '数据集读取失败，请检查服务连接后重试。'
+    const status = error.response?.status
+    message.value = error.response?.data?.message
+      || (status === 401 ? '登录会话已失效，请重新登录后查看数据集。'
+        : status === 502 || status === 503 ? '后端服务暂不可用，请确认服务已启动。'
+          : '数据集读取失败，请检查服务连接后重试。')
   } finally {
     loading.value = false
   }

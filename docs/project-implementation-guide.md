@@ -1,184 +1,517 @@
 # 安全模型训练平台实现指南
 
-沿着一次 `taskId=42` 的示例运行读代码。`r1` 是示意用的运行 ID，生产代码生成 UUID。文中的缩短片段省略了日志和少量分支。首次阅读先记住业务闭环，再到这里核对每次调用的输入与输出。[贯穿案例](learning/00-one-experiment.md)
+本文沿着“前端创建任务 → 后端建档 → 确认启动 → 派发 → Python/VaB 执行 → 结果回写 → 报告/导出”逐段看代码。默认以 `db/api` 单进程模式讲解，再标出 `rabbit` 模式的差异。示例任务号沿用教学中的 `42`，真实 `runId` 由 UUID 生成。
 
-## 1. 页面到数据库
+配套阅读：[业务流程详解](project-business-flows.md) 用多个场景串起同一套链路；[设计思路](project-design-overview.md) 解释为什么这样分层。
 
-按 `submitCreate → createTask → PreDefenseTaskController.create → PreDefenseTaskCommandService.create` 找到各层。表单用 `JSON.parse` 检查 `customParams`，`JSON.stringify` 把它恢复成文本字段。浏览器把整个表单作为 HTTP JSON 发送。Spring MVC 用 Jackson 将请求体绑定到 `PreDefenseTaskCommand`。
+## 1. 代码地图与启动顺序
+
+| 层 | 目录 | 主要职责 |
+| --- | --- | --- |
+| 前端 | `migration-frontend/src` | 页面、表单、轮询、错误提示 |
+| HTTP | `migration-backend/.../interfaces/web` | 路由、DTO、HTTP 状态 |
+| 应用服务 | `.../application/task`、`resource`、`report`、`export` | 事务、校验、编排 |
+| 领域 | `.../domain` | 任务、数据集、算法、租约、消息账本 |
+| 持久化 | `.../infrastructure/persistence` | MyBatis Mapper、条件 SQL |
+| 执行器 | `.../infrastructure/executor` | 进程启动、文件协议、等待 |
+| 缓存 | `.../infrastructure/cache` | Redis 资源目录缓存 |
+| Python 适配器 | `algorithm-runtime/vab/algorithm_entry.py` | 解析请求、生成任务脚本、启动 VaB |
+
+后端启动后先完成两件事，才开始接收可执行请求：
+
+1. `DispatchRuntimePolicy` 解析 `dispatch.mode` 与 `dispatch.role`；`db + worker` 是非法组合，直接启动失败。
+2. `TaskRecoveryRunner` / `WorkerConsumerLifecycle` 完成启动恢复。`SchedulingReadinessGate` 未就绪时，启动接口返回 `SCHEDULING_NOT_READY`。
+
+这解释了一个常见现象：进程端口已经监听，但“启动任务”仍可能被拒绝，因为恢复尚未完成。
+
+## 2. 登录、资源与参数配置
+
+### 2.1 登录
+
+`POST /auth/login` → `AuthController.login`：
+
+1. 按用户名查询 `sys_user`；
+2. 校验启用状态和 BCrypt 密码；
+3. 签发 JWT，后续请求由 `JwtAuthenticationFilter` 解析身份；
+4. Controller 通过 `CurrentUserService` 取当前用户。
+
+JWT 只回答“你是谁”。任务写操作还要 `ownerUserId` 校验，管理员读取也有单独规则。
+
+### 2.2 数据集登记与验证
+
+登记 `POST /api/dataset` 只写路径和元数据，`parseStatus=pending`，不假装已经解析。管理员点“验证”调用 `POST /api/dataset/{datasetId}/validate`，进入 `ResourceCommandService.verifyDataset`。
+
+当前支持的真实格式：
+
+| 路径形态 | 识别方式 | 运行根目录 | LDD 参数 |
+| --- | --- | --- | --- |
+| `.../cifar-10-batches-py` | 七个官方批次文件 + MD5 校验 | 父目录 | `cifar10` |
+| `.../cifar-100-python` | `meta/train/test` + MD5 校验 | 父目录 | `cifar100` |
+| `.../gtsrb_dataset.h5` | HDF5 文件头 + GTSRB 约定统计 | 文件父目录 | `gtsrb` |
+| `.../tiny-imagenet-200` | `wnids.txt/train/val` 目录结构 | 不进入执行 | 当前不支持 |
+
+CIFAR 校验会计算官方 MD5，避免把同名但损坏的文件当成可用数据。GTSRB 校验会读取文件头 `89 48 44 46 0D 0A 1A 0A`，记录训练 39,209、测试 12,630、43 类、3,072 维。Tiny ImageNet 目录可以登记和计数，但任务创建阶段会返回 `DATASET_RUNTIME_UNSUPPORTED`。
+
+为什么 GTSRB 的运行根目录是 HDF5 的父目录？VaB 的 `dataloader_data.py` 对 `gtsrb` 使用相对路径 `dataset/gtsrb_dataset.h5`，而适配器把 VaB 根目录作为子进程 cwd。因此 Java 传的通用 `data_path` 对 GTSRB 不是唯一决定项，HDF5 必须保持在 VaB 工作目录下的 `dataset` 目录中。
+
+共享的 `.../dataset` 根目录不会被误判为 GTSRB，因为它可能同时包含 CIFAR 和 GTSRB；选择它时由算法参数 `dataset` 决定训练集。
+
+验证完成后写 `parseStatus/parseMessage/parseTime`，清理或写入统计字段，并在事务提交后失效资源缓存。
+
+### 2.3 算法默认参数
+
+独立“超参模板”入口已移除。算法详情页“参数配置中心”编辑 `sys_algorithm.default_config`：
+
+```text
+前端结构化表单（根据 config_schema 生成）
+        ↓ PUT /api/algorithm/{id}/config
+AlgorithmConfigCommandService
+        ↓ 管理员校验 + JSON 对象校验 + LddConfigurationPolicy 校验
+UPDATE sys_algorithm.default_config
+        ↓ 审计 UPDATE_CONFIG + 清缓存
+新任务读取该默认配置
+```
+
+历史 `sys_hyper` 仍可读，只用于旧任务/旧报告兼容；新任务 `hyperId=null`。
+
+## 3. 创建任务：从页面到 `pending`
+
+### 3.1 前端
+
+`TaskCenterView.vue` 的 `submitCreate`：
+
+1. 校验数据集、算法和必填项；
+2. 解析自定义参数 JSON；
+3. 生成 `payload`，其中 `hyperId: null`；
+4. 调用 `createTask(payload, idempotencyKey)`；
+5. 成功后用响应 `taskId` 打开详情。
 
 ```javascript
-// submitCreate, shortened
 const created = unwrap(await createTask(payload, pendingCreateKey))
 await openDetail(created)
 ```
 
-创建提交成功后，页面拿响应中的 `taskId` 打开详情。用户点击“启动任务”才走下面的路径。两个按钮各有自己的响应。
+创建按钮只建档，不启动训练。
 
-```javascript
-// TaskCenterView.vue
-function start(row) { return runCommand(row, '启动', startTask, startKeys) }
+### 3.2 HTTP 到服务
 
-// runCommand 的顺序，省略提示、幂等键管理和错误处理
-await ElMessageBox.confirm(/* 确认提示 */)
-await request(taskId, keys?.get(taskId))
-```
+`POST /api/pre-defense` → `PreDefenseTaskController.create` → `PreDefenseTaskCommandService.create`。
 
-`PreDefenseTaskCommand` 接收表单业务字段。状态和运行身份由服务管理。`create` 调用 `plan` 校验资源与参数，写 `pending`、`progress=0` 和稳定 `ownerUserId`。`resolveCommand` 要求数据集启用且解析为 `success`，算法启用且阶段为 `pre`、实现为 `vab://pre-defense/ldd`。可选模板必须启用且绑定同一个算法。`LddConfigurationPolicy` 归一化参数。合并顺序为算法默认值、模板、自定义值，后者覆盖前者。创建持久化最终参数。启动重新走计划解析和资源检查，并持久化本轮实际请求。
+服务做四类工作：
 
-`AuthController.login` 接收用户名与密码，验证成功签发 JWT。后续 Controller 由认证上下文取得调用者。`lockOwned` 用记录的 `ownerUserId` 校验写权限。对数据集，`ResourceCommandService.validateDataset` 会针对可识别的 CIFAR 目录检查预期文件。以登记 `D:/datasets/cifar-10-batches-py` 为例，`resolveCommand` 形成的实际运行路径是 `D:/datasets`，实际 `dataset` 是 `cifar10`。数据集参数与所选 CIFAR 类型矛盾或 `data_path` 指向其他目录会报错。[登录](../migration-backend/src/main/java/com/securitymodel/interfaces/web/AuthController.java) · [资源验证](../migration-backend/src/main/java/com/securitymodel/application/resource/ResourceCommandService.java) · [CIFAR 路径](../migration-backend/src/main/java/com/securitymodel/domain/dataset/VabCifarDataset.java)
+1. **权限**：当前用户必须有效；写操作使用稳定 `ownerUserId`。
+2. **资源解析**：数据集必须启用、`parseStatus=success`；算法必须启用、`defenseStage=pre`、`implementationPath=vab://pre-defense/ldd`。
+3. **参数归一化**：`LddConfigurationPolicy` 合并算法默认、历史模板、自定义参数，并校验键、类型、范围和数据集一致性。
+4. **写任务**：插入 `sys_pre_defense`，`status=pending`、`progress=0`，保存最终参数和资源引用。
 
-`RequestIdempotencyService` 处理创建、启动、重试的可选 `Idempotency-Key`。同一用户、操作、键和请求内容已完成时返回缓存的响应。复用相同键提交不同内容会冲突，处理中会返回 `REQUEST_IN_PROGRESS`。这层解决请求重发。任务状态仍由服务和 SQL 约束。
+响应 `201` 返回任务行。此时还没有 `runId`，也不会占用 GPU。
 
-[页面](../migration-frontend/src/views/TaskCenterView.vue) · [HTTP 客户端](../migration-frontend/src/api/http.js) · [Controller](../migration-backend/src/main/java/com/securitymodel/interfaces/web/PreDefenseTaskController.java) · [命令服务](../migration-backend/src/main/java/com/securitymodel/application/task/PreDefenseTaskCommandService.java) · [幂等服务](../migration-backend/src/main/java/com/securitymodel/application/task/RequestIdempotencyService.java)
+### 3.3 幂等键
 
-## 2. 启动怎样变成后台运行
+`RequestIdempotencyService` 用 `(userId, operation, key, requestHash)` 记录请求：
 
-`start` 先通过 `selectByIdForUpdate` 锁定任务行并校验归属，只允许 `pending`。`launchTask` 检查调度 readiness 与角色。本地模式在领取前检查脚本可读、解释器配置、两个 workspace 是否一致。配置为 `python` 这类裸命令时，实际能否启动由操作系统解析。Rabbit API 不需要本地执行器，Worker 消费时检查。两模式的代码路径可读成以下伪代码。
+- 同键同内容已完成 → 返回原响应；
+- 同键不同内容 → `REQUEST_IN_PROGRESS` / 冲突；
+- 处理中重复 → 返回进行中，不重复写任务。
+
+幂等键解决 HTTP 重发，不替代数据库行锁。
+
+## 4. 启动任务：事务内建立“这一轮”
+
+### 4.1 入口
+
+`POST /api/pre-defense/start/{taskId}` → `start` → `launchTask`。
+
+前端在用户确认后调用。`runCommand` 先弹确认框，再用独立的启动幂等键发请求。
+
+### 4.2 事务内步骤
 
 ```text
-事务内:
-  锁定任务行，检查 owner、pending、资源与配置
-  分配新的 runId 和 attempt
-  db 模式取得 GPU 单槽租约
-  生成 DefenseTaskRequest，检查配额，追加执行快照
-  claimForExecution: UPDATE ... WHERE task_id = ? AND status = 'pending'
-  创建 pending 派发意图，保存请求与运行指纹
-  rabbit 模式同时保存 Outbox
-
-事务提交后:
-  db: afterCommit -> dispatchAfterCommit -> markSubmitting
-      -> 写 accepted 标记 -> @Async("taskAsync") runPreDefense
-  rabbit: Relay 发布 -> Worker 查 MySQL -> 领取意图和租约
-          -> 写 accepted 标记 -> executeAndWait
+BEGIN
+  SELECT * FROM sys_pre_defense WHERE task_id=? FOR UPDATE
+  校验 owner、status=pending、资源仍可用、执行器配置有效
+  attempt = max(历史 attempt)+1
+  runId = UUID
+  db 模式：申请 GPU 单槽租约
+  构建 DefenseTaskRequest（最终参数、资源路径、配额）
+  buildRuntimeSnapshot + requestHash
+  appendExecutionSnapshot 到 execution_snapshot JSON
+  UPDATE sys_pre_defense
+     SET status='running', current_run_id=?, current_attempt=?, start_time=?, execution_snapshot=?
+     WHERE task_id=? AND status='pending'
+  创建 sys_task_dispatch_intent(status=pending)
+  rabbit 模式：同一事务插入 sys_dispatch_outbox(status=new)
+COMMIT
 ```
 
-MySQL 查询结果已是 `running` 时，Python 可能仍未创建。定位时把任务状态与派发状态分开。`pending` 意图表示尚待派发。`submitting` 表示交接中。`submitted` 已完成相应派发登记，`abandoned` 表示该轮放弃派发。这几项是派发表的值。
+关键点：
 
-### 两个请求为什么只能领取一次
+- `SELECT FOR UPDATE` 让同一任务的并发启动排队；
+- `claimForExecution` 仍带 `WHERE status='pending'`，只有一行能成功；
+- 租约、任务领取、意图在同一事务，任一失败一起回滚；
+- `rabbit` 模式启动事务**不拿 GPU 租约**，避免消息在队列里等待时占着卡。
 
-以不同请求键、同时启动 `42` 为例。A 在事务内通过 `SELECT ... FOR UPDATE` 锁定该行，看到 `pending`，写 `running/r1/1` 和派发意图后提交。B 取得锁后读到 `running`，状态检查失败。Mapper 的 `claimForExecution` 仍有 `WHERE status='pending'`，服务检查受影响行数，只有匹配的一次领取才成立。行锁让同一事务内“读、判断、写”可按顺序执行，条件更新让写入本身检查合法前态。
+### 4.3 快照内容
 
-读 `AfterCommitTaskDispatcher` 时在纸上写出两个时间点。事务提交之前，任务变更和意图可以一起回滚。事务提交之后，派发失败已经不能靠回滚收回启动，此时要用派发失败处理和恢复扫描收敛状态。线程池满时，`TaskExecutorConfig` 的 `AbortPolicy` 产生拒绝，派发协调器处理失败与交接前租约。
+`execution_snapshot` 是 JSON 数组，每次 attempt 追加一项，至少包含：
 
-`execution_snapshot` 记录各 attempt 的请求、运行指纹、配额和租约快照。`ExecutionFingerprintService` 对符合配置和大小条件的普通文件计算内容 SHA-256，目录输入记录路径及可取得的文件属性。`snapshotHash` 是快照摘要，不能据此推断整个目录逐文件内容都冻结。Python 另外采集解释器、依赖和设备环境。
+- 本轮 `DefenseTaskRequest`；
+- 请求/运行指纹；
+- 配额；
+- GPU 租约信息（若已取得）；
+- 开始时间。
 
-[任务 Mapper](../migration-backend/src/main/java/com/securitymodel/infrastructure/persistence/mapper/PreDefenseTaskMapper.java) · [派发协调器](../migration-backend/src/main/java/com/securitymodel/application/task/TaskDispatchCoordinator.java) · [输入指纹](../migration-backend/src/main/java/com/securitymodel/application/task/ExecutionFingerprintService.java)
+它的作用不是“日志”，而是回答“这一轮实际提交了什么”。算法配置在启动后被修改，不会改写历史快照。
 
-## 3. Java 怎样把参数交给 Python
+### 4.4 启动后返回什么
 
-`PythonLddTaskExecutor.createContext` 根据 `fingerprintService.getWorkspace()` 创建 attempt 目录。`AttemptProcessRegistry` 使用另一项配置定位受控目录。启动时将 `SECURITY_MODEL_EXECUTOR_PYTHON_WORKSPACE` 和 `SECURITY_MODEL_EXECUTOR_WORKSPACE` 指向同一路径。以下是 `invoke` 中可对照的核心代码。
+响应 `200` 只表示启动命令已受理，任务已进入 `running`。此时 Python 可能还没创建。正确表述是“已提交执行”，不是“已经开始训练”。
+
+## 5. `db` 模式：事务提交后进入本地线程池
+
+`AfterCommitTaskDispatcher` 在事务提交后执行：
+
+```text
+dispatchAfterCommit(request)
+  → intent.markSubmitting()
+  → processRegistry.markAccepted()
+  → executor.runPreDefense(request)   // @Async("taskAsync")
+```
+
+线程池由 `TaskExecutorConfig` 配置有界队列和 `AbortPolicy`。线程池拒绝时：
+
+- 清除 accepted 标记；
+- 释放本轮租约；
+- 把任务/意图收敛为失败；
+- 不允许“数据库 running、实际没人执行”长期悬挂。
+
+执行线程进入 `PythonLddTaskExecutor`，详见第 7 节。
+
+## 6. `rabbit` 模式：Outbox → RabbitMQ → Worker
+
+### 6.1 为什么需要 Outbox
+
+启动事务同时写任务、意图、Outbox。若先提交数据库再发消息，进程可能在两步之间崩溃，消息永远丢失；若先发消息再提交，数据库回滚后 Worker 可能执行一个不存在的任务。Outbox 把“要发什么”与业务事实放在同一事务。
+
+### 6.2 Relay
+
+`TaskOutboxRelay.scheduledRelay()` 默认每 3 秒运行：
+
+1. `reclaimExpired` 回收超时 claim；
+2. `claimBatch` 把 `new/retry` 行条件更新为 `publishing`，带 `claimOwner + claimToken + claimUntil`；
+3. 事务外调用 `RabbitDispatchTransport.publish`；
+4. 发布成功后 `markPublished`，失败按 5s/30s/120s 退避，超过次数置 `dead`。
+
+`publishing` 行在 Relay 崩溃后会过期重领。旧 Relay 的确认不能覆盖新 claim，因为 `markPublished` 同时匹配 `claimToken`。
+
+### 6.3 发布确认
+
+`RabbitDispatchTransport` 在同一个 channel 上：
+
+- `confirmSelect()`；
+- `basicPublish(..., mandatory=true)`；
+- `waitForConfirms(timeout)`；
+- 注册 `ReturnListener` 捕获不可路由消息；
+- 业务 `messageId` 在重发时保持稳定，`correlationId` 每次发布唯一。
+
+所以“Broker ACK”与“消息可路由”是两件事。不可路由的 mandatory return 会转成 `RABBIT_UNROUTABLE`，避免任务无限等待。
+
+### 6.4 队列拓扑
+
+| 名称 | 作用 |
+| --- | --- |
+| `security-model.dispatch` | 主 Direct Exchange |
+| `security-model.dispatch.worker` | Worker 主队列，手动 ACK，prefetch=1 |
+| `security-model.dispatch.retry.5s/30s/120s` | TTL 延迟队列，到期经 DLX 回主队列 |
+| `security-model.dispatch.dlx` / `.dlq` | 死信 Exchange / 队列 |
+
+重试队列不是“消费者 sleep”，消息在队列里等待，不占 Worker 线程。
+
+### 6.5 Worker 消费
+
+`DispatchMessageListener` 手动 ACK，交给 `DispatchMessageHandler`：
+
+1. 解析事件；
+2. 若本地已 accepted → 直接 ACK 重复投递；
+3. `TaskDispatchConsumptionService.claim` 插入/抢占 `sys_dispatch_consumption`；
+4. 校验任务仍是当前 `runId/attempt`；
+5. 查 `sys_task_dispatch_intent`；
+6. `DispatchClaimTransactionService` 同一事务把意图 `pending→submitting` 并取得 GPU 租约；
+7. `executor.executeAndWait(request)` 同步阻塞到 Python 退出；
+8. 根据任务终态写消费账本并 ACK。
+
+**ACK 时机**：只有任务终态、消费账本终态、明确的 stale/duplicate，或消息已转移到重试/死信后才 ACK。异常且结果不确定时，不盲目重投，避免第二个 Python。
+
+### 6.6 重复消费的收敛
+
+`messageId` 是消费账本主键。重复投递有三种结果：
+
+- 已终态 → duplicate，ACK；
+- 处理中且 claim 未过期 → 延迟重投，保留原消息或确认转移；
+- claim 过期 → 条件抢占，只有一个 Worker 获得新 token。
+
+即使 Broker 重投，任务身份和意图状态仍会阻止第二个训练进程。
+
+## 7. Java 到 Python：文件协议
+
+### 7.1 目录
+
+`PythonLddTaskExecutor.createContext` 按 attempt 建立目录：
+
+```text
+<workspace>/pre_defense-42/attempt-1/
+  request.json
+  progress.json
+  stdout.log
+  stderr.log
+  result.json
+  python-children.json
+  artifacts/...
+```
+
+### 7.2 Java 写请求
 
 ```java
 Files.writeString(context.requestFile,
-        objectMapper.writeValueAsString(request), StandardCharsets.UTF_8);
+    objectMapper.writeValueAsString(request), UTF_8);
+
 List<String> command = List.of(pythonExecutable, pythonScript,
-        "--stage", request.getStage(),
-        "--request", context.requestFile.toString(),
-        "--result", context.resultFile.toString(),
-        "--progress-file", context.progressFile.toString());
+    "--stage", request.getStage(),
+    "--request", context.requestFile.toString(),
+    "--result", context.resultFile.toString(),
+    "--progress-file", context.progressFile.toString());
+
 ProcessBuilder builder = new ProcessBuilder(command)
-        .redirectOutput(context.stdoutFile.toFile())
-        .redirectError(context.stderrFile.toFile());
+    .redirectOutput(context.stdoutFile.toFile())
+    .redirectError(context.stderrFile.toFile());
+builder.start();
 ```
 
-随后设置工作目录，写启动前记录，`builder.start()` 启动 Python，再记录实际进程身份。命令参数按列表传递，路径中的空格仍位于同一参数。`request.json` 的一部分长这样。
+请求中有任务/运行身份、数据集路径、算法路径、最终参数 JSON、配额和租约信息。`gpuLeaseToken` 不序列化到子进程。
 
-```json
-{
-  "taskId": 42,
-  "attempt": 1,
-  "runId": "r1",
-  "stage": "pre_defense",
-  "dataset": { "path": "<dataset-directory>" },
-  "algorithm": {
-    "path": "vab://pre-defense/ldd",
-    "configJson": "{\"dataset\":\"cifar10\"}"
-  },
-  "customParams": "{\"num_epochs\":1}"
-}
-```
+### 7.3 Python 解析
 
-真实请求还有资源和配置字段。这个片段用于看结构。`gpuLeaseToken` 由 `@JsonIgnore` 排除在 JSON 外。
-
-`algorithm_entry.py` 的 `main` 用 `argparse` 取四个参数，再进入 `run`。这里发生两层反序列化。外层是文件中的请求对象，内层是各配置字段中保存的 JSON 文本。
+`algorithm_entry.py`：
 
 ```python
-# algorithm_entry.py, shortened
 request = json.loads(request_path.read_text(encoding="utf-8"))
-algorithm = request.get("algorithm") or {}
-hyper = request.get("hyperParameter") or {}
 config = load_json_object(algorithm.get("configJson"), "algorithm.configJson")
 config.update(load_json_object(hyper.get("configJson"), "hyperParameter.configJson"))
 config.update(load_json_object(request.get("customParams"), "request.customParams"))
 ```
 
-Python 核对算法和输入环境，生成任务隔离脚本，再用 `subprocess.Popen` 执行 VaB 子进程。Java 启动的是适配器，适配器启动的是训练。适配器汇聚训练输出到 `execution.log`，同时打印到自己的 stdout，Java 重定向后可在 `stdout.log` 看到。Java 也单独接收适配器的 stderr。
+然后生成单任务 VaB 脚本，以 `subprocess.Popen` 启动：
 
-[请求 DTO](../migration-backend/src/main/java/com/securitymodel/application/task/DefenseTaskRequest.java) · [执行器](../migration-backend/src/main/java/com/securitymodel/infrastructure/executor/PythonLddTaskExecutor.java) · [适配器](../algorithm-runtime/vab/algorithm_entry.py) · [独立短桩实验](learning/02-java-python.md)
+```python
+process = subprocess.Popen(
+    build_command(generated_script, config),
+    cwd=str(vab_root),
+    stdout=subprocess.PIPE,
+    stderr=subprocess.STDOUT,
+)
+```
 
-## 4. Python 的进度与结果怎样回到页面
+`cwd` 是 VaB 根目录，这也是 GTSRB 相对路径 `dataset/gtsrb_dataset.h5` 能工作的原因。
 
-| 文件 | 谁写 | 谁读 |
-| --- | --- | --- |
-| `request.json` | Java 执行器 | Python 适配器 |
-| `progress.json` | Python 适配器或生成的运行脚本 | Java `PythonProcessWaiter` 触发进度读取，日志查询也提供进度 |
-| `stdout.log` / `stderr.log` | Java 重定向适配器输出 | Java 日志查询接口 |
-| `result.json` | Python 适配器 | Java 等待进程退出后读取 |
-| `python-children.json` | Python 适配器 | Java 进程检查与恢复逻辑 |
+### 7.4 进度与结果
 
-`invoke` 在进程退出后读取 `result.json`。退出码非零时，只有带 `status=failed` 的结构化结果才会继续交给 `validateResult`。退出码为零也必须有结果文件并通过校验。`validateResult` 核对 `stage`、`run_id`、`attempt`、`status`，要求有 `executor`、`message`、起止时间和 JSON 对象 `artifacts`。失败结果还需 `error_code` 和 `failure_reason`。随后 `persistResult` 和 `finish` 分别更新结果和终态。
+Python/生成脚本写：
+
+- `progress.json`：阶段、百分比、消息；
+- `result.json`：`stage`、`run_id`、`attempt`、`status`、`executor`、时间、`artifacts`，失败时还要 `error_code`、`failure_reason`；
+- 日志：stdout/stderr 重定向文件。
+
+Java 等待期间读取进度；进程退出后读结果。退出码为 0 不等于成功，必须有合法结果文件；退出码非零但有结构化失败结果也可以进入失败收敛。
+
+## 8. 结果回写与终态
+
+`validateResult` 校验：
+
+- 文件存在且 JSON 可解析；
+- `stage` 匹配；
+- `run_id/attempt` 匹配本轮；
+- `status` 合法；
+- `artifacts` 是对象；
+- 失败结果有错误码和原因。
+
+写回 SQL 统一带：
 
 ```sql
--- Shared WHERE clause, shown with bind placeholders
 WHERE task_id = ?
   AND current_run_id = ?
   AND status = 'running'
 ```
 
-这条条件限制进度、结果和终态写入的目标。轮次匹配在 Python 协议检查中也出现。比如 `r1` 的结果对 `r1` 执行器合法，但数据库已经是 `42/r2/running`，SQL 影响 `0` 行。业务状态已经为 `canceled` 时同理。因此“文件是哪个进程写的”和“数据库现在让哪轮写”需要分别检查。
+再执行：
 
-详情抽屉在运行期间每 3 秒查询任务和日志。进入终态或发现 `currentRunId` 变化时还刷新报告、审计和列表。轮次变化会清空旧日志和 offset，`detailVersion` 用于丢弃已经切走的抽屉响应。进程退出无结果时从 `invoke` 查看错误分类。退出码为零且缺文件对应 `RESULT_MISSING`。非零退出还可能归到子进程启动、CUDA 或其他执行故障，具体要对照 stderr 与错误码。
+1. `persistResult` 写 `cleaning_result`、进度、结束时间；
+2. `finish` 条件更新终态；
+3. 释放/隔离 GPU 租约；
+4. 清除 accepted 标记；
+5. 写审计。
 
-[等待器](../migration-backend/src/main/java/com/securitymodel/application/task/PythonProcessWaiter.java) · [任务 Mapper](../migration-backend/src/main/java/com/securitymodel/infrastructure/persistence/mapper/PreDefenseTaskMapper.java) · [报告接口](../migration-backend/src/main/java/com/securitymodel/interfaces/web/PreDefenseReportController.java)
+如果结果属于旧 `r1`，数据库当前是 `r2`，更新影响 0 行。页面不会因为一个旧文件变成成功。
 
-## 5. 失败、重试、取消与恢复
+## 9. 查询、报告、日志与导出
 
-| 场景 | 从哪读 | 该观察什么 |
+### 9.1 任务详情轮询
+
+`TaskCenterView` 在运行期间约每 3 秒查询任务和日志。进入终态或 `currentRunId` 变化时刷新报告、审计和列表。轮次变化会清空旧日志 offset，`detailVersion` 丢弃切走后的旧响应。
+
+### 9.2 报告
+
+`PreDefenseReportQueryService.getReport`：
+
+1. 校验 owner/管理员读取权限；
+2. 读取任务、本轮结果、资源和导出状态；
+3. 拼装参数、时间、产物、可导出选项。
+
+报告不是重新执行训练，而是对本轮结构化结果和资源的投影。
+
+### 9.3 日志
+
+`PreDefenseLogQueryService.getLogs` 接收每个文件的字节 offset，返回片段和新 offset。页面按文件路径合并；`reset=true` 时替换该文件已有内容。这样长日志不需要每次全量传输。
+
+### 9.4 清洗子集导出
+
+`CleanSubsetExportService`：
+
+1. 锁父任务，校验成功 LDD、CIFAR-10 批次、`retained_clean_subset` 索引；
+2. 同一 `taskId + isolationRatio` 已有导出可复用；
+3. 登记 `pending` 导出记录，异步 `CleanSubsetExportExecutor` 执行；
+4. Python 按索引从训练批次抽样本打 ZIP；
+5. 下载按 `exportId`，文件丢失返回 `410`，可重建；
+6. 服务重启时 `ExportRecoveryRunner` 把遗留 `pending/running` 标为可重试失败。
+
+导出是独立生命周期，父任务保持 `success`。
+
+## 10. 失败、取消、重试与恢复
+
+| 场景 | 代码入口 | 结果 |
 | --- | --- | --- |
-| 提交到执行池被拒绝 | `TaskDispatchCoordinator.dispatchAfterCommit` | 放弃意图，为匹配运行收敛失败，释放交接前租约 |
-| Java 提交后异常退出 | `DispatchRecoveryCoordinator.recoverAtStartup` / `scanPending` | 检查意图、运行身份、指纹、进程证据与有效期。可安全补派发的才补派发 |
-| 用户取消 | `PreDefenseTaskCommandService.cancel` | 原子取消当前运行。db 在事务提交后通知本机执行器，rabbit Worker 扫描取消状态 |
-| 超时或子进程退出异常 | `PythonProcessWaiter` / `PythonLddTaskExecutor` | 区分取消、超时、结构化失败和结果缺失 |
-| 槽位清理 | `executeAndWait` 的 `finally` / `GpuLeaseService` | 拿到退出证据后释放。无法确认时把槽位隔离。完成清理决策后才清除 accepted 标记 |
-| 重试失败任务 | `PreDefenseTaskCommandService.retry` | 同一个 `taskId`，新 `runId` 和 attempt，重新提交运行 |
+| 创建/启动预检失败 | `resolveCommand` / `launchTask` | 任务仍 pending，返回明确错误码 |
+| 线程池拒绝 | `dispatchAfterCommit` catch | 释放租约，失败收敛，意图 abandoned |
+| Python 退出无结果 | `PythonLddTaskExecutor.invoke` | `RESULT_MISSING` |
+| Python 失败结果 | `validateResult` | 写 failed + error_code |
+| 用户取消 | `cancel` | 条件更新 canceled，通知执行器/Worker 终止进程 |
+| 取消后旧结果晚到 | `updateResultForRun` | `current_run_id/status` 不匹配，0 行 |
+| 启动事务后 JVM 崩溃 | `DispatchRecoveryCoordinator` | 查意图、accepted、进程证据，安全时补派发，否则收敛 |
+| 失败重试 | `retry` | 同一 taskId，新 runId/attempt，历史快照保留 |
+| Rabbit 重投 | `DispatchMessageHandler` | 消费账本 + 任务身份收敛，不重复启动 |
 
-Fencing token 标识单槽租约的取得代次。更新和清理遵守当前租约身份。进程树退出检查负责处理仍占有 GPU 的操作系统进程。MQ 交付是独立的一层。发布确认解决 Relay 到 Broker 的投递确认，手动 ACK 解决 Worker 的消费归结，领取账本与 MySQL 终态处理重投递窗口。
+取消和 GPU 回收不是同一时刻：API 先把业务状态改为 canceled，执行器收到通知后终止进程树；只有确认进程退出或确认无需清理，才释放槽位。
 
-[恢复协调器](../migration-backend/src/main/java/com/securitymodel/application/task/DispatchRecoveryCoordinator.java) · [租约服务](../migration-backend/src/main/java/com/securitymodel/application/task/GpuLeaseService.java) · [Rabbit 实现](sdd/21-r4-outbox-rabbitmq-design.md)
+## 11. Redis 缓存实现
 
-## 6. 报告、日志与 ZIP 怎样生成
+### 11.1 缓存什么
 
-1. `PreDefenseReportQueryService.getReport` 检查可读归属，再用任务、执行结果、资源和导出状态拼装报告。页面可以下载报告 JSON。
-2. `PreDefenseLogQueryService.getLogs` 接收每个文件的字节 offset。返回片段及新 offset。页面按文件路径合并，遇到 `reset` 或从头读取时替换。
-3. `describe` 在报告查询时确认成功的 CIFAR-10 LDD 结果、五个训练批次及可读的 `retained_clean_subset` 索引。`submit` 锁父任务，按 `taskId + isolationRatio` 查询已有导出。进行中的导出或 ZIP 仍可读的成功导出可直接复用。需要生成时再验证比例并登记待执行的导出记录。
-4. `CleanSubsetExportExecutor` 在异步执行阶段重新检查所选索引与数据根，再调用 Python 的导出入口生成 ZIP。下载按 `exportId` 查，文件消失时返回 `410 EXPORT_FILE_UNAVAILABLE`，页面可以重新提交一次。重建沿用原导出 ID，父任务状态不变。
-5. API 角色启动时，`ExportRecoveryRunner` 将遗留 `pending` 和 `running` 导出分别记为 `EXPORT_NOT_STARTED` 和 `EXPORT_INTERRUPTED`。用户可以重新提交。
+`ResourceQueryService`：
 
-读取与下载通过后端路径边界校验。报告读取允许 owner 或管理员按后端规则读取。任务变更和导出提交检查 owner。实际导出需要 `retained_clean_subset`、可读选中索引和兼容数据。短桩可用于看报告流程，其产物清单只有调用标记。
+- `findDatasets()` → `security-model:resource:dataset:list`
+- `findDataset(id)` → `security-model:resource:dataset:{id}`
+- `findAlgorithms()` → `security-model:resource:algorithm:list`
+- `findAlgorithm(id)` → `security-model:resource:algorithm:{id}`
+- 历史模板列表仍保留键，但新任务不使用。
 
-[报告](../migration-backend/src/main/java/com/securitymodel/application/report/PreDefenseReportQueryService.java) · [日志](../migration-backend/src/main/java/com/securitymodel/application/report/PreDefenseLogQueryService.java) · [导出](../migration-backend/src/main/java/com/securitymodel/application/export/CleanSubsetExportService.java) · [导出恢复](../migration-backend/src/main/java/com/securitymodel/application/export/ExportRecoveryRunner.java)
+启动、预览、确认使用 `findDatasetAuthoritative` / `findAlgorithmAuthoritative`，直接查 MySQL。
 
-## 7. 调试时按证据往下走
+### 11.2 读写与失效
 
-创建失败先查 HTTP 响应与资源状态。已经有 `taskId` 时先查 MySQL 的任务状态、当前运行身份和意图，再找对应 attempt 目录。目录存在时依次对照 `request.json`、`progress.json`、`stderr.log` 和 `result.json`。结果存在且页面状态不一致时，先核对 `run_id`、`attempt` 与数据库当前值。最后再检查接口返回与页面展示。
+`ResourceCatalogCache.getListOrLoad`：
 
-| 看到的问题 | 第一个证据 | 如何缩小范围 |
+1. 读取 generation；
+2. 读缓存；命中时再读一次 generation，若变化则视为 miss；
+3. miss 回源 MySQL；
+4. 用 Lua `PUT_IF_GENERATION` 条件写回，generation 不一致则放弃，防止慢读者把旧值写回；
+5. TTL 5 分钟，generation TTL 1 天。
+
+资源修改：
+
+```text
+saveDataset/verifyDataset
+  → cache.evict(...)
+  → 事务提交后 afterCommit
+  → increment generation + DEL key
+```
+
+Redis 异常只记 debug 并降级，不让资源维护接口失败。代价是缓存可能短暂旧值，所以执行契约不使用缓存。
+
+### 11.3 知识向量
+
+`KnowledgeVectorStore` 使用 Redis 8 vector set 做相似度候选，ACL 过滤仍在 MySQL/Java。向量索引不可用时回退词法排序。这个用途和资源目录缓存分开，不能把向量库当成权限来源。
+
+## 12. RabbitMQ 关键细节
+
+### 12.1 发布语义
+
+- 业务消息 `messageId` 稳定，Outbox 重发不换 ID；
+- `correlationId` 每次 publish 唯一，confirm/return 不串；
+- `mandatory=true`，不可路由立即识别；
+- 发布失败按退避重试，不把 Broker 故障误判成训练失败；
+- 只有 `RABBIT_UNROUTABLE` 才立即把任务收敛为失败。
+
+### 12.2 消费语义
+
+- prefetch=1，单 Worker 串行处理；
+- 手动 ACK；
+- 数据库故障不热循环 `nack requeue`，转延迟队列；
+- 处理中重复投递延迟 120 秒再试，避免 Worker 崩溃后消息永久 ACK；
+- 重试耗尽：先收敛任务/意图/消费账本，再发 DLQ；DLQ 是索引，不是任务事实。
+
+### 12.3 单机也可以是真的消息队列
+
+不需要“假 MQ”。在本机启动 RabbitMQ，再用两个 JVM：
+
+```text
+API   :8102  role=api
+Worker:8103  role=worker
+Broker:localhost:5672/5673
+```
+
+或一个 JVM `role=all` 同时提供 API 和消费者，仍然经过 Broker。脚本：
+
+```powershell
+.\scripts\r4\R4.StartRabbit.ps1 -NodePort 5673 -SecretsPath .\tmp\r4-secrets.json
+.\scripts\dev\Start-SecurityModelStack.ps1 `
+  -Mode rabbit -Role all -ApiPort 18210 -WorkerPort 18211 `
+  -SchemaName security_model_deploy_20261118 `
+  -DbPassword $env:MYSQL_IT_PASSWORD -JwtSecret $secret `
+  -RabbitHost 127.0.0.1 -RabbitPort 5673 `
+  -RabbitUser $user -RabbitPassword $password -RabbitVhost $vhost
+```
+
+具体参数以 [单机部署文档](sdd/24-stage3-single-node-deployment.md) 为准。
+
+## 13. 数据集故障的排查顺序
+
+| 看到的现象 | 先查 | 再查 |
 | --- | --- | --- |
-| 找不到数据集 | 可用数据集接口及数据集验证结果 | 先查启用状态、`parseStatus`，再查服务器目录与 CIFAR 文件 |
-| 创建成功，启动返回 `EXECUTOR_NOT_CONFIGURED` | 任务仍为 `pending` | 把预检分成脚本、解释器、workspace 三项逐个核对 |
-| `running` 但没有 attempt 目录 | 当前 `runId` 对应派发意图 | 检查是否已提交后台、线程池是否拒绝、是否中断待恢复 |
-| 有请求但没有结果 | 对应轮次的 stderr、进程状态 | 查路径、退出码、超时和协议错误，避免用旧轮次目录诊断 |
-| 有 `success` 结果文件，页面是失败或取消 | 真实 `currentRunId` 及任务状态 | 文件是执行器输出，终态由 Java 的协议校验和数据库条件更新决定 |
-| 报告成功却不能下载 | `available`、索引与数据文件、`exportId` | 先区分导出条件不满足、导出任务失败、生成 ZIP 后文件丢失 |
+| 数据集页面整体“读取失败” | 后端 8102 是否存活、代理是否 502、JWT 是否过期 | 不是某条数据路径的问题 |
+| 单条 `parseStatus=failed` | `parseMessage` | 路径是否存在、可读、格式是否匹配 |
+| CIFAR 校验和不匹配 | 文件名与 MD5 | 是否官方 Python 批次、文件是否损坏 |
+| GTSRB 不是 HDF5 | 文件头 8 字节 | 是否下载了错误文件 |
+| 创建任务提示数据集不可用 | 启用 + `parseStatus=success` | 参数 `dataset` 是否与所选路径冲突 |
+| Tiny ImageNet 创建被拒 | `DATASET_RUNTIME_UNSUPPORTED` | 当前 LDD 不支持，换 CIFAR/GTSRB |
 
-[带练习的排查路线](learning/README.md) · [验证范围与历史验收](sdd/26-current-delivery-facts.md)
+真实路径示例：
+
+```text
+F:\Study\postgraduate\1下\VB backdoor defence\VaB-main\dataset\cifar-10-batches-py
+F:\Study\postgraduate\1下\VB backdoor defence\VaB-main\dataset\cifar-100-python
+F:\Study\postgraduate\1下\VB backdoor defence\VaB-main\dataset\gtsrb_dataset.h5
+F:\Study\postgraduate\1下\VB backdoor defence\VaB-main\dataset\tiny-imagenet-200
+```
+
+前三个可创建 LDD 任务；Tiny 仅登记/校验。
+
+## 14. 调试证据链
+
+1. 先看 HTTP 响应码和 `code`；
+2. 有 `taskId` 后看 `sys_pre_defense` 的 `status/current_run_id/current_attempt`；
+3. 再看 `sys_task_dispatch_intent` 是否 `pending/submitting/submitted/abandoned`；
+4. 看对应 attempt 目录是否存在 `request.json`；
+5. 看 `progress.json`、`stderr.log`、`result.json`；
+6. 结果存在但页面不一致，核对 `run_id/attempt` 与 SQL 条件；
+7. `rabbit` 模式再加看 Outbox 状态、消费账本、Broker 队列和 DLQ。
+
+排查时不要先改数据。先确定事实停在哪一层，再决定修复动作。

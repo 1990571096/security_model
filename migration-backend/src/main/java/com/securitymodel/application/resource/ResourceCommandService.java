@@ -5,6 +5,8 @@ import com.securitymodel.application.audit.OperationAuditService;
 import com.securitymodel.domain.algorithm.Algorithm;
 import com.securitymodel.domain.dataset.Dataset;
 import com.securitymodel.domain.dataset.VabCifarDataset;
+import com.securitymodel.domain.dataset.VabGtsrbDataset;
+import com.securitymodel.domain.dataset.VabTinyImageNetDataset;
 import com.securitymodel.infrastructure.cache.ResourceCatalogCache;
 import com.securitymodel.infrastructure.persistence.mapper.AlgorithmMapper;
 import com.securitymodel.infrastructure.persistence.mapper.DatasetMapper;
@@ -186,6 +188,37 @@ public class ResourceCommandService {
                 dataset.setFileSize(statistics.fileSize());
                 return markVerification(dataset, "success", "CIFAR 官方批次校验通过：训练集 %d，测试集 %d，类别 %d"
                         .formatted(statistics.trainingSamples(), statistics.testSamples(), statistics.classes()));
+            }
+            VabGtsrbDataset gtsrb = VabGtsrbDataset.fromPath(path);
+            if (gtsrb != null) {
+                if (!gtsrb.hasHdf5Signature()) {
+                    return markVerification(dataset, "failed", "GTSRB 文件不是有效的 HDF5：" + gtsrb.file());
+                }
+                var statistics = gtsrb.statistics();
+                dataset.setSampleCount(statistics.trainingSamples());
+                dataset.setClassCount(statistics.classes());
+                dataset.setFeatureCount(statistics.features());
+                dataset.setFileSize(statistics.fileSize());
+                return markVerification(dataset, "success",
+                        "GTSRB HDF5 校验通过：训练集 %d，测试集 %d，类别 %d，文件 %s"
+                                .formatted(statistics.trainingSamples(), statistics.testSamples(),
+                                        statistics.classes(), gtsrb.file().getFileName()));
+            }
+            VabTinyImageNetDataset tinyImageNet = VabTinyImageNetDataset.fromDirectory(path);
+            if (tinyImageNet != null) {
+                var missing = tinyImageNet.missingLayoutEntries();
+                if (!missing.isEmpty()) {
+                    return markVerification(dataset, "failed",
+                            "Tiny ImageNet 目录缺少必要条目：" + String.join(", ", missing));
+                }
+                var statistics = tinyImageNet.statistics();
+                dataset.setSampleCount(statistics.trainingSamples());
+                dataset.setClassCount(statistics.classes());
+                dataset.setFeatureCount(statistics.features());
+                return markVerification(dataset, "success",
+                        "Tiny ImageNet 目录校验通过：训练集 %d，验证集 %d，类别 %d；当前 LDD 暂不支持该数据集"
+                                .formatted(statistics.trainingSamples(), statistics.validationSamples(),
+                                        statistics.classes()));
             }
             if (Files.isRegularFile(path) && Files.size(path) == 0) {
                 return markVerification(dataset, "failed", "数据集文件为空：" + path);

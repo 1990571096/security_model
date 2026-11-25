@@ -1,6 +1,6 @@
 # SDD 索引
 
-当前源码核对基线为 `a674a04`。首次学习请先走 [六课实操](../learning/README.md)。本目录供查设计决策、运行依据和历史验收。
+当前源码核对基线为 `4f304b6` 之后、2026-11-25 的数据集与文档工作区。首次学习请先走 [六课实操](../learning/README.md)。本目录供查设计决策、运行依据和历史验收。
 
 ## 当前契约
 
@@ -8,6 +8,7 @@
 | --- | --- |
 | 系统边界、业务对象、技术栈 | [设计思路](../project-design-overview.md) |
 | 任务状态、文件协议、恢复及导出 | [实现指南](../project-implementation-guide.md) |
+| 按页面动作走完整业务流程 | [业务流程详解](../project-business-flows.md) |
 | 运行参数、脚本与本地演示 | [仓库运行说明](../../README.md) |
 | 交付结论和对应测试记录 | [交付事实](26-current-delivery-facts.md) |
 | 知识与助手的运行方式 | [Agent / RAG 实操](../agent-rag-demo.md) |
@@ -15,7 +16,7 @@
 
 ## 知识索引可用摘要
 
-**系统范围**。平台支持训练前 LDD 的真实任务执行。任务资源包含数据集、算法与可选超参模板。训练中、训练后页面为展示。数据集启用且解析为 `success` 后才可选用。
+**系统范围**。平台支持训练前 LDD 的真实任务执行。任务资源包含可执行数据集、算法和算法参数配置；新任务不选独立超参模板，`sys_hyper` 只兼容历史任务。训练中、训练后页面为展示。数据集启用且解析为 `success` 后才可选用，Tiny ImageNet 可登记但不进入当前 LDD。
 
 **任务与文件协议**。`POST /api/pre-defense` 插入 `pending`，`POST /api/pre-defense/start/{taskId}` 领取运行并写入运行 ID、轮次、快照和意图。Java 将执行请求写为 UTF-8 `request.json`，以 `--request` 传文件路径。Python 适配器读取请求并写 `progress.json` 和 `result.json`。Java 读回文件后用当前运行 ID 和 `running` 条件写入任务。用户按任务 ID 查询报告与日志。清洗 ZIP 需实际产物包含相应比例的筛选索引与可用的 CIFAR-10 数据。
 

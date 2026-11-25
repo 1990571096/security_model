@@ -153,6 +153,42 @@ class ResourceCommandServiceTest {
         assertNull(dataset.getSampleCount());
     }
 
+    @Test
+    void verifiesGtsrbHdf5AndRecordsPublishedStatistics(@TempDir Path root) throws Exception {
+        Path datasetDirectory = Files.createDirectory(root.resolve("dataset"));
+        Path h5 = datasetDirectory.resolve("gtsrb_dataset.h5");
+        Files.write(h5, new byte[]{(byte) 0x89, 0x48, 0x44, 0x46, 0x0D, 0x0A, 0x1A, 0x0A, 0, 0});
+        Dataset dataset = existingDataset(7L, h5.toString());
+        when(datasets.lockForUpdate(7L)).thenReturn(dataset);
+        when(user.username()).thenReturn("admin");
+
+        Dataset verified = service.verifyDataset(7L);
+
+        assertEquals("success", verified.getParseStatus());
+        assertEquals(39_209, verified.getSampleCount());
+        assertEquals(43, verified.getClassCount());
+        assertEquals(3_072, verified.getFeatureCount());
+        assertTrue(verified.getParseMessage().contains("GTSRB HDF5 校验通过"));
+    }
+
+    @Test
+    void verifiesTinyImageNetDirectoryButKeepsRuntimeBoundaryExplicit(@TempDir Path root) throws Exception {
+        Path tiny = Files.createDirectory(root.resolve("tiny-imagenet-200"));
+        Files.writeString(tiny.resolve("wnids.txt"), "n01443537\n");
+        Files.createDirectory(tiny.resolve("train"));
+        Files.createDirectory(tiny.resolve("val"));
+        Dataset dataset = existingDataset(8L, tiny.toString());
+        when(datasets.lockForUpdate(8L)).thenReturn(dataset);
+        when(user.username()).thenReturn("admin");
+
+        Dataset verified = service.verifyDataset(8L);
+
+        assertEquals("success", verified.getParseStatus());
+        assertEquals(100_000, verified.getSampleCount());
+        assertEquals(200, verified.getClassCount());
+        assertTrue(verified.getParseMessage().contains("当前 LDD 暂不支持"));
+    }
+
     private Dataset existingDataset(Long id, String path) {
         Dataset dataset = new Dataset();
         dataset.setDatasetId(id);

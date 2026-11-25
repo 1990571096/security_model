@@ -6,9 +6,9 @@
 
 ## 第一步 登录并选好输入
 
-1. 输入用户名、密码。`POST /auth/login` 进入 `AuthController.login`，后端检查账户状态和 BCrypt 密码后签发 JWT。后续请求带上 Bearer 令牌。后端从登录身份取得用户 ID，任务建档时把它记为 `ownerUserId`。身份回答“你是谁”，归属检查回答“这条任务能否由你操作”。
+1. 打开登录页，先取图形验证码 `GET /auth/code`，再输入用户名、密码和验证码。`POST /auth/login` 进入 `AuthController.login`，后端校验验证码、账户状态和 BCrypt 密码后签发 JWT。后续请求带上 Bearer 令牌。后端从登录身份取得用户 ID，任务建档时把它记为 `ownerUserId`。身份回答“你是谁”，归属检查回答“这条任务能否由你操作”。
 2. 数据集页登记环境中的路径、名称和类型。新登记记录要验证，启用且 `parseStatus=success` 的记录才能进可用列表。管理员点验证对应 `POST /api/dataset/{datasetId}/validate`。如果登记的是 `cifar-10-batches-py`，当前后端会检查预期 CIFAR 文件可读且非空。登记的是文件位置与元数据，训练进程后续自己读样本。
-3. 在任务中心选该数据集、LDD 以及可选超参数模板。把三个下拉理解为三个输入引用。运行计划还会把算法默认配置、模板和自定义配置合起来并校验。
+3. 在任务中心选该数据集、LDD 和本次自定义参数。数据集路径会决定运行根目录与 `dataset` 参数；算法的默认超参数在算法详情页“参数配置中心”维护，新任务不再选择独立模板。创建前的参数预览会按“算法默认 → 历史模板兼容 → 本次自定义”合并并校验。
 
 [登录 Controller](../../migration-backend/src/main/java/com/securitymodel/interfaces/web/AuthController.java) · [资源 Controller](../../migration-backend/src/main/java/com/securitymodel/interfaces/web/ResourceController.java) · [资源校验](../../migration-backend/src/main/java/com/securitymodel/application/resource/ResourceCommandService.java)
 

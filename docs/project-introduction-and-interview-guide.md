@@ -2,64 +2,114 @@
 
 ## 30 秒版本
 
-> 这是一个面向深度神经网络后门防御实验的平台。我实际接入了训练前 LDD，实验者可以选择数据和参数，启动后台清洗，查看每轮结果，再导出可用的 CIFAR-10 子集。工程上我主要讲三件事：Java 怎么调用 Python，长任务失败和重试时怎样保证状态正确，以及怎样把实验产物变成可追溯、可下载的结果。
+> 这是一个面向深度神经网络后门防御实验的单机平台。我接入了训练前 LDD：用户选择数据集和算法、创建任务、确认启动，Java 调度 Python/VaB 执行数据清洗，页面查看进度、日志、报告，并按需导出清洗子集。工程上重点讲三件事：Java 与 Python 的文件协议、长任务在失败/取消/重启下的状态一致性，以及 `db` 与 `rabbit` 两种派发模式怎样共享同一套任务事实。
 
-按个人负责范围替换最后一句。面试官对哪个点感兴趣，就沿该点讲一处真实改动和验证。
+如果面试官只给 30 秒，最后一句可以换成“我还做过 Redis 缓存失效和 RabbitMQ 重复消费的收敛”。
 
 ## 90 秒口述
 
-> 我做的是一个面向训练数据清洗的单机实验平台。用户选已经验证的数据集、LDD 和参数，先创建一条待运行任务，核对后再确认启动。Spring Boot 检查任务归属和资源配置，在 MySQL 给这次执行分配 `runId` 和 `attempt`，把执行快照和派发意图一起落库。事务提交后交给后台。
+> 平台默认是单机 `db` 模式。用户在页面选好数据集、LDD 和参数，创建接口只写一条 `pending` 任务，不启动训练。用户核对后点启动，后端用 `SELECT FOR UPDATE` 锁任务行，检查归属和状态，分配 `runId` 和 `attempt`，写执行快照、派发意图，并在事务内把任务改成 `running`。事务提交后才把请求送进本地线程池。
 >
-> 执行器把本轮请求写成 `request.json`，通过 `ProcessBuilder` 启动 Python，把文件路径作为命令参数传过去。Python 适配器解析请求，执行训练子进程，再写进度和结果。Java 校验返回的是当前运行后更新任务状态。前端通过接口查看详情、日志和结果报告。真实结果具备筛选索引时还可以异步导出清洗子集。
+> 执行器把本轮请求写成 `request.json`，用 `ProcessBuilder` 启动 Python 适配器；Python 解析后生成任务脚本，再启动 VaB 训练。训练期间写 `progress.json`，结束后写 `result.json`。Java 校验 `stage、run_id、attempt、status、artifacts`，再用带 `current_run_id` 和 `status='running'` 的 SQL 更新终态。旧轮结果晚到会影响 0 行。
 >
-> 我会用一次具体的失败说明工程设计。例如用户取消后，数据库状态已经是 `canceled`。即使原进程晚写结果，`WHERE status='running' AND current_run_id=...` 也会拒绝回写。执行器还要等子进程退出才能安全释放 GPU。
-
-讲完停在一个有证据的点。比如进程退出后才释放租约，能继续指出 `PythonLddTaskExecutor` 的清理逻辑以及短进程测试。简历包含 MQ 时，等面试官问派发再展开 Rabbit 模式。
+> 我还做了 `rabbit` 模式：任务事务同时写 Outbox，Relay 发布到本机 RabbitMQ，Worker 手动 ACK 消费。消息可能重复，所以 Worker 用消费账本、派发意图和当前运行身份收敛，不靠“消息只投一次”的假设。Redis 只做资源目录缓存和知识向量，任务事实始终在 MySQL。
 
 ## 三分钟白板
 
+先画默认 `db` 路线：
+
 ```text
-Vue -> POST create -> MySQL pending -> taskId
-用户核对并确认 -> POST start -> MySQL running + runId + attempt + intent
-                                  |
-                                  v
-                          Java 执行器 / Worker
-                                  |
-                              request.json
-                                  v
-                          Python 适配器 -> VaB
-                                  |
-                         progress.json / result.json
-                                  v
-                           Java 条件更新 MySQL
-                                  |
-                       查询报告 / 单独提交 ZIP 导出
+Vue
+ │ POST /api/pre-defense
+ ▼
+Spring Boot ──INSERT──> MySQL(pending)
+ │
+ │ 用户确认 POST /start
+ ▼
+事务: FOR UPDATE → runId/attempt → 快照 → running → intent → lease
+ │ COMMIT
+ ▼
+afterCommit → taskAsync 线程池
+ │
+ ▼
+Java 执行器 ──request.json──> Python 适配器 ──> VaB
+ │                                  │
+ │<──── progress.json / result.json ┘
+ ▼
+条件 UPDATE MySQL(success/failed)
+ │
+ ▼
+报告 / 日志 / 导出
 ```
 
-在箭头上标 `submitCreate`、`launchTask`、`invoke` 与 `validateResult`。有人追问 MQ 时，在启动事务里补画 Outbox，在执行器之前补画 Relay 和 Worker。有人追问数据权限时，在 HTTP 与业务服务之间标身份认证，在业务服务入口标 owner 检查。
+然后补 Rabbit 分支：
 
-| 时间 | 在白板上写什么 | 说什么 |
+```text
+启动事务 ──同一事务──> Outbox
+                         │
+                      Relay
+                         │ publish + confirm
+                      RabbitMQ
+                         │ manual ACK
+                      Worker
+                         │
+                      Python/VaB
+```
+
+白板讲解节奏：
+
+| 时间 | 画什么 | 讲什么 |
 | --- | --- | --- |
-| 0:00–0:30 | 数据集、算法、参数 → 清洗索引 | 实验者的目标和实际执行范围 |
-| 0:30–1:15 | 创建 `42`，确认后启动 `r1/1` | 创建和启动各写什么，事务何时提交 |
-| 1:15–2:00 | Java、适配器、训练进程 | 说出 `--request` 传文件路径，进度和结果怎样读回 |
-| 2:00–2:40 | `r1` 晚到，当前 `r2` | 把 `42/r1` 代入 SQL，解释受影响行数为 0 |
-| 2:40–3:00 | 报告、`exportId` | 说明子集索引和原数据如何用于异步导出 |
+| 0:00–0:40 | 用户目标与四类资源 | 数据、算法、参数、产物 |
+| 0:40–1:30 | 创建与启动两个请求 | 为什么创建不执行，runId 何时产生 |
+| 1:30–2:10 | Java/Python 文件协议 | 为什么不用 stdout 当结果 |
+| 2:10–2:40 | 旧结果晚到 | `r1` 对 `r2`，SQL 0 行 |
+| 2:40–3:00 | Redis/MQ 位置 | 缓存不是事实，MQ 可能重复 |
 
 ## 现场演示
 
-| 顺序 | 展示画面 | 用一句话解释 |
+| 顺序 | 展示什么 | 一句话解释 |
 | --- | --- | --- |
-| 1 | 数据集与算法下拉 | 已启用、验证通过的资源才可用于 LDD |
-| 2 | Network 中两个 POST | 创建只建档，第二次确认后才启动 |
-| 3 | 任务详情与对应 attempt 目录 | 同一个运行 ID 串起请求、结果和数据库 |
-| 4 | 日志及报告 | 报告源自结构化结果，日志可按偏移增量读取 |
-| 5 | 已验收的输出或历史证据 | 展示真实 LDD 时说明提交、环境与验证范围 |
+| 1 | 数据集页四条真实数据 | CIFAR/GTSRB 校验通过，Tiny 只登记不执行 |
+| 2 | 算法详情参数配置中心 | 算法默认配置是唯一来源，无独立模板 |
+| 3 | 创建任务与 Network | 创建只返回 `pending`，启动是第二个请求 |
+| 4 | 任务详情与 attempt 目录 | `request.json` 串起本轮身份 |
+| 5 | 日志/报告 | 日志按 offset 增量读，报告来自结构化结果 |
+| 6 | 运行监控 | 本机 CPU/内存/JVM/磁盘在前，分布式指标在后 |
+| 7 | Rabbit 模式说明 | 单机也可以是真的 Broker，不是内存假队列 |
 
-演示短桩时，把结果称为协议运行结果。已有真实产物时，可补展示 ZIP。用自己实际负责的代码、测试与记录支撑简历表述。[实操路线](learning/README.md) · [简历口径](resume-project-entry.md) · [验收记录](sdd/26-current-delivery-facts.md)
+演示时不要只展示成功页。准备一个失败/取消场景，说明状态为什么不会被旧结果覆盖。
 
 ## 讲清自己的贡献
 
-挑一个你实际做过的改动，按四句写到工作表。第一句说原来用户遇到什么问题。第二句说你改了哪个类和哪项行为。第三句说用哪个测试或日志核对。第四句说适用边界。
+按四句话准备一个真实改动：
 
-例如实际负责过算法接入时，可以说“我适配了 VaB LDD 的入参和产物。Java 用本轮 DTO 落请求文件，Python 解析后启动训练，按轮次写结果。短进程测试覆盖协议和异常分支，真实 GPU 记录覆盖当时的运行环境。当前真实执行范围是训练前 LDD。”实际负责过可靠性或导出时，用自己的方法、场景和测试替换这段。
+1. 用户遇到什么问题；
+2. 改了哪个类、哪个行为；
+3. 用什么测试/日志验证；
+4. 边界是什么。
+
+示例一：数据集接入。
+
+> 原来数据集验证只认 CIFAR 目录，GTSRB 的 HDF5 和 Tiny ImageNet 只能算“路径存在”。我补了格式识别：CIFAR 走官方 MD5，GTSRB 校验 HDF5 文件头并把父目录作为 VaB 运行根，Tiny 校验目录但在创建任务时明确拒绝。验证时用四条真实路径逐条调用验证接口，并检查参数预览分别得到 `cifar10/cifar100/gtsrb`。
+
+示例二：缓存一致性。
+
+> 资源列表原来直接查 MySQL。我加了 Redis read-through，但资源修改后如果普通删除，慢读者可能把旧值写回。我用 generation + Lua 条件写解决这个竞态；执行契约仍然查 MySQL 权威行。Redis 故障只降级，不影响任务正确性。
+
+示例三：MQ 重复消费。
+
+> Rabbit 模式里，消息重复是正常事件。我用 `messageId` 消费账本先插入 `processing`，重复投递根据 claim 状态决定 ACK、延迟重投还是抢占；任务层再用 `runId/attempt` 校验。验证覆盖 Broker 重投、Worker 崩溃和旧轮晚到。
+
+## 面试官可能追问的转场
+
+| 追问 | 转到哪 |
+| --- | --- |
+| “为什么不用同步接口？” | 长训练、HTTP 超时、进程生命周期 |
+| “为什么不用 Java 锁？” | 多 JVM/重启后事实在 MySQL |
+| “MQ 能保证只执行一次吗？” | 不能，讲消费账本和幂等收敛 |
+| “Redis 挂了怎么办？” | 回源 MySQL，缓存不阻塞 |
+| “Python 挂了怎么知道？” | 退出码 + result.json + 超时/进程树 |
+| “为什么保留旧模板表？” | 历史任务可追溯，新任务不再使用 |
+
+继续练 [面试准备与追问题](project-interview-preparation.md)，并按 [业务流程详解](project-business-flows.md) 复述每个场景。

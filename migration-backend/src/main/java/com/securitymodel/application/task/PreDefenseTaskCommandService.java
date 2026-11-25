@@ -10,6 +10,8 @@ import com.securitymodel.application.resource.ResourceQueryService;
 import com.securitymodel.domain.algorithm.Algorithm;
 import com.securitymodel.domain.dataset.Dataset;
 import com.securitymodel.domain.dataset.VabCifarDataset;
+import com.securitymodel.domain.dataset.VabGtsrbDataset;
+import com.securitymodel.domain.dataset.VabTinyImageNetDataset;
 import com.securitymodel.domain.hyper.Hyper;
 import com.securitymodel.domain.lease.GpuLease;
 import com.securitymodel.domain.task.PreDefenseTask;
@@ -389,24 +391,34 @@ public class PreDefenseTaskCommandService {
             }
         }
         normalizeParams(command);
-        Path extractedDirectory = extractedCifarDirectory(dataset.getFilePath());
-        VabCifarDataset cifar = extractedDirectory == null ? null : VabCifarDataset.fromDirectory(extractedDirectory);
+        Path selectedPath = datasetPath(dataset.getFilePath());
+        VabCifarDataset cifar = selectedPath == null ? null : VabCifarDataset.fromDirectory(selectedPath);
+        VabGtsrbDataset gtsrb = cifar == null ? VabGtsrbDataset.fromPath(selectedPath) : null;
+        if (cifar == null && gtsrb == null && selectedPath != null
+                && VabTinyImageNetDataset.fromDirectory(selectedPath) != null) {
+            throw new TaskCommandException("DATASET_RUNTIME_UNSUPPORTED",
+                    "当前 LDD 仅支持 CIFAR-10、CIFAR-100 和 GTSRB；Tiny ImageNet 可登记但暂不能创建 LDD 任务");
+        }
+        String inferredDataset = cifar != null ? cifar.parameterValue()
+                : (gtsrb != null ? VabGtsrbDataset.PARAMETER_VALUE : null);
         ObjectNode finalConfig = lddConfigurationPolicy.normalizeAndValidate(
                 algorithm.getDefaultConfig(),
                 hyper == null ? null : hyper.getParameterConfig(),
-                command.getCustomParams(), cifar == null ? null : cifar.parameterValue());
+                command.getCustomParams(), inferredDataset);
         String runtimePath = dataset.getFilePath();
-        if (cifar != null) {
-            Path root = extractedDirectory.getParent();
-            if (finalConfig.has("data_path") && !matchesDatasetRoot(finalConfig.path("data_path").asText(), root)) {
-                throw new TaskCommandException("DATASET_PATH_MISMATCH", "LDD 参数 data_path 必须指向所选数据集的根目录");
+        Path runtimeRoot = cifar != null
+                ? selectedPath.getParent()
+                : (gtsrb != null ? gtsrb.runtimeRoot() : null);
+        if (runtimeRoot != null) {
+            if (finalConfig.has("data_path") && !matchesDatasetRoot(finalConfig.path("data_path").asText(), runtimeRoot)) {
+                throw new TaskCommandException("DATASET_PATH_MISMATCH", "LDD 参数 data_path 必须指向所选数据集的运行根目录");
             }
-            runtimePath = root.toString();
+            runtimePath = runtimeRoot.toString();
         }
         return new Resolution(dataset, algorithm, hyper, finalConfig, runtimePath);
     }
 
-    private static Path extractedCifarDirectory(String path) {
+    private static Path datasetPath(String path) {
         if (path == null) return null;
         try {
             return Path.of(path).toAbsolutePath().normalize();
