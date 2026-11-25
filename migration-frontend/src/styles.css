@@ -61,17 +61,8 @@ body { margin: 0; min-width: 320px; }
 .heading-actions { display: flex; gap: 10px; align-items: center; }
 .page-alert { margin-bottom: 16px; }
 .card-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.task-overview-grid { margin-bottom: 16px; }
 .task-table-card { margin-top: 16px; }
 .table-caption { display: block; margin-top: 4px; color: #7d8b9d; font-size: 12px; font-weight: 400; }
-.executor-metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
-.executor-metrics div { padding: 14px; background: #f5f8fc; border: 1px solid #e6ebf2; }
-.executor-metrics span, .executor-metrics strong { display: block; }
-.executor-metrics span { color: #7d8b9d; font-size: 12px; }
-.executor-metrics strong { margin-top: 8px; color: #17365d; font-size: 18px; }
-.scope-row { display: flex; gap: 12px; align-items: center; margin-bottom: 16px; }
-.scope-row p { margin: 4px 0 0; color: #7d8b9d; font-size: 13px; }
-.scope-icon { display: grid; place-items: center; flex: 0 0 48px; width: 48px; height: 48px; background: #e8f1ff; color: #2f80ed; font-weight: 800; }
 .detail-status { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px; }
 .detail-status > div { padding: 14px; border: 1px solid #e6ebf2; background: #f8fafc; }
 .detail-status span, .detail-status strong { display: block; margin-bottom: 8px; }
@@ -290,7 +281,7 @@ body { margin: 0; min-width: 320px; }
   .page { padding: 16px; }
   .hero-band, .login-page { display: block; }
   .hero-band .el-button { margin-top: 20px; }
-  .stat-grid, .content-grid, .executor-metrics, .resource-summary, .algorithm-grid, .dashboard-footer-grid, .detail-stat-grid, .case-grid, .baseline-grid, .environment-grid, .monitor-resource-grid, .node-grid { grid-template-columns: 1fr; }
+  .stat-grid, .content-grid, .resource-summary, .algorithm-grid, .dashboard-footer-grid, .detail-stat-grid, .case-grid, .baseline-grid, .environment-grid, .monitor-resource-grid, .node-grid { grid-template-columns: 1fr; }
   .task-stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .detail-hero, .risk-summary { display: block; }
   .risk-ring { margin: 0 auto 18px; }

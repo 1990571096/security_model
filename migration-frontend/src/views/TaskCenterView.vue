@@ -18,26 +18,6 @@
         <span class="muted">{{ item.label }}</span><strong>{{ statistics?.[item.key] ?? '—' }}</strong><small>{{ item.note }}</small>
       </el-card>
     </div>
-    <section class="content-grid task-overview-grid">
-      <el-card shadow="never">
-        <template #header><div class="card-heading"><strong>执行池状态</strong><el-tag :type="executorTagType">{{ executorLabel }}</el-tag></div></template>
-        <div class="executor-metrics">
-          <div><span>活跃线程</span><strong>{{ executor?.activeCount ?? '-' }}</strong></div>
-          <div><span>队列占用</span><strong>{{ executor?.queueSize ?? '-' }} / {{ executor?.queueCapacity ?? '-' }}</strong></div>
-          <div><span>已完成</span><strong>{{ executor?.completedTaskCount ?? '-' }}</strong></div>
-          <div><span>运行配额</span><strong>{{ executor?.runningTaskCount ?? '-' }} / {{ executor?.maxRunningTasks ?? '-' }}</strong></div>
-          <div><span>GPU 槽位</span><strong>{{ gpuSlotLabel }}</strong></div>
-        </div>
-        <el-alert v-if="gpuSlot.state === 'blocked'" type="warning" :closable="false" show-icon
-          :title="`GPU 槽位已隔离：${gpuSlot.blockedReason || '原因未记录'}`"
-          :description="`隔离开始：${formatDate(gpuSlot.blockedAt)}；最近探测：${formatDate(gpuSlot.lastProbeAt)}。${gpuSlot.guidance || 'TTL 过期不会自动解除。'}`" />
-      </el-card>
-      <el-card shadow="never">
-        <template #header><strong>当前接入范围</strong></template>
-        <div class="scope-row"><span class="scope-icon">SM</span><div><strong>训练前数据清洗</strong><p>LDD (VaB)</p></div></div>
-        <el-progress :percentage="completionProgress" :format="formatProgress" :stroke-width="8" />
-      </el-card>
-    </section>
 
     <el-card shadow="never" class="task-table-card">
       <template #header>
@@ -170,11 +150,11 @@ import { Download, Plus, Refresh } from '@element-plus/icons-vue'
 import { getAvailableDatasets } from '../api/dataset'
 import { getAvailableAlgorithms } from '../api/algorithm'
 import { createTask, getExecutionLogs, previewTaskParameters, submitCleanedDatasetExport, getCleanedDatasetExport, downloadCleanedDatasetExport, startTask } from '../api/preDefense'
-import { cancelTask, getCleaningReport, getExecutorStatus, getTaskStatistics, getTaskDetail, getTaskPage, retryTask } from '../api/task'
+import { cancelTask, getCleaningReport, getTaskStatistics, getTaskDetail, getTaskPage, retryTask } from '../api/task'
 import { getTaskAudits } from '../api/audit'
 import { formatDateTime as formatDate } from '../utils/time'
 
-const loading = ref(false); const errorMessage = ref(''); const tasks = ref([]); const statistics = ref(null); const executor = ref(null)
+const loading = ref(false); const errorMessage = ref(''); const tasks = ref([]); const statistics = ref(null)
 const datasets = ref([]); const algorithms = ref([]); const resourceLoading = ref(false); const statusFilter = ref('')
 const currentPage = ref(1); const pageSize = ref(20); const totalTasks = ref(0)
 const createVisible = ref(false); const creating = ref(false); const createFormRef = ref(); const detailVisible = ref(false); const detailLoading = ref(false); const reportLoading = ref(false); const selectedTask = ref(null); const report = ref(null); const detailTab = ref('report'); const logs = ref([]); const logOffsets = ref({}); const audits = ref([]); const exportTasks = ref([]); const exportingRatio = ref(null)
@@ -199,10 +179,6 @@ let parameterRequest = 0
 const createRules = { taskName: [{ required: true, message: '请输入任务名称', trigger: 'blur' }], datasetId: [{ required: true, message: '请选择数据集', trigger: 'change' }], algorithmId: [{ required: true, message: '请选择防御算法', trigger: 'change' }] }
 const statusOptions = [{ label: '等待中', value: 'pending' }, { label: '运行中', value: 'running' }, { label: '成功', value: 'success' }, { label: '失败', value: 'failed' }, { label: '已取消', value: 'canceled' }]
 const statItems = [{ key: 'totalCount', label: '全部任务', note: '当前安全防御任务总量' }, { key: 'runningCount', label: '运行中', note: '正在占用执行资源' }, { key: 'successCount', label: '已完成', note: '已产生实验结果' }, { key: 'failedCount', label: '失败', note: '支持原参数重试' }]
-const completionProgress = computed(() => { const total = Number(statistics.value?.totalCount || 0); return total ? Math.round((Number(statistics.value.successCount || 0) / total) * 100) : 0 })
-const executorLabel = computed(() => !executor.value ? '状态未知' : executor.value.saturated ? '资源紧张' : executor.value.acceptingTasks === false ? '暂停接收' : '运行正常')
-const executorTagType = computed(() => !executor.value ? 'info' : executor.value.saturated ? 'warning' : executor.value.acceptingTasks === false ? 'danger' : 'success')
-const gpuSlot = computed(() => executor.value?.gpuSlot || {}); const gpuSlotLabel = computed(() => ({ blocked: '隔离中', leased: '占用中', idle: '空闲', unknown: '未知' })[gpuSlot.value.state] || '未知')
 const sampleStats = computed(() => report.value?.cleaningResult?.sample_stats || {}); const snapshotRows = computed(() => report.value?.executionSnapshot?.attempts || []); const isolationRatios = computed(() => report.value?.cleanDatasetDownload?.isolationRatios || [])
 const purityRows = computed(() => Object.entries(report.value?.cleaningResult?.metrics?.clean_purity_percent_by_isolation_ratio || {})
   .map(([ratio, purity]) => ({
@@ -226,7 +202,7 @@ const detailHeartbeatStale = computed(() => {
   const timestamp = new Date(value).getTime()
   return Number.isFinite(timestamp) && Date.now() - timestamp > 60000
 })
-function unwrap(data) { return data?.data ?? data ?? {} }; function arrayData(response) { const data = unwrap(response); return Array.isArray(data) ? data : data.records || data.content || [] }; function safeProgress(value) { const progress = Number(value); return Number.isFinite(progress) ? Math.max(0, Math.min(100, progress)) : 0 }; function formatProgress(value) { return `${value}%` }; function statusLabel(status) { return statusOptions.find(item => item.value === status)?.label || status || '未知' }; function statusType(status) { return { pending: 'info', running: '', success: 'success', failed: 'danger', canceled: 'warning' }[status] || 'info' }; function datasetName(item) { return item.datasetName || item.name || `数据集 #${item.datasetId || item.id}` }; function auditActionLabel(action) { return { CREATE: '创建任务', UPDATE: '编辑任务', START: '启动任务', RETRY: '重试任务', CANCEL: '取消任务', DELETE: '删除任务', EXPORT_SUBMIT: '提交子集导出', EXPORT_RETRY: '重试子集导出' }[action] || action || '-' }
+function unwrap(data) { return data?.data ?? data ?? {} }; function arrayData(response) { const data = unwrap(response); return Array.isArray(data) ? data : data.records || data.content || [] }; function safeProgress(value) { const progress = Number(value); return Number.isFinite(progress) ? Math.max(0, Math.min(100, progress)) : 0 }; function statusLabel(status) { return statusOptions.find(item => item.value === status)?.label || status || '未知' }; function statusType(status) { return { pending: 'info', running: '', success: 'success', failed: 'danger', canceled: 'warning' }[status] || 'info' }; function datasetName(item) { return item.datasetName || item.name || `数据集 #${item.datasetId || item.id}` }; function auditActionLabel(action) { return { CREATE: '创建任务', UPDATE: '编辑任务', START: '启动任务', RETRY: '重试任务', CANCEL: '取消任务', DELETE: '删除任务', EXPORT_SUBMIT: '提交子集导出', EXPORT_RETRY: '重试子集导出' }[action] || action || '-' }
 let listRequest = 0
 watch([statusFilter, pageSize], () => { currentPage.value = 1 }, { flush: 'sync' })
 watch([statusFilter, currentPage, pageSize], loadData)
@@ -243,7 +219,6 @@ async function loadData() {
     })
   }
   updateMonitor(statistics, getTaskStatistics())
-  updateMonitor(executor, getExecutorStatus())
   try {
     const page = unwrap(await getTaskPage(params))
     if (request !== listRequest) return

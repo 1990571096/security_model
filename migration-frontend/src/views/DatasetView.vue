@@ -13,22 +13,29 @@
     </div>
     <el-alert v-if="message" :title="message" type="info" :closable="false" show-icon class="page-alert" />
     <div class="resource-summary">
-      <div><span class="muted">已核验统计</span><strong>{{ datasets.filter(item => item.enabled && hasVerifiedStats(item)).length }}</strong></div>
-      <div><span class="muted">仅路径可用</span><strong>{{ datasets.filter(item => item.enabled && item.parseStatus === 'success' && !hasVerifiedStats(item)).length }}</strong></div>
-      <div><span class="muted">导出方式</span><strong>索引重建</strong></div>
+      <div><span class="muted">已核验</span><strong>{{ datasets.filter(hasVerifiedStats).length }}</strong></div>
+      <div><span class="muted">待验证</span><strong>{{ datasets.filter(item => !hasVerifiedStats(item)).length }}</strong></div>
+      <div><span class="muted">已启用</span><strong>{{ datasets.filter(item => item.enabled).length }}</strong></div>
     </div>
     <el-card shadow="never" class="resource-table-card">
       <template #header><div class="card-heading"><strong>已登记数据集</strong><el-tag type="success">资源可追溯</el-tag></div></template>
       <el-table v-loading="loading" :data="datasets" row-key="datasetId" empty-text="暂无已登记数据集">
-        <el-table-column label="名称" min-width="190" show-overflow-tooltip><template #default="{ row }">{{ row.name || row.datasetName || `数据集 #${row.id}` }}</template></el-table-column>
-        <el-table-column label="类型" width="140"><template #default="{ row }"><el-tag effect="plain">{{ row.datasetType || 'image_classification' }}</el-tag></template></el-table-column>
+        <el-table-column label="名称" min-width="200" show-overflow-tooltip>
+          <template #default="{ row }">
+            <span class="dataset-name-cell">
+              <span>{{ row.name || row.datasetName || `数据集 #${row.id}` }}</span>
+              <el-tag v-if="!row.enabled" size="small" type="info" effect="plain">已停用</el-tag>
+            </span>
+          </template>
+        </el-table-column>
+        <el-table-column label="类型" width="90"><template #default="{ row }"><el-tag effect="plain">{{ displayDatasetType(row.datasetType) }}</el-tag></template></el-table-column>
         <el-table-column label="训练样本" width="115"><template #default="{ row }">{{ hasVerifiedStats(row) ? row.sampleCount.toLocaleString('zh-CN') : '—' }}</template></el-table-column>
         <el-table-column label="类别数" width="90"><template #default="{ row }">{{ hasVerifiedStats(row) ? row.classCount : '—' }}</template></el-table-column>
-        <el-table-column label="状态" width="145">
+        <el-table-column label="状态" width="105">
           <template #default="{ row }">
-            <el-tooltip :content="row.parseMessage" :disabled="!row.parseMessage">
-              <el-tag :type="!row.enabled ? 'info' : row.parseStatus === 'success' ? 'success' : row.parseStatus === 'failed' ? 'danger' : 'warning'">
-                {{ !row.enabled ? '已停用' : hasVerifiedStats(row) ? '内容已核验' : row.parseStatus === 'success' ? '仅路径可用' : row.parseStatus === 'failed' ? '验证失败' : '待验证' }}
+            <el-tooltip :content="row.parseMessage || '尚未完成文件内容核验'" placement="top">
+              <el-tag :type="hasVerifiedStats(row) ? 'success' : 'warning'">
+                {{ hasVerifiedStats(row) ? '已核验' : '待验证' }}
               </el-tag>
             </el-tooltip>
           </template>
@@ -47,7 +54,7 @@
       <el-form ref="formRef" :model="form" :rules="rules" label-position="top">
         <div class="form-grid">
           <el-form-item label="数据集名称" prop="datasetName"><el-input v-model="form.datasetName" placeholder="例如：CIFAR-10 训练集" /></el-form-item>
-          <el-form-item label="数据类型" prop="datasetType"><el-select v-model="form.datasetType" class="full-width"><el-option label="图像分类" value="image_classification" /><el-option label="文本分类" value="text_classification" /><el-option label="表格数据" value="tabular" /></el-select></el-form-item>
+          <el-form-item label="数据类型" prop="datasetType"><el-select v-model="form.datasetType" class="full-width"><el-option label="图像 image" value="image_classification" /><el-option label="文本 text" value="text_classification" /><el-option label="表格 table" value="tabular" /></el-select></el-form-item>
         </div>
         <el-form-item label="数据集路径" prop="filePath"><el-input v-model="form.filePath" placeholder="例如：D:/datasets/cifar-10-batches-py" /></el-form-item>
         <el-form-item label="数据集说明"><el-input v-model="form.description" type="textarea" :rows="3" placeholder="说明数据来源、用途和版本信息" /></el-form-item>
@@ -82,6 +89,9 @@ const rules = { datasetName: [{ required: true, message: '请输入数据集名�
 function unwrap(data) { return data?.data ?? data ?? {} }
 function hasVerifiedStats(row) {
   return row.parseStatus === 'success' && Number.isInteger(row.sampleCount) && Number.isInteger(row.classCount)
+}
+function displayDatasetType(type) {
+  return { image_classification: 'image', text_classification: 'text', tabular: 'table' }[type] || type || 'image'
 }
 async function loadDatasets() {
   loading.value = true
@@ -145,3 +155,18 @@ onMounted(() => {
     .catch(() => { isAdmin.value = false })
 })
 </script>
+
+<style scoped>
+.dataset-name-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.dataset-name-cell > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+</style>
