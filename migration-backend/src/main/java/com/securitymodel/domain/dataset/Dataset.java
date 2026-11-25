@@ -1,6 +1,7 @@
 package com.securitymodel.domain.dataset;
 
 import com.baomidou.mybatisplus.annotation.TableField;
+import com.baomidou.mybatisplus.annotation.FieldStrategy;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.Data;
@@ -35,16 +36,16 @@ public class Dataset {
     @TableField("file_name")
     private String fileName;
 
-    @TableField("file_size")
+    @TableField(value = "file_size", updateStrategy = FieldStrategy.ALWAYS)
     private Long fileSize;
 
-    @TableField("sample_count")
+    @TableField(value = "sample_count", updateStrategy = FieldStrategy.ALWAYS)
     private Integer sampleCount;
 
-    @TableField("feature_count")
+    @TableField(value = "feature_count", updateStrategy = FieldStrategy.ALWAYS)
     private Integer featureCount;
 
-    @TableField("class_count")
+    @TableField(value = "class_count", updateStrategy = FieldStrategy.ALWAYS)
     private Integer classCount;
 
     @TableField("parse_status")
@@ -53,7 +54,7 @@ public class Dataset {
     @TableField("parse_message")
     private String parseMessage;
 
-    @TableField("parse_time")
+    @TableField(value = "parse_time", updateStrategy = FieldStrategy.ALWAYS)
     private LocalDateTime parseTime;
 
     @TableField("create_by")

@@ -205,7 +205,7 @@ function Test-AllChecks([System.Collections.Generic.List[object]]$Checks) {
 
 if ([string]::IsNullOrWhiteSpace($BearerToken)) {
     if (-not (Test-Path -LiteralPath $TokenPath)) {
-        Write-RunLog "缺乏 Bearer token：$TokenPath 不存在。先通过 /auth/code 登录或提供 -BearerToken。"
+        Write-RunLog "缺乏 Bearer token：$TokenPath 不存在。先通过 /auth/login 登录或提供 -BearerToken。"
         exit 2
     }
     $BearerToken = (Get-Content -Raw $TokenPath).Trim()

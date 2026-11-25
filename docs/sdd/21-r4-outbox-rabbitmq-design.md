@@ -1,5 +1,26 @@
 # R4 契约与实现：单机 API + 独立 Worker + Transactional Outbox + RabbitMQ
 
+## 当前派发契约
+
+### 事务与发布
+
+`db/api` 为默认模式。`rabbit` 以一套 MySQL 上的独立 `api` 和 `worker` 进程运行。启动任务的事务一并写入任务、`pending` 意图和 Outbox。`TaskOutboxRelay` 领取 Outbox，发布事件并依据 Broker 确认及返回结果更新发送状态。[TaskOutboxRelay](../../migration-backend/src/main/java/com/securitymodel/application/task/TaskOutboxRelay.java)
+
+### 消息身份
+
+业务消息使用 `task.dispatch` v1，携带 `messageId`、`taskId`、`runId`、`attempt`、`ownerUserId`、`intentId` 和 `requestHash` 等标识。执行参数保存在 MySQL 派发意图中。收到消息后 Worker 以数据库中的任务与请求为准执行。[DispatchEvent](../../migration-backend/src/main/java/com/securitymodel/application/task/DispatchEvent.java)
+
+### 领取与消费确认
+
+Worker 利用消息消费账本与条件更新检查重复投递、过期轮次和所有者。`DispatchClaimTransactionService` 将意图领取与 GPU 租约申请放在一个短事务中。运行与结果落库完成后按账本处理 ACK。可重试的暂态故障通过延迟消息处理，交接确认后再 ACK 原消息。耗尽重试时先收敛对应业务状态，再处理死信。[DispatchMessageHandler](../../migration-backend/src/main/java/com/securitymodel/application/task/DispatchMessageHandler.java)
+
+### 切换模式
+
+切换模式前停止旧模式进程，核对运行中任务、租约及未归结派发。读同一个任务的结果时，两种模式使用同样的报告和日志接口。[单机运行说明](../../README.md) · [可选组件课程](../learning/05-extensions-and-tests.md)
+
+## 历史记录
+
+<!-- knowledge:historical -->
 > **当前交付事实唯一入口**：[26-current-delivery-facts.md](26-current-delivery-facts.md)。
 > 本文保留 2026-11-16 的设计、实现和验收证据；“部署验收未执行”是当时口径，后续单机 db/rabbit 启停演练见 [24](24-stage3-single-node-deployment.md)。生产级多机部署仍未验收。
 
@@ -284,7 +305,7 @@ DLQ 重放必须区分执行状态：
 
 - `DispatchRecoveryCoordinator.recoverAtStartup()` 返回 `RecoveryResult(safeToConsume, scanned, replayed, converged, deferred, errors, localAccepted, quarantinedSlots, failedTasks)`；单任务异常计入 `errors` 与 `failedTasks`，扫描异常返回 `TASK_SCAN_FAILED`；只有“无单任务错误、本地 accepted=0、GPU 隔离槽位为空”才 `safeToConsume=true`，否则 `markNotReady()`。`WorkerConsumerLifecycle.startAfterRecovery(result)` 先检查该结果，再检查归属、accepted 和容器；归属仍持有与重新取得两分支都检查。
 - `DispatchMessageHandler` 在读 event 后、claim 前检查 `isLocallyAccepted`，命中只 ACK 当前重复投递，不 claim、不写原账本 terminal、不启动 Python；claim 后到 process 前的窄竞态改为 `deferLocalAccepted`（`releaseForRetry` + 120s 延迟重投，不终结账本）；`SUBMITTED`/`ABANDONED` 无本地 accepted 时先 `failAndAbandon(..., DISPATCH_UNCERTAIN_RECOVERY)` 再 `terminalFromTask`，避免 JVM 崩溃后任务长期 running。
-- `KnowledgeIndexService.reindexSdd()` 索引前删除 `<!-- knowledge:historical -->...<!-- /knowledge:historical -->` 块，按块内换行数替换等量换行（单行内联块替换空格），`KnowledgeSanitizer` 前导空行在 sanitize 后补回，保持引用 1-based 行号；历史-only 文件不再跳过，而是 `retireSource` 退役 active 版本并清理向量，失败留 pending 给 `reconcileRetiredVectors` 补偿；`IndexStats` 新增 `retired`。
+- `KnowledgeIndexService.reindexSdd()` 索引前删除 `&lt;!-- knowledge:historical --&gt;...&lt;!-- /knowledge:historical --&gt;` 块，按块内换行数替换等量换行（单行内联块替换空格），`KnowledgeSanitizer` 前导空行在 sanitize 后补回，保持引用 1-based 行号；历史-only 文件不再跳过，而是 `retireSource` 退役 active 版本并清理向量，失败留 pending 给 `reconcileRetiredVectors` 补偿；`IndexStats` 新增 `retired`。
 - `PythonLddTaskExecutor` finally 改为 `ensureGone` → `finalizeAttempt` → GPU 释放/隔离决策 → `clearAccepted`；清理异常保留 accepted 并记录错误，消费不重开。
 - 测试：`WorkerConsumerLifecycleTest` 8 项；`DispatchMessageHandlerTest` 12 项；`DispatchRecoveryCoordinatorTest` 7 项；`TaskRecoveryRunnerTest` 5 项；`KnowledgeIndexServiceTest` 11 项；`PythonLddTaskExecutorCleanupOrderTest` 3 项；`RabbitDispatchTransportTest` 5 项（含 confirm 超时）。`KnowledgeRetrievalMySqlIT` 8 项含历史-only 退役不可召回与向量清理补偿。定向 `tmp/stage2-fix-targeted2.log` 51/51、`tmp/stage2-fix-knowledge-it.log` 8/8。
 - 真实证据：任务 `2122257618284634114` 在不重启 Worker 的前提下完成 DB 代理断链→恢复→自动重取归属→accepted 清零后重跑恢复并延迟开消费→success。**已补真实故障**：7s 延迟 confirm（`2122269157720920066`）、db→rabbit→db 双向停机切换（`2122266301773209601`/`2122266483373920257`/`2122266707249192962`）、旧 dead 与新 attempt 竞争（`2122268541581815809`）。
@@ -323,3 +344,4 @@ DLQ 重放必须区分执行状态：
 - DLQ 人工重放：已在上文区分 pending 同 attempt 与 failed/uncertain 新 attempt；后续可补独立运维页面（未来扩展）。
 - RabbitMQ 单机持久化/镜像队列：单机部署只需 durable exchange/queue + 持久消息；镜像队列/仲裁队列属于多机高可用，未来扩展。
 - 组织级审批、双人复核、跨机房网络分区：未来扩展，不进入 R4 必选验收。
+<!-- /knowledge:historical -->

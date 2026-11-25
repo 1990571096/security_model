@@ -11,10 +11,10 @@
 --   SET @vab_dataset_root = '<absolute path to VaB-main/dataset>';
 --   SOURCE sql/security_model_vab_seed.sql;
 -- scripts/dev/InitializeSecurityModelDatabase.ps1 does this from -VabDatasetRoot or
--- SECURITY_MODEL_VAB_DATASET_ROOT, verifies the directory and its CIFAR-10 structure,
--- then runs this file.
+-- SECURITY_MODEL_VAB_DATASET_ROOT, verifies the CIFAR-10 files, and sets
+-- @vab_register_cifar100 to 1 when the optional CIFAR-100 files also pass.
 --
--- When @vab_dataset_root is NULL or empty the dataset row is skipped, while the LDD
+-- When @vab_dataset_root is NULL or empty the dataset rows are skipped, while the LDD
 -- algorithm and its default hyper-parameter template are still registered. A newly
 -- registered dataset is always 'pending': the caller's directory check is not a sample
 -- parse, so sample_count/feature_count/class_count stay NULL. An administrator promotes
@@ -30,10 +30,10 @@ INSERT INTO `sys_dataset` (
 )
 SELECT
   'VaB CIFAR-10 Runtime Root',
-  'Runtime VaB CIFAR-10 directory registered by the deployment seed. The directory structure was checked, but samples were not parsed and the sample statistics below are unknown.',
+  'Official CIFAR-10 Python batches for the VaB runtime.',
   b'1', 'image',
-  @vab_root,
-  SUBSTRING_INDEX(@vab_root, '/', -1),
+  CONCAT(TRIM(TRAILING '/' FROM @vab_root), '/cifar-10-batches-py'),
+  'cifar-10-batches-py',
   NULL, NULL, NULL, NULL, 'pending',
   '种子登记：目录结构与 CIFAR-10 批次文件已由调用方检查，但样本尚未解析；预期 50000 训练样本/3072 特征/10 类，均不是实测统计。请管理员执行 POST /api/dataset/{id}/validate 后再选用。',
   NULL, 'system', 'system', NOW(), NOW()
@@ -41,6 +41,27 @@ FROM (SELECT 1) AS anchor
 WHERE @vab_root IS NOT NULL
   AND NOT EXISTS (
     SELECT 1 FROM `sys_dataset` WHERE `dataset_name` = 'VaB CIFAR-10 Runtime Root'
+  );
+
+INSERT INTO `sys_dataset` (
+  `dataset_name`, `description`, `enabled`, `dataset_type`, `file_path`, `file_name`,
+  `file_size`, `sample_count`, `feature_count`, `class_count`, `parse_status`,
+  `parse_message`, `parse_time`, `create_by`, `update_by`, `create_time`, `update_time`
+)
+SELECT
+  'VaB CIFAR-100 Runtime Root',
+  'Official CIFAR-100 Python batches for the VaB runtime.',
+  b'1', 'image',
+  CONCAT(TRIM(TRAILING '/' FROM @vab_root), '/cifar-100-python'),
+  'cifar-100-python',
+  NULL, NULL, NULL, NULL, 'pending',
+  '种子登记：请管理员执行数据集验证后再选用。',
+  NULL, 'system', 'system', NOW(), NOW()
+FROM (SELECT 1) AS anchor
+WHERE @vab_root IS NOT NULL
+  AND @vab_register_cifar100 = 1
+  AND NOT EXISTS (
+    SELECT 1 FROM `sys_dataset` WHERE `dataset_name` = 'VaB CIFAR-100 Runtime Root'
   );
 
 INSERT INTO `sys_algorithm` (

@@ -1,5 +1,10 @@
 # R7 受控实验助手场景联调收口（2026-11-17）
 
+当前受控助手提供 LDD 参数校验、任务预检、结果解释。场景与工具清单由后端接口描述。演示可用本地假模型，写操作须经预览和确认后调用业务服务。[场景查询与操作步骤](../agent-rag-demo.md)
+
+## 历史记录
+
+<!-- knowledge:historical -->
 > 本文是 R7 场景联调的历史证据。当前测试计数、R4/单机部署状态和正式 5 epochs 边界以
 > [`26-current-delivery-facts.md`](26-current-delivery-facts.md) 为准；文中 `343/126` 是当时快照。
 
@@ -145,3 +150,4 @@ python scripts/dev/assistant_browser_fake_model.py --port 8090
 - 重复确认返回 `confirmationReplayed=true`；过期凭据返回 410 `ASSISTANT_CONFIRMATION_EXPIRED`；另一用户确认返回 403 `ASSISTANT_CONFIRMATION_FORBIDDEN`。这些边界由隔离库直连 API 与聚焦 IT 覆盖，未在 UI 中逐项复现。
 - 跨轮会话已明确限制：`summaryJson` 只用于会话列表/历史恢复/审计/配额与清理，不进入模型消息；前端“继续会话”只恢复 `sessionId` 绑定。
 - 本轮未运行真实 LDD/GPU、未调用真实外部模型；单机部署演练已于 2026-11-18 通过，但 R7 的生产级外部模型联调仍未执行。正式 5 epochs 工程验收在独立窗口完成，不能替代 R7 的场景验收。
+<!-- /knowledge:historical -->

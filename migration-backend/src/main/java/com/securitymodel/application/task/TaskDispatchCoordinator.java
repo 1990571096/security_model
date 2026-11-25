@@ -101,8 +101,7 @@ public class TaskDispatchCoordinator {
             gpuLeaseService.releaseByRun(intent.getTaskId(), intent.getRunId());
             failAndAbandon(intent.getTaskId(), intent.getRunId(), intent.getAttempt(),
                     "EXECUTOR_NOT_CONFIGURED",
-                    "Worker 执行器未配置 security-model.executor.python.script"
-                            + "（环境变量 SECURITY_MODEL_EXECUTOR_PYTHON_SCRIPT）");
+                    "Worker 执行器配置无效，请检查 Python 脚本、解释器和工作目录");
             return QueueDispatchResult.TERMINAL;
         }
         DefenseTaskRequest request;
@@ -180,8 +179,7 @@ public class TaskDispatchCoordinator {
             gpuLeaseService.releaseByRun(request.getTaskId(), request.getRunId());
             failAndAbandon(request.getTaskId(), request.getRunId(), request.getAttempt(),
                     "EXECUTOR_NOT_CONFIGURED",
-                    "执行器未配置 security-model.executor.python.script"
-                            + "（环境变量 SECURITY_MODEL_EXECUTOR_PYTHON_SCRIPT）");
+                    "执行器配置无效，请检查 Python 脚本、解释器和工作目录");
             return;
         }
         try {
@@ -252,13 +250,12 @@ public class TaskDispatchCoordinator {
         }
         if (!executor.isConfigured()) {
             // A pending intent is persisted proof that the executor was never invoked for
-            // this attempt. With no script configured, replay cannot make progress; release
+            // this attempt. With invalid configuration, replay cannot make progress; release
             // the old lease and converge instead of leaving a running task behind.
             gpuLeaseService.releaseByRun(intent.getTaskId(), intent.getRunId());
             failAndAbandon(intent.getTaskId(), intent.getRunId(), intent.getAttempt(),
                     "EXECUTOR_NOT_CONFIGURED",
-                    "恢复派发拒绝：执行器未配置 security-model.executor.python.script"
-                            + "（环境变量 SECURITY_MODEL_EXECUTOR_PYTHON_SCRIPT）");
+                    "恢复派发拒绝：请检查执行器的 Python 脚本、解释器和工作目录");
             return false;
         }
         DefenseTaskRequest request;

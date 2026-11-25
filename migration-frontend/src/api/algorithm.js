@@ -13,4 +13,5 @@ export function getAlgorithm(algorithmId) {
 export const getAlgorithms = () => http.get('/api/algorithm')
 export const createAlgorithm = data => http.post('/api/algorithm', data)
 export const updateAlgorithm = (id, data) => http.put(`/api/algorithm/${id}`, data)
+export const updateAlgorithmConfig = (id, defaultConfig) => http.put(`/api/algorithm/${id}/config`, { defaultConfig })
 export const disableAlgorithm = id => http.delete(`/api/algorithm/${id}`)

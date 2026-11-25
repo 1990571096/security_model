@@ -6,6 +6,10 @@ export function createTask(data, idempotencyKey) {
   } : undefined)
 }
 
+export function previewTaskParameters(data) {
+  return http.post('/api/pre-defense/parameter-preview', data)
+}
+
 export function updateTask(data) {
   return http.put('/api/pre-defense', data)
 }

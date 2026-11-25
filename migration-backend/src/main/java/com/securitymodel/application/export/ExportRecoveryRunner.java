@@ -1,6 +1,7 @@
 package com.securitymodel.application.export;
 
 import com.securitymodel.application.audit.OperationAuditService;
+import com.securitymodel.application.task.DispatchRuntimePolicy;
 import com.securitymodel.domain.export.CleanSubsetExportTask;
 import com.securitymodel.infrastructure.persistence.mapper.CleanSubsetExportTaskMapper;
 import org.slf4j.Logger;
@@ -28,14 +29,20 @@ public class ExportRecoveryRunner {
 
     private final CleanSubsetExportTaskMapper exportMapper;
     private final OperationAuditService auditService;
+    private final DispatchRuntimePolicy runtimePolicy;
 
-    public ExportRecoveryRunner(CleanSubsetExportTaskMapper exportMapper, OperationAuditService auditService) {
+    public ExportRecoveryRunner(CleanSubsetExportTaskMapper exportMapper, OperationAuditService auditService,
+                                DispatchRuntimePolicy runtimePolicy) {
         this.exportMapper = exportMapper;
         this.auditService = auditService;
+        this.runtimePolicy = runtimePolicy;
     }
 
     @EventListener(ApplicationReadyEvent.class)
     public void recoverOrphanedExports() {
+        if (!runtimePolicy.apiRole()) {
+            return;
+        }
         List<CleanSubsetExportTask> open = exportMapper.findOpen();
         int recovered = 0;
         for (CleanSubsetExportTask export : open) {

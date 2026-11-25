@@ -1,5 +1,10 @@
 # VaB Training-Pre-Defense Integration
 
+Java 按 `vab://pre-defense/ldd` 识别真实 LDD，启动仓库内的 `algorithm_entry.py`。适配器将任务参数转换成 VaB 运行所需配置，在 attempt 中生成脚本，启动训练子进程并归档结果。[文件和进程协议](07-executor-contract.md) · [适配器](../../algorithm-runtime/vab/algorithm_entry.py)
+
+## 历史记录
+
+<!-- knowledge:historical -->
 Date: 2026-08-24
 
 ## Goal
@@ -157,3 +162,4 @@ path only and is not a paper experiment conclusion.
 
 See [Current platform implementation](11-platform-implementation.md) for the current
 business flow, frontend result presentation, and future expansion boundary.
+<!-- /knowledge:historical -->

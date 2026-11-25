@@ -5,6 +5,7 @@ import com.securitymodel.application.audit.CurrentUserService;
 import com.securitymodel.infrastructure.persistence.mapper.KnowledgeDocumentMapper;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -62,12 +63,37 @@ public class KnowledgeRetrievalService {
         this.adminCrossUserRead = adminCrossUserRead;
     }
 
+    public long countVisibleDocuments() {
+        AuthenticatedUser identity = currentUserService.requireStableIdentity();
+        return documentMapper.countVisible(identity.userId(), canReadAll(identity));
+    }
+
+    @Transactional(readOnly = true)
+    public DocumentPage listDocuments(int page, int size) {
+        if (page < 1 || size < 1 || size > 100) {
+            throw new IllegalArgumentException("页码必须大于 0，每页文档数必须在 1 至 100 之间");
+        }
+        AuthenticatedUser identity = currentUserService.requireStableIdentity();
+        boolean allVisible = canReadAll(identity);
+        long total = documentMapper.countVisible(identity.userId(), allVisible);
+        long offset = (page - 1L) * size;
+        return new DocumentPage(offset < total
+                ? documentMapper.findVisible(identity.userId(), allVisible, size, offset) : List.of(), total);
+    }
+
+    public record DocumentPage(List<KnowledgeDocumentSummary> documents, long total) {
+    }
+
+    private boolean canReadAll(AuthenticatedUser identity) {
+        return identity.admin() && adminCrossUserRead;
+    }
+
     public List<KnowledgeHit> search(String question) {
         vectorHitCount.set(0);
         retrievalMode.set("lexical");
         AuthenticatedUser identity = currentUserService.requireStableIdentity();
         List<KnowledgeSearchRow> candidates;
-        boolean allVisible = identity.admin() && adminCrossUserRead;
+        boolean allVisible = canReadAll(identity);
         if (allVisible) {
             candidates = documentMapper.findSearchableAll(candidateLimit);
         } else {

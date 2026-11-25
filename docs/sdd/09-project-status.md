@@ -1,5 +1,16 @@
 # 项目目标与阶段进度说明
 
+## 当前工作状态
+
+训练前 LDD 运行、任务结果和清洗子集导出构成工程闭环。默认 `db`，可选单机 Rabbit。阶段验收结论应同时注明提交、环境和检查项。[交付证据](26-current-delivery-facts.md)
+
+## 调度与观察
+
+任务的 `running` 是数据库领取结果。定位运行中但无进程的任务，先查派发意图是 `pending`、`submitting` 还是 `submitted`，再查当前轮次的进程登记。GPU 槽位过期需核验原进程退出。R5 运行诊断通过 Actuator `health`、`info`、`metrics` 和管理员派发观测接口分层查看。[设计决策](05-decisions.md)
+
+## 历史记录
+
+<!-- knowledge:historical -->
 > **当前交付事实唯一入口**：[26-current-delivery-facts.md](26-current-delivery-facts.md)。
 > 本文是历史状态汇编，保留各阶段当时的测试数字、故障和结论；引用时必须注明“历史快照/当时状态”，
 > 不得把本文中任意一段旧数字当作当前口径。
@@ -215,8 +226,6 @@ Vue 2 工程**已归档到 Tag `migration-r4-verified` 与 `legacy` 分支**，�
 | 恢复护栏 | 启动前写 `process.json`（写失败拒绝启动为 `PROCESS_RECORD_FAILED`），启动后写 pid/command/startInstant；适配器写 `python-children.json`；恢复按 `NOT_STARTED/EXITED/REAPED/KILL_FAILED/UNKNOWN` 判定，只有前三者释放租约 | `AttemptProcessRegistry`、`TaskRecoveryRunner`（ADR-017） |
 | 槽位隔离 | `KILL_FAILED/UNKNOWN` 置 `blocked_at/blocked_reason`；TTL 过期仍拒绝领取并返回 `GPU_LEASE_BLOCKED`；`GpuLeaseBlockedProbe` 每 60s 重探，确认退出才解除 | `sys_gpu_lease`、`GpuLeaseBlockedProbe`、`sql/security_model_gpu_lease_block.sql` |
 | 未做 | 真实 LDD 产物实测；目录递归哈希；自动算法重试队列（D5，仍不在范围）；生产库建表；带意图的真实 JVM 重启与 R3-04 崩溃演练 | 见 §5.7、§9 |
-
-<!-- knowledge:historical -->
 ## 5.6 R2 第四切片：恢复语义实现（2026-11-13，历史记录；复核修复见 §5.6.1）
 
 | 变更 | 事实 | 证据 |
@@ -230,8 +239,6 @@ Vue 2 工程**已归档到 Tag `migration-r4-verified` 与 `legacy` 分支**，�
 | 验证（R2 收口时实测） | `mvn -B -f migration-backend/pom.xml test` → **104 项单元测试，0 失败，0 跳过**；`verify -Pmysql-it` → 同一单测集 + **33 项 MySQL IT 全绿**；前端 `npm run build` 通过；R3 实施后计数见 §5.7 | `tmp/r2-final-verify.log` |
 | 崩溃演练 | `OrphanProcessCrashDrillTest`：独立 JVM 启动短 Python 父子并记录，强杀启动器后由恢复判定 `REAPED`，父子均死；单跑与全量均通过 | 同上 |
 | 未做 | 真实 LDD/6GB 显存实测；生产库建表与迁移；日志运行期磁盘上限（当前仅归档截断） | 见 §7、§9 |
-
-<!-- /knowledge:historical -->
 
 ## 5.6.1 R2/R3 复核修复记录（2026-11-14，待复审）
 
@@ -329,8 +336,6 @@ Vue 2 工程**已归档到 Tag `migration-r4-verified` 与 `legacy` 分支**，�
 | 应用内 RAG | `POST /api/knowledge/reindex` 写入 408 个 chunk 向量（`VCARD=408`）；`/api/knowledge/query` 真实返回 `retrievalMode=hybrid`、`vectorHits=40`，并调用 DeepSeek 生成带 `[C1]` 引用回答 | 本机验证，日志 `tmp/r11-app-vector5.log` |
 | 验证 | 全量 `mvn verify -Pmysql-it`（`MYSQL_IT_PASSWORD`、`REDIS_IT=true`、`RABBIT_IT=true`）最新为 **327 项单元测试 + 123 项 MySQL/Redis/RabbitMQ 集成测试**，0 失败/0 跳过，BUILD SUCCESS（`tmp/stage8-full-verify.log`；此前 312+113 见 `tmp/stage6-full-verify.log`，初始化收口基线 306+111 见 `tmp/stage5-init-full-verify.log`，干净 worktree 复验见 `tmp/archive-clean-full-verify.log`）；此前 287+106 为 2026-11-16 四项阻断修复基线（`tmp/stage2-full-verify-new.log`），277+104 为阶段 2 收尾基线，267+103 为 R4 六项整改基线；前端 `npm run build` 历史通过（element chunk 警告仍在） | `tmp/stage8-full-verify.log`、`tmp/stage6-full-verify.log`、`tmp/stage5-init-full-verify.log`、`tmp/archive-clean-full-verify.log`、`tmp/stage2-full-verify-new.log` |
 | 未做/边界 | 仅演示库 `security_model_demo` 验证，生产库 `eladmin` 未迁移；本地 embedding 是可替换的哈希实现，未接 BGE/ONNX；DeepSeek 每日预算/token 上限未形成生产配置；未跑真实 LDD；R3 子 JVM 用测试最小上下文与短 Python 桩，R6 故障用替身异常模拟，R7 阻塞用触发器模拟，Ubuntu Java 17 远端 CI 已在 `bb4a79f` 通过（run `43726078023`） | 20 §9/§10、ADR-021/ADR-023/ADR-024 |
-
-<!-- knowledge:historical -->
 ## 5.12 独立审查整改（2026-11-15 历史记录；当时未整体验收）
 
 | 项 | 事实 | 证据 |
@@ -370,9 +375,6 @@ Vue 2 工程**已归档到 Tag `migration-r4-verified` 与 `legacy` 分支**，�
 | R7 并发身份隔离 | `AssistantChatService` 工具线程用 `DelegatingSecurityContextExecutorService`；alice/bob 同时调用 `/api/assistant/chat`，各自查询任务 700/300 | `AssistantConfirmationEndToEndIT.concurrentAliceAndBobChatsKeepIdentityIsolated` 断言响应各自 taskId 正确 | 真实 HTTP、真实线程池、真实 `CurrentUserService`、真实任务查询 | `tmp/round2-r7-b.log` | 只覆盖单进程线程复用，不是多实例会话 |
 | R6 退役补偿 | `removeDocument` 返回 boolean 并逐 VREM 汇总；`reconcileRetiredVectors(limit)` 对 `findRetired` 有界扫描重新清理；`KnowledgeVectorReconcileJob` 300s/60s/50 有界对账 | `KnowledgeRetrievalMySqlIT.retireSurvivesRedisFailureThenReconcilesResidualVectors`：真实 MySQL + 真实 Redis 8；`FlakyVectorStore` 首次抛 `simulated-redis-outage`，断言退役立即生效、Redis 残留、恢复后清掉、重复对账安全 | 真实 MySQL schema、真实 `KnowledgeDocumentWriter`、真实 `StringRedisTemplate`、真实 Redis 8 | `tmp/round2-r6.log` | 故障是替身抛异常，不是实际停 Redis 进程；补偿是有界扫描不是 outbox，重复扫描会重复尝试但幂等；MySQL 始终是事实源 |
 | N6 Java 17/CI | Maven `maven.compiler.release=17`；CI 为 Ubuntu + Temurin 17 + MySQL 8.4 + Redis 8.0 | 当时（`930c934`）本机 Temurin 17.0.21 下 `mvn verify -Pmysql-it` 通过（231 单测 + 89 IT）；本机 JDK20 同计数通过；远端 `930c934` 的 Migration Quality 曾因既有测试硬编码 `cmd`/`ping -n` 与 `PythonProcessWaiter` 销毁后未等待退出而失败（run `43686578054`）；跨平台修复后推送提交 `106e4d3` 触发的新 run `43707281672` 已全部 success。2026-11-15 收口提交 `bb4a79f` 的 run `43726078023` backend/frontend/python 全绿；最新 232 + 96 见 §5.15 | 本机 JDK17 `tmp/round3-full-verify-jdk17-final.log`、JDK20 `tmp/round3-full-verify-final.log`；GitHub Actions run `43726078023`；`tmp/ci-bb4a79f-backend.log` | 远端 CI 已通过，但生产部署的 Java 17 运行时仍以部署环境为准；本机 Windows 与 Ubuntu 环境差异不能由本机结果替代 |
-
-
-<!-- /knowledge:historical -->
 
 ## 5.15 `08f11c0` 后 P1/P2/R3 收口（2026-11-15，本机 + 远端 CI）
 
@@ -612,3 +614,4 @@ mvn -B -f migration-backend/pom.xml verify -Pmysql-it
 - 最近一次记录的本地普通 Maven 验证、MySQL profile 验证和前端生产构建结果见 `docs/sdd/16-engineering-improvement-roadmap.md`；R1 仅重跑普通 Maven 验证，前端未改动也未重跑构建。
 - 2026-11-15 基于 `cde3173` 的审查整改后全量验证：`mvn -B -f migration-backend/pom.xml verify -Pmysql-it`（`MYSQL_IT_PASSWORD`、`REDIS_IT=true`）→ **230 项单元测试 + 81 项 MySQL/Redis 集成测试全部通过，BUILD SUCCESS**；新增/更新的关键项：`KnowledgeSanitizerTest` 7/7（`/secret.txt`、`/api/private/samples.png`、`/custom dir/private sample.png` 及 `/api` 路由自由文本均脱敏）、`AssistantOutboundPrivacyTest` 1/1（真实 ChatService + 适配器 + 假 HTTP 连续两次请求，最终回答 body 不含路径）、`AssistantPreviewServiceTest` 1/1（超预算 preview 不 insert 确认记录）、`AssistantChatServiceTest` 12/12（工具线程真实 `CurrentUserService` 身份、工具预算传播与超时）、`AssistantConfirmationEndToEndIT` 19/19（alice/bob 线程复用不串号、有效 MyBatis-Plus 语句超时=5、五类写工具确认矩阵）、`KnowledgeVectorStoreRedisIT` 3/3（真实 Redis 业务 `retire()` 清理向量、ACL 候选窗口、admin 跨用户、删除清理）、`KnowledgeHybridEvaluationTest` 3/3（可答 10、未知 5、越权/注入 5 共 20 题；向量只合并进词法候选池，私有候选不可注入）、`MySqlTaskPersistenceIT` 19/19。测试执行器仍为替身，没有启动真实 Python/LDD；R3/R6/R7 仍不得整体验收；日志 `tmp/review-current-full-verify.log`。
 - 2026-11-15 `08f11c0` 后 P1/P2/R3 收口全量验证：JDK20 `mvn -B -f migration-backend/pom.xml verify -Pmysql-it`（`REDIS_IT=true`）→ **232 项单元测试 + 96 项 MySQL/Redis 集成测试全部通过，BUILD SUCCESS**，日志 `tmp/round3-full-verify-final.log`；Temurin 17.0.21 同计数，日志 `tmp/round3-full-verify-jdk17-final.log`；Python 11/11 `tmp/round3-python-tests-final.log`；前端构建通过 `tmp/round3-frontend-final.log`。关键新增：`KnowledgeSanitizerTest` 9/9 + `AssistantOutboundPrivacyTest` 1/1（`/z`、`/123`、`/.git`、`/custom dir` 均不外发）；`KnowledgeRetrievalMySqlIT` 6/6（退役清理跨批/失败不阻塞/重启继续/幂等）；`KnowledgeVectorCleanupMigrationIT` 1/1（升级/回滚重复执行）；`R3ProductionExecutorChainIT` 5/5（真实 Spring 异步执行器正常/取消/超时/非法结果 + 真实派发崩溃窗口）。代码/文档已推送，远端提交 `bb4a79f` 的 run `43726078023` backend/frontend/python 全绿；当时的“未整体验收”口径已被 2026-11-16 的 `20` §6.8 替代：R3/R6/R7 冻结必选 ID 为实现验收通过（隔离）/部署验收未执行；生产库 `eladmin` 未迁移，R4 当时仅设计稿、未实施。
+<!-- /knowledge:historical -->

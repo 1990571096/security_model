@@ -272,6 +272,7 @@ import {
   exportExperimentNote, getAssistantSession, getAssistantSessions, getAssistantTools,
   getExperimentNotes, updateExperimentNote
 } from '../api/assistant'
+import { formatDateTime as formatDate } from '../utils/time'
 
 const assistantScope = 'experiment_assistant'
 const route = useRoute()
@@ -358,13 +359,6 @@ function toolLabel(name) {
     preview_create_task: '创建任务预览',
     preview_start_task: '启动任务预览'
   }[name] || name
-}
-
-function formatDate(value) {
-  const date = new Date(value)
-  return value && !Number.isNaN(date.getTime())
-    ? date.toLocaleString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
-    : ''
 }
 
 async function scrollToLatest() {

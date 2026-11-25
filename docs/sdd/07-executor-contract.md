@@ -1,5 +1,30 @@
 # Executor Contract
 
+## 当前执行协议
+
+### 运行配置
+
+`DefenseTaskExecutor` 定义训练前执行入口。迁移版通过 `security-model.executor.python.*` 配置 Python 解释器、脚本、工作目录和超时。进程登记校验执行目录位于 `security-model.executor.workspace` 内。本地配置可让两个工作目录指向同一路径。
+
+### 请求文件与命令参数
+
+Java 写 UTF-8 `request.json` 后，以命令参数 `--stage`、`--request`、`--result`、`--progress-file` 传阶段和路径。任务请求包含 `taskId`、`runId`、`attempt` 和资源快照。`customParams` 与资源的 `configJson` 在 JSON 外层中为字符串。[逐行实现](../project-implementation-guide.md#3-java-怎样把参数交给-python) · [离线练习](../learning/02-java-python.md)
+
+### 进度与日志
+
+`PythonProcessWaiter` 等待适配器进程并触发进度文件采样。Java 检查进度对应的轮次，持久化匹配运行的进度。标准输出和错误输出重定向到 attempt 目录的 `stdout.log` 和 `stderr.log`，供日志 API 按偏移量读取。
+
+### 结果校验与写回
+
+Java 等待进程退出并检查 `stage`、`run_id`、`attempt`、`status`、`message`、`started_at`、`finished_at` 与 `artifacts` 的协议约束。失败结果还携带错误码与原因。任务结果和终态以当前 `runId` 和 `running` 为写入条件。
+
+### 工件和导出
+
+短桩写调用标记，真实 LDD 可以生成模型和选中索引。相应比例的选中索引、数据集及结果状态均满足条件时，独立导出任务生成清洗子集 ZIP。查看下载状态时用 `exportId`。[报告与导出课](../learning/04-report-and-export.md)
+
+## 历史记录
+
+<!-- knowledge:historical -->
 Updated: 2026-11-15 (R3 production-chain closure evidence; contract text unchanged; supersedes the 2026-11-13 date).
 
 This document is the frozen contract for the migration backend (`migration-backend`) and the
@@ -395,3 +420,4 @@ Future real executors implement `DefenseTaskExecutor` and accept `DefenseTaskReq
 and task CRUD services must not depend on algorithm implementation code. Only
 `vab://pre-defense/ldd` is allow-listed; every other `implementation_path` is rejected before
 claim.
+<!-- /knowledge:historical -->

@@ -13,14 +13,17 @@ import com.securitymodel.infrastructure.persistence.mapper.PreDefenseTaskMapper;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 
+import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.concurrent.RejectedExecutionException;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
@@ -166,6 +169,26 @@ class PreDefenseTaskCommandServiceTest {
         verify(resourceQueryService, times(1)).findAlgorithmAuthoritative(2L);
         verify(resourceQueryService, never()).findDataset(any());
         verify(resourceQueryService, never()).findAlgorithm(any());
+    }
+
+    @Test
+    void extractedCifar100OverridesTheAlgorithmDefaultAndUsesItsParentAsRuntimeRoot(@TempDir Path root) {
+        Dataset dataset = dataset();
+        dataset.setFilePath(root.resolve("cifar-100-python").toString());
+        when(resourceQueryService.findDatasetAuthoritative(1L)).thenReturn(dataset);
+        PreDefenseTask task = task(35L, "pending", null);
+
+        TaskExecutionPlan plan = commandService.plan(task);
+
+        assertEquals("cifar100", plan.finalParameters().path("dataset").asText());
+        assertEquals(root.toAbsolutePath().normalize().toString(), plan.dataset().getPath());
+
+        task.setCustomParams("{\"dataset\":\"cifar10\"}");
+        assertEquals("DATASET_PARAMETER_MISMATCH",
+                assertThrows(TaskCommandException.class, () -> commandService.plan(task)).getCode());
+        task.setCustomParams("{\"data_path\":\"another-root\"}");
+        assertEquals("DATASET_PATH_MISMATCH",
+                assertThrows(TaskCommandException.class, () -> commandService.plan(task)).getCode());
     }
 
     @Test

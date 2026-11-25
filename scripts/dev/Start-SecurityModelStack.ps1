@@ -14,8 +14,10 @@ param(
     [string]$RabbitVhost = '/',
     [string]$JarPath = '',
     [string]$JwtSecret = $env:SECURITY_MODEL_JWT_SECRET,
-    [string]$SddRoot = '',
+    [string]$KnowledgeRoot = $env:SECURITY_MODEL_KNOWLEDGE_ROOT,
     [string]$StateRoot = '',
+    [switch]$EnableDeepSeek,
+    [string]$DeepSeekKeyFile = $env:DEEPSEEK_API_KEY_FILE,
     [int]$HealthTimeoutSeconds = 120,
     [ValidateSet('all', 'api', 'worker')][string]$Role = 'api'
 )
@@ -37,14 +39,25 @@ if ([string]::IsNullOrWhiteSpace($JwtSecret) -or $JwtSecret.Length -lt 32) {
 }
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+if ($EnableDeepSeek) {
+    if ($Role -eq 'worker') { throw '实验助手只在 API 角色启用' }
+    if ([string]::IsNullOrWhiteSpace($DeepSeekKeyFile)) {
+        $DeepSeekKeyFile = Join-Path $repoRoot 'secrets\deepseek.key.txt'
+    }
+    $keyFile = Get-Item -LiteralPath $DeepSeekKeyFile -ErrorAction SilentlyContinue
+    if (!$keyFile -or $keyFile.PSIsContainer -or $keyFile.Length -eq 0) {
+        throw 'DeepSeek 密钥文件不存在或为空，请检查 -DeepSeekKeyFile'
+    }
+    $env:DEEPSEEK_API_KEY_FILE = $keyFile.FullName
+}
 if ([string]::IsNullOrWhiteSpace($JarPath)) {
     $JarPath = Join-Path $repoRoot 'migration-backend\target\security-model-backend-0.1.0-SNAPSHOT.jar'
 }
 if (!(Test-Path -LiteralPath $JarPath)) { throw "后端 jar 不存在，先执行 mvn package: $JarPath" }
 $JarPath = (Resolve-Path -LiteralPath $JarPath).Path
-if ([string]::IsNullOrWhiteSpace($SddRoot)) { $SddRoot = Join-Path $repoRoot 'docs\sdd' }
-if (!(Test-Path -LiteralPath $SddRoot -PathType Container)) { throw "SDD 目录不存在: $SddRoot" }
-$SddRoot = (Resolve-Path -LiteralPath $SddRoot).Path
+if ([string]::IsNullOrWhiteSpace($KnowledgeRoot)) { $KnowledgeRoot = Join-Path $repoRoot 'knowledge-base' }
+if (!(Test-Path -LiteralPath $KnowledgeRoot -PathType Container)) { throw "知识库目录不存在: $KnowledgeRoot" }
+$KnowledgeRoot = (Resolve-Path -LiteralPath $KnowledgeRoot).Path
 if ([string]::IsNullOrWhiteSpace($StateRoot)) {
     $StateRoot = Join-Path $repoRoot ("tmp\deploy-stack\{0}\{1}" -f $SchemaName, $Mode)
 }
@@ -65,12 +78,10 @@ $env:DB_NAME = $SchemaName
 $env:DB_USER = $DbUser
 $env:DB_PWD = $DbPassword
 $env:SECURITY_MODEL_JWT_SECRET = $JwtSecret
-$env:SECURITY_MODEL_KNOWLEDGE_SDD_ROOT = $SddRoot
+$env:SECURITY_MODEL_KNOWLEDGE_ROOT = $KnowledgeRoot
 $env:SECURITY_MODEL_KNOWLEDGE_EMBEDDING_ENABLED = 'false'
 $env:SECURITY_MODEL_KNOWLEDGE_VECTOR_ENABLED = 'false'
 $env:SECURITY_MODEL_KNOWLEDGE_MODEL_ENABLED = 'false'
-$env:SECURITY_MODEL_ASSISTANT_MODEL_ENABLED = 'false'
-$env:SECURITY_MODEL_ASSISTANT_MODEL_PROVIDER = 'disabled'
 $env:SECURITY_MODEL_DISPATCH_MODE = $Mode
 $env:RABBITMQ_HOST = $RabbitHost
 $env:RABBITMQ_PORT = "$RabbitPort"
@@ -83,11 +94,10 @@ $env:MANAGEMENT_HEALTH_RABBIT_ENABLED = $(if ($Mode -eq 'rabbit') { 'true' } els
 $commonArgs = @(
     '-jar', $JarPath,
     "--security-model.dispatch.mode=$Mode",
-    "--security-model.knowledge.sdd-root=$SddRoot",
+    "--security-model.knowledge.root=$KnowledgeRoot",
     '--security-model.knowledge.embedding.enabled=false',
     '--security-model.knowledge.vector.enabled=false',
-    '--security-model.knowledge.model.enabled=false',
-    '--security-model.assistant.model.enabled=false'
+    '--security-model.knowledge.model.enabled=false'
 )
 
 function Assert-PortFree([int]$port, [string]$name) {
@@ -121,6 +131,12 @@ function Start-StackProcess([string]$name, [string]$role, [int]$port) {
     $err = Join-Path $StateRoot "$name.err.log"
     $env:SECURITY_MODEL_DISPATCH_ROLE = $role
     $args = $commonArgs + @("--server.port=$port", "--security-model.dispatch.role=$role")
+    if ($EnableDeepSeek -and $role -eq 'api') {
+        $args += @('--spring.profiles.include=deepseek', '--security-model.assistant.model.enabled=true',
+            '--security-model.assistant.model.provider=deepseek')
+    } else {
+        $args += @('--security-model.assistant.model.enabled=false', '--security-model.assistant.model.provider=disabled')
+    }
     $argString = ($args | ForEach-Object { ConvertTo-ProcessArgument ([string]$_) }) -join ' '
     $process = Start-Process -FilePath $java -ArgumentList $argString -WorkingDirectory $repoRoot `
         -WindowStyle Hidden -RedirectStandardOutput $log -RedirectStandardError $err -PassThru
@@ -174,7 +190,7 @@ try {
         dbUser = $DbUser
         jarPath = $JarPath
         javaPath = $java
-        sddRoot = $SddRoot
+        knowledgeRoot = $KnowledgeRoot
         startedAt = (Get-Date).ToString('o')
         processes = @(
             foreach ($entry in $started.GetEnumerator()) {

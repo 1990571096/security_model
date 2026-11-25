@@ -40,6 +40,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 class VabSeedMySqlIT {
 
     private static final String NAME = "VaB CIFAR-10 Runtime Root";
+    private static final String CIFAR100 = "VaB CIFAR-100 Runtime Root";
     private static final String ALGORITHM = "vab://pre-defense/ldd";
     private static final String TEMPLATE = "LDD (VaB) - CIFAR10 SIG";
     private static final String SCHEMA_PREFIX = "security_model_vabseed_it_";
@@ -136,17 +137,34 @@ class VabSeedMySqlIT {
         assertNull(first.get("feature_count"));
         assertNull(first.get("class_count"));
         assertNull(first.get("parse_time"));
-        assertEquals("F:/tmp/vab-a", first.get("file_path"));
+        assertEquals("F:/tmp/vab-a/cifar-10-batches-py", first.get("file_path"));
         String firstUpdateTime = String.valueOf(first.get("update_time"));
 
         executeSeed("F:/tmp/vab-b");
         Map<String, Object> second = dataset();
         assertEquals("pending", second.get("parse_status"));
-        assertEquals("F:/tmp/vab-a", second.get("file_path"), "rerun must not replace an existing path");
+        assertEquals("F:/tmp/vab-a/cifar-10-batches-py", second.get("file_path"),
+                "rerun must not replace an existing path");
         assertEquals(firstUpdateTime, String.valueOf(second.get("update_time")),
                 "rerun must not touch update_time");
         assertNull(second.get("sample_count"));
         assertEquals(1, count("SELECT COUNT(*) FROM sys_dataset WHERE dataset_name='" + NAME + "'"));
+    }
+
+    @Test
+    void registersCifar100OnlyWhenRequestedAndKeepsBothRowsOnRerun() {
+        executeSeed("F:/tmp/cifar-only");
+        assertEquals(0, count("SELECT COUNT(*) FROM sys_dataset WHERE dataset_name='" + CIFAR100 + "'"));
+
+        executeSeed("F:/tmp/both", true);
+        executeSeed("F:/tmp/other", true);
+
+        Map<String, Object> row = datasetByName(CIFAR100);
+        assertEquals("pending", row.get("parse_status"));
+        assertNull(row.get("sample_count"));
+        assertEquals("F:/tmp/both/cifar-100-python", jdbc.queryForObject(
+                "SELECT file_path FROM sys_dataset WHERE dataset_name=?", String.class, CIFAR100));
+        assertEquals("F:/tmp/cifar-only/cifar-10-batches-py", dataset().get("file_path"));
     }
 
     @Test
@@ -350,8 +368,13 @@ class VabSeedMySqlIT {
     }
 
     private void executeSeed(String root) {
+        executeSeed(root, false);
+    }
+
+    private void executeSeed(String root, boolean registerCifar100) {
         try (Connection connection = DriverManager.getConnection(schemaUrl(), USERNAME, PASSWORD)) {
             try (Statement statement = connection.createStatement()) {
+                statement.execute("SET @vab_register_cifar100 = " + (registerCifar100 ? 1 : 0));
                 if (root == null) {
                     statement.execute("SET @vab_dataset_root = NULL");
                 } else {

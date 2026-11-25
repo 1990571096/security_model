@@ -1,5 +1,24 @@
 # 25. 真实 LDD 验收准备清单
 
+## 当前验收路径
+
+### 环境准备
+
+1. 准备独立实验数据库、真实 VaB 目录、CIFAR-10 数据及可用的 PyTorch/CUDA 环境。登记真实数据路径，验证通过后记录实际数据集和 LDD 算法 ID。
+2. 在启动 JVM 的同一 PowerShell 配置真实 `SECURITY_MODEL_EXECUTOR_PYTHON_SCRIPT`，将 `SECURITY_MODEL_EXECUTOR_WORKSPACE` 与 `SECURITY_MODEL_EXECUTOR_PYTHON_WORKSPACE` 指向同一工作目录，并设置 Python 解释器与结果根。运行 `Test-LddAcceptanceEnvironment.ps1` 检查依赖、数据、目录写权限与适配器参数预检。[环境预检脚本](../../scripts/dev/Test-LddAcceptanceEnvironment.ps1)
+
+### 启动和采集
+
+3. 按仓库说明在隔离环境启动 `db` 模式，用实际的数据库和端口。启动后读取 readiness 并准备实验账号。运行验收脚本前核对它的 `BaseUrl`、`TokenPath`、`DatasetId`、`AlgorithmId`、`Epochs` 和 `OutputRoot`。复用已创建的任务时提供 `TaskId` 并核对冻结参数。脚本只有传 `-Start` 才开始训练，先用预检或 `-CreateOnly` 核对参数与目标环境。[运行说明](../../README.md) · [验收脚本](../../scripts/dev/Invoke-LddAcceptanceRun.ps1)
+
+### 按轮次验收
+
+4. 按同一轮次采集 `runId`、`attempt`、归一化参数、进度、日志、报告和运行摘要。核对任务 `success`、实际轮数、本轮产物时间、非空模型和筛选索引，确认执行收尾后租约释放。需要验收导出时另外提交清洗子集导出，等待其独立状态收敛并检查 ZIP。[导出实操](../learning/04-report-and-export.md)
+5. 报告中填运行版本、参数、数据集及证据地址。工程验收、论文效果实验与短桩验证分别记录。[交付证据表](26-current-delivery-facts.md)
+
+## 历史记录
+
+<!-- knowledge:historical -->
 > **当前交付事实唯一入口**：[26-current-delivery-facts.md](26-current-delivery-facts.md)。
 > 本文保留验收准备过程和原始证据；顶部状态与 §1.2 的“未启动”是准备阶段历史，后续正式 5 epochs 结果以 §8 和 26 为准。
 
@@ -292,3 +311,4 @@ $env:SECURITY_MODEL_JWT_SECRET = (Get-Content -Raw 'tmp\deploy-stack\jwt-secret.
 证据目录：`F:\security-model-data\ldd-acceptance-20261118\formal-freeze-20261118\formal-run-20261118`，含 `formal-5epochs-run-summary.json`、`report-final.json`、`logs-final.json`、`runtime-samples.csv`、`artifact-sha256.json`。
 
 结论：**正式配置工程验收通过**。本结论只覆盖执行链路、配置、产物、轮次和收尾；论文效果评估仍需独立基线与多设置对照。
+<!-- /knowledge:historical -->

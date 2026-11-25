@@ -112,7 +112,7 @@ security-model:
     refresh-initial-delay-ms: ${SECURITY_MODEL_OBSERVABILITY_REFRESH_INITIAL_DELAY_MS:30000}
   knowledge:
     # R6: local retrieval is always available; external generation is opt-in.
-    sdd-root: ${SECURITY_MODEL_KNOWLEDGE_SDD_ROOT:../docs/sdd}
+    root: ${SECURITY_MODEL_KNOWLEDGE_ROOT:../knowledge-base}
     max-chunk-chars: ${SECURITY_MODEL_KNOWLEDGE_MAX_CHUNK_CHARS:800}
     # Local embedding + Redis 8 vector set (VADD/VSIM); lexical ranking stays as fallback.
     embedding:

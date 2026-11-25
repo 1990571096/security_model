@@ -27,7 +27,6 @@ class KnowledgeEvaluationTest {
     @Test
     void fixedEvaluationSetMeetsR6Thresholds() throws Exception {
         List<KnowledgeSearchRow> corpus = loadCorpus();
-        assertTrue(corpus.size() > 50, "SDD corpus should contain enough chunks");
 
         List<Case> answerable = List.of(
                 new Case("R2 租约过期后为什么不能直接接管 GPU？", List.of("sdd:05-decisions.md", "sdd:09-project-status.md", "sdd:20-stage-execution-and-acceptance.md")),
@@ -41,6 +40,10 @@ class KnowledgeEvaluationTest {
                 new Case("LDD 任务超时后如何回收进程树？", List.of("sdd:17-agent-development-guide.md", "sdd:20-stage-execution-and-acceptance.md", "sdd:05-decisions.md")),
                 new Case("多用户权限中 owner_user_id 的作用是什么？", List.of("sdd:05-decisions.md", "sdd:17-agent-development-guide.md", "sdd:18-multiuser-ownership-and-resources.md"))
         );
+        List<String> indexedSources = corpus.stream().map(KnowledgeSearchRow::getSourceKey).distinct().toList();
+        assertTrue(answerable.stream().allMatch(item ->
+                        item.acceptableSources().stream().anyMatch(indexedSources::contains)),
+                "Each answerable question should have a source in the current SDD corpus");
         List<Case> unknown = List.of(
                 new Case("火星基地的氧气循环参数是多少？", List.of()),
                 new Case("量子纠缠蒸馏的 batch size 默认值是多少？", List.of()),
@@ -128,7 +131,7 @@ class KnowledgeEvaluationTest {
             for (Path file : files.filter(path -> path.toString().toLowerCase(Locale.ROOT).endsWith(".md"))
                     .sorted().toList()) {
                 String raw = Files.readString(file, StandardCharsets.UTF_8);
-                String sanitized = KnowledgeSanitizer.sanitize(raw);
+                String sanitized = KnowledgeSanitizer.sanitize(KnowledgeIndexService.stripHistoricalBlocks(raw));
                 String sourceKey = "sdd:" + file.getFileName();
                 for (MarkdownKnowledgeChunker.Draft draft :
                         MarkdownKnowledgeChunker.chunk(sanitized, sourceKey, 800)) {

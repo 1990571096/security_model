@@ -1,5 +1,10 @@
 # 目标架构设计
 
+当前控制器接收命令，应用服务执行校验和事务，Mapper 将任务约束写进 MySQL，执行器管理 Python 文件交接与进程。默认由 API 进程派发，启用 Rabbit 时由独立 Worker 执行。[架构图和技术职责](../project-design-overview.md)
+
+## 历史记录
+
+<!-- knowledge:historical -->
 更新时间：2026-11-13（R0 事实校准）。本文分两栏：**当前实现**（代码可验证）与**目标设计**（尚未实现）。未标注“已实现”的内容都是规划。
 
 > 当前测试计数、R4/单机部署状态和正式 5 epochs 边界以
@@ -160,3 +165,4 @@ pending ──claim──► running ──► success
 | 磁盘 | 未实测 | 数据集约 170MB（CIFAR-10 Python 批次）；产物与检查点体积需 R2 实测后定配额 |
 
 真实 LDD 工程验证配置固定为 CIFAR-10 / SIG / batch 128 / 5 epochs，本轮不改动、不重跑；论文正式实验参数另行确定。
+<!-- /knowledge:historical -->

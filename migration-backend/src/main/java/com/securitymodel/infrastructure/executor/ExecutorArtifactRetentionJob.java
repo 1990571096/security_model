@@ -37,14 +37,15 @@ public class ExecutorArtifactRetentionJob {
             @Value("${security-model.executor.workspace:}") String workspace,
             @Value("${security-model.executor.artifacts.retention-days:0}") long retentionDays) {
         this.taskMapper = taskMapper;
-        this.workspace = Paths.get(workspace).toAbsolutePath().normalize();
+        this.workspace = workspace == null || workspace.isBlank()
+                ? null : Paths.get(workspace.trim()).toAbsolutePath().normalize();
         this.retentionDays = retentionDays;
     }
 
     @Scheduled(fixedDelayString = "${security-model.executor.artifacts.cleanup-interval-ms:3600000}",
             initialDelayString = "${security-model.executor.artifacts.cleanup-initial-delay-ms:60000}")
     public void cleanup() {
-        if (retentionDays <= 0 || !Files.isDirectory(workspace)) {
+        if (retentionDays <= 0 || workspace == null || !Files.isDirectory(workspace)) {
             return;
         }
         Instant cutoff = Instant.now().minus(Duration.ofDays(retentionDays));
@@ -135,6 +136,9 @@ public class ExecutorArtifactRetentionJob {
      * may be deleted. Comparing normalized strings alone would follow a junction out of bounds.
      */
     Path resolveSafe(Path dir) {
+        if (workspace == null) {
+            return null;
+        }
         try {
             Path real = dir.toRealPath();
             Path workspaceReal = workspace.toRealPath();

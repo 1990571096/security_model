@@ -1,5 +1,10 @@
 # 迁移后工程完善路线
 
+当前工程已包含按轮写回、租约、派发恢复和请求幂等。初学者依次练习正常业务、失败推演、技术追问与口述。研发验证则按目标选择集成环境和验收标准。[学习规划](../learning/README.md) · [技术学习地图](../learning/technology-map.md) · [当前验证范围](26-current-delivery-facts.md)
+
+## 历史记录
+
+<!-- knowledge:historical -->
 更新时间：2026-11-13（R0 记录）
 
 > 本文是历史路线与各次实施记录的快照。当前测试计数、R4/单机部署状态和正式 5 epochs 边界以
@@ -163,3 +168,4 @@ mvn -B -f migration-backend/pom.xml verify
 2. 代码完成时同步更新本路线的阶段状态，以及 `09-project-status.md` 和受影响的模块设计文档。
 3. 技术依赖、运行配置、执行边界、测试结果均按代码和 CI 证据填写；规划项不得写成已实现。
 4. 旧版 ELADMIN 的测试结果单独说明，不计入迁移版测试覆盖。
+<!-- /knowledge:historical -->

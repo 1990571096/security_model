@@ -1,5 +1,20 @@
 # LDD MVP 运行与联调手册
 
+当前运行可选静态展示、短桩闭环或真实 LDD 验收。短桩需要启用并验证一个非空演示数据目录，真实运行需要另行核验 VaB、PyTorch/CUDA 和数据。[本地启动](../../README.md) · [真实运行验收](25-ldd-real-acceptance-checklist.md)
+
+## 账号管理
+
+管理员可删除实验员账号。删除后账号从列表移除，原会话失效，用户名继续保留。历史任务、报告和审计保留，已启动的任务继续执行。保留以后重新启用的需求时，使用「禁用」。
+
+已有数据库升级时，先在目标库执行 [账号删除增量脚本](../../sql/security_model_account_deletion.sql)，再启动新版后端。新库初始化脚本会自动应用该增量。
+
+## 知识检索与实验助手
+
+共享资料维护在 [知识库目录](../../knowledge-base/experiment-failure.md)，管理员修改文件后在知识页同步。实验助手可检索本地资料，也可从失败任务详情进入诊断。[联调步骤](../agent-rag-demo.md)
+
+## 历史记录
+
+<!-- knowledge:historical -->
 > 当前交付事实、测试计数和验收边界以 [`26-current-delivery-facts.md`](26-current-delivery-facts.md) 为准。
 > 本文保留运行步骤与历史联调记录；文中 `287/106` 等数字是 2026-11-16 快照。
 
@@ -173,14 +188,16 @@ SOURCE sql/security_model_vab_seed.sql;
    $env:SECURITY_MODEL_VAB_DATASET_ROOT = '<本机 VaB-main\dataset 绝对路径>'   # 可选
    .\scripts\dev\InitializeSecurityModelDatabase.ps1 -DbHost 127.0.0.1 -Port 3306
    ```
-   成功输出应包含 `security_model initialized: tables=48`，并列出 `sys_user` 的 admin/test 等种子账号；提供 VaB 路径时还会输出 `dataset_count=6`、`parsed_dataset_count=0` 与 `LDD (VaB)` 算法行。脚本顺序：`sql/eladmin.sql` → 执行快照 → run context → 子集导出 → 审计 → 归属 → GPU 租约 → 派发意图 → Outbox → 幂等 → 知识库 → 向量对账 → Assistant → MVP seed → legacy running task 基线 → 历史样例数据集重置 → VaB 种子；新库已含 `blocked_at`，所以 `security_model_gpu_lease_block.sql` 会被条件跳过。VaB 种子通过 `SET @vab_dataset_root` 注入路径，脚本会先把反斜杠规整为 `/`、校验目录存在、可读、非空，并检查 `cifar-10-batches-py` 下 `batches.meta`、`data_batch_1..5`、`test_batch` 都存在且非空，然后才写 `sys_dataset`；登记状态固定为 `pending`，`sample_count/feature_count/class_count` 保持 `NULL`，预期 50000/3072/10 只写在说明里，不是实测统计。管理员执行 `POST /api/dataset/{id}/validate` 后才会进入 `GET /api/dataset/available`。
+   成功输出应包含 `security_model initialized: tables=48`，并列出 `sys_user` 的 admin/test 等种子账号。脚本依次应用基础库、各模块增量 SQL、MVP seed、历史数据基线和 VaB seed。新库已含 `blocked_at`，所以会跳过 `security_model_gpu_lease_block.sql`。
+
+   `-VabDatasetRoot` 接收两个批次子目录的父目录。初始化要求 `cifar-10-batches-py` 的 `batches.meta`、`data_batch_1..5`、`test_batch` 存在且非空。如果 `cifar-100-python` 的 `meta`、`train`、`test` 同样齐全，就一并登记 CIFAR-100。新记录初始为 `pending`，样本统计保持 `NULL`，管理员执行 `POST /api/dataset/{id}/validate` 后才会进入 `GET /api/dataset/available`。两套数据在新库中分别保存各自的批次目录，LDD 执行计划会使用相应的 `dataset` 值并将父目录传给 Python。已有库可以通过数据集管理页面登记，已有种子记录由初始化脚本保留。
    **完整初始化**也遵循 additive：MVP seed 只补缺失算法/模板，不更新已有行；legacy running 基线只处理 `sql/eladmin.sql` 自带的任务 ID 3/4（精确名称 + `create_by=test`），其他缺少执行上下文的 running 行保持不动，并在初始化输出中列为待人工审核清单。历史 MVP 的算法禁用/模型废弃/菜单显隐已移出自动种子，需要时显式执行 `sql/security_model_mvp_legacy_convergence.sql`（该文件不在初始化列表中）。未接入的 builtin 算法仍可在目录中展示，但 `PreDefenseTaskCommandService` 的 LDD-only 执行白名单会拒绝为其创建/启动任务。
 3. 设置启动环境变量（示例，值按本机替换）：
    ```powershell
    $env:DB_NAME='security_model'; $env:DB_USER='root'; $env:DB_PWD='<密码>'
    $env:SECURITY_MODEL_JWT_SECRET='<至少 32 字节>'
    $env:SECURITY_MODEL_DISPATCH_MODE='db'; $env:SECURITY_MODEL_DISPATCH_ROLE='api'
-   $env:SECURITY_MODEL_KNOWLEDGE_SDD_ROOT='<repo>\docs\sdd'
+   $env:SECURITY_MODEL_KNOWLEDGE_ROOT='<repo>\knowledge-base'
    ```
 4. 启动后端 jar 或 `spring-boot:run`，确认日志有 `Tomcat started on port 8100` 与 `Started SecurityModelApplication`。
 5. 健康检查 `GET /actuator/health` 为 `UP`；管理员登录后依次验证：
@@ -380,3 +397,4 @@ SOURCE sql/security_model_knowledge_vector_reconcile_rollback.sql;
 - 指标为空：确认管理员 JWT、`management.endpoints.web.exposure.include` 和 `TaskRuntimeMetrics` 的 30 秒刷新是否执行；数据库短暂不可用时保留上次值并标记刷新失败。
 - 缓存更新后仍读旧值：检查 key 代际是否在提交后递增；TTL 只是兜底，不能替代代际失效。
 - 任务统计包含演示数据：确认查询使用 `data_origin != 'demo'`；普通用户统计只包含本人任务。
+<!-- /knowledge:historical -->

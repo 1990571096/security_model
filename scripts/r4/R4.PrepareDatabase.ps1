@@ -15,6 +15,7 @@ if ($LASTEXITCODE -ne 0) { throw "创建隔离 schema 失败: $SchemaName" }
 
 $files = @(
     'sql\eladmin.sql',
+    'sql\security_model_account_deletion.sql',
     'sql\security_model_task_run_context.sql',
     'sql\security_model_ownership.sql',
     'sql\security_model_task_dispatch.sql',
@@ -26,6 +27,7 @@ $files = @(
     'sql\security_model_knowledge.sql',
     'sql\security_model_knowledge_vector_reconcile.sql',
     'sql\security_model_assistant.sql',
+    'sql\security_model_experiment_note.sql',
     'sql\security_model_request_idempotency.sql',
     'sql\security_model_mvp_seed.sql'
 )

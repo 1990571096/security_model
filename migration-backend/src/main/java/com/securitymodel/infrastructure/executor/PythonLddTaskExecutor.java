@@ -50,7 +50,28 @@ public class PythonLddTaskExecutor implements DefenseTaskExecutor {
 
     @Override
     public boolean isConfigured() {
-        return StringUtils.hasText(pythonScript);
+        String workspace = fingerprintService.getWorkspace();
+        if (!StringUtils.hasText(pythonScript) || !StringUtils.hasText(pythonExecutable)
+                || !StringUtils.hasText(workspace)) {
+            return false;
+        }
+        try {
+            Path workingDirectory = Path.of(workspace).toAbsolutePath().normalize();
+            if (!processRegistry.matchesWorkspace(workingDirectory)) {
+                return false;
+            }
+            Path script = workingDirectory.resolve(pythonScript);
+            if (!Files.isRegularFile(script) || !Files.isReadable(script)) {
+                return false;
+            }
+            // A bare interpreter name is resolved by the operating system on launch.
+            Path executable = Path.of(pythonExecutable);
+            return (executable.getParent() == null && !executable.isAbsolute())
+                    || Files.isExecutable(workingDirectory.resolve(executable))
+                    && Files.isRegularFile(workingDirectory.resolve(executable));
+        } catch (java.nio.file.InvalidPathException exception) {
+            return false;
+        }
     }
 
     public PythonLddTaskExecutor(

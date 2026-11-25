@@ -190,7 +190,7 @@ class KnowledgeHybridEvaluationTest {
             for (Path file : files.filter(path -> path.toString().toLowerCase(Locale.ROOT).endsWith(".md"))
                     .sorted().toList()) {
                 String sanitized = KnowledgeSanitizer.sanitize(
-                        Files.readString(file, StandardCharsets.UTF_8));
+                        KnowledgeIndexService.stripHistoricalBlocks(Files.readString(file, StandardCharsets.UTF_8)));
                 String sourceKey = "sdd:" + file.getFileName();
                 for (MarkdownKnowledgeChunker.Draft draft :
                         MarkdownKnowledgeChunker.chunk(sanitized, sourceKey, 800)) {

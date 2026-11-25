@@ -88,17 +88,29 @@ public class PreDefenseReportController {
             @PathVariable Long taskId,
             @RequestParam String artifactPath) throws IOException {
         PreDefenseTask task = taskAccessGuard.requireReadable(taskId);
-        JsonNode result = objectMapper.readTree(task.getCleaningResult());
-        Path root = Paths.get(result.path("artifacts").path("path").asText()).toAbsolutePath().normalize();
-        Path target = Paths.get(artifactPath).toAbsolutePath().normalize();
-        if (!Files.isRegularFile(target) || !target.toRealPath().startsWith(root.toRealPath())
-                || !target.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".png")) {
+        if (task.getCleaningResult() == null || task.getCleaningResult().isBlank()) {
+            throw new IllegalArgumentException("任务尚无产物");
+        }
+        Path target;
+        try {
+            JsonNode result = objectMapper.readTree(task.getCleaningResult());
+            String artifactRoot = result == null ? "" : result.path("artifacts").path("path").asText("");
+            if (artifactRoot.isBlank() || artifactPath.isBlank()) {
+                throw new IllegalArgumentException("请求的产物文件不可访问");
+            }
+            Path root = Path.of(artifactRoot).toRealPath();
+            target = Path.of(artifactPath).toRealPath();
+            if (!Files.isDirectory(root) || !target.startsWith(root) || !Files.isRegularFile(target)
+                    || !target.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".png")) {
+                throw new IllegalArgumentException("请求的产物文件不可访问");
+            }
+        } catch (IOException | InvalidPathException exception) {
             throw new IllegalArgumentException("请求的产物文件不可访问");
         }
         MediaType mediaType = Optional.ofNullable(Files.probeContentType(target))
                 .map(MediaType::parseMediaType).orElse(MediaType.IMAGE_PNG);
         return ResponseEntity.ok().contentType(mediaType)
-                .body(new org.springframework.core.io.FileSystemResource(target.toRealPath()));
+                .body(new org.springframework.core.io.FileSystemResource(target));
     }
 
     private Map<String, Long> parseOffsets(String raw) {

@@ -9,6 +9,7 @@ import com.securitymodel.application.audit.OperationAuditService;
 import com.securitymodel.application.resource.ResourceQueryService;
 import com.securitymodel.domain.algorithm.Algorithm;
 import com.securitymodel.domain.dataset.Dataset;
+import com.securitymodel.domain.dataset.VabCifarDataset;
 import com.securitymodel.domain.hyper.Hyper;
 import com.securitymodel.domain.lease.GpuLease;
 import com.securitymodel.domain.task.PreDefenseTask;
@@ -19,6 +20,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.nio.file.InvalidPathException;
+import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.util.Collection;
 import java.util.LinkedHashMap;
@@ -338,7 +341,7 @@ public class PreDefenseTaskCommandService {
             hyperView.put("name", nullSafe(resolution.hyper().getTemplateName()));
         }
         return new TaskExecutionPlan(fingerprint, resolution.finalConfig(), preview,
-                toDatasetRef(resolution.dataset()), toAlgorithmRef(resolution.algorithm()),
+                toDatasetRef(resolution.dataset(), resolution.runtimeDatasetPath()), toAlgorithmRef(resolution.algorithm()),
                 toHyperRef(resolution.hyper()));
     }
 
@@ -386,11 +389,39 @@ public class PreDefenseTaskCommandService {
             }
         }
         normalizeParams(command);
+        Path extractedDirectory = extractedCifarDirectory(dataset.getFilePath());
+        VabCifarDataset cifar = extractedDirectory == null ? null : VabCifarDataset.fromDirectory(extractedDirectory);
         ObjectNode finalConfig = lddConfigurationPolicy.normalizeAndValidate(
                 algorithm.getDefaultConfig(),
                 hyper == null ? null : hyper.getParameterConfig(),
-                command.getCustomParams());
-        return new Resolution(dataset, algorithm, hyper, finalConfig);
+                command.getCustomParams(), cifar == null ? null : cifar.parameterValue());
+        String runtimePath = dataset.getFilePath();
+        if (cifar != null) {
+            Path root = extractedDirectory.getParent();
+            if (finalConfig.has("data_path") && !matchesDatasetRoot(finalConfig.path("data_path").asText(), root)) {
+                throw new TaskCommandException("DATASET_PATH_MISMATCH", "LDD 参数 data_path 必须指向所选数据集的根目录");
+            }
+            runtimePath = root.toString();
+        }
+        return new Resolution(dataset, algorithm, hyper, finalConfig, runtimePath);
+    }
+
+    private static Path extractedCifarDirectory(String path) {
+        if (path == null) return null;
+        try {
+            return Path.of(path).toAbsolutePath().normalize();
+        } catch (InvalidPathException exception) {
+            // Older resources may use non-local paths. Keep their existing configuration contract.
+            return null;
+        }
+    }
+
+    private static boolean matchesDatasetRoot(String path, Path root) {
+        try {
+            return Path.of(path).isAbsolute() && Path.of(path).normalize().equals(root);
+        } catch (InvalidPathException exception) {
+            return false;
+        }
     }
 
     private PreDefenseTaskCommand commandOf(PreDefenseTask task) {
@@ -410,7 +441,7 @@ public class PreDefenseTaskCommandService {
     }
 
     private record Resolution(Dataset dataset, Algorithm algorithm, Hyper hyper,
-                              ObjectNode finalConfig) {
+                              ObjectNode finalConfig, String runtimeDatasetPath) {
     }
 
     private void applyCommand(PreDefenseTask task, PreDefenseTaskCommand command) {
@@ -457,8 +488,8 @@ public class PreDefenseTaskCommandService {
         }
         if (!defenseTaskExecutor.isConfigured()) {
             throw new TaskCommandException("EXECUTOR_NOT_CONFIGURED",
-                    "EXECUTOR_NOT_CONFIGURED: 未配置 security-model.executor.python.script"
-                            + "（环境变量 SECURITY_MODEL_EXECUTOR_PYTHON_SCRIPT），任务状态未改变");
+                    "EXECUTOR_NOT_CONFIGURED: 请检查 Python 脚本（SECURITY_MODEL_EXECUTOR_PYTHON_SCRIPT）、"
+                            + "解释器及执行工作区，任务状态未改变");
         }
     }
 
@@ -618,12 +649,12 @@ public class PreDefenseTaskCommandService {
         }
     }
 
-    private DefenseResourceRef toDatasetRef(Dataset dataset) {
+    private DefenseResourceRef toDatasetRef(Dataset dataset, String runtimePath) {
         return DefenseResourceRef.builder()
                 .id(dataset.getDatasetId())
                 .name(dataset.getDatasetName())
                 .type(dataset.getDatasetType())
-                .path(dataset.getFilePath())
+                .path(runtimePath)
                 .build();
     }
 

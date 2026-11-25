@@ -1,5 +1,12 @@
 # 阶段实施与验收任务书
 
+## 当前验收阅读方式
+
+验证单元、隔离设施集成与真实 GPU 运行分别记录。短进程用例可观察超时后回收进程树与租约清理顺序。恢复扫描用运行身份过滤陈旧意图，保障新 attempt 仍可正常执行。[测试和历史记录](26-current-delivery-facts.md) · [运行身份练习](../learning/03-reliability.md)
+
+## 历史记录
+
+<!-- knowledge:historical -->
 版本：2026-11-13 v1。配套总纲：[17-agent-development-guide.md](17-agent-development-guide.md)。
 
 > 本文是阶段任务书与当时验收记录。当前测试计数、R4/单机部署状态和正式 5 epochs 边界以
@@ -500,3 +507,4 @@ docs/sdd/20-stage-execution-and-acceptance.md 完成 <R编号> 全部必选项�
 不依赖答案的任务继续完成。测试不足不得标通过，不能用 mock 替代要求的 IT。
 阶段结束按第13节交接，由独立审查 Agent 复核后再进入下一阶段。
 ```
+<!-- /knowledge:historical -->

@@ -1,5 +1,26 @@
-# 本地数据目录布局与文件保留策略（R0 草案）
+# 本地数据目录布局与文件保留策略
 
+## 运行文件的位置
+
+`PythonLddTaskExecutor` 从 `ExecutionFingerprintService` 取得 `SECURITY_MODEL_EXECUTOR_PYTHON_WORKSPACE` 配置的根目录，再创建 `pre_defense-<taskId>/attempt-<attempt>`。`AttemptProcessRegistry` 使用 `SECURITY_MODEL_EXECUTOR_WORKSPACE` 确认进程记录位于受控路径内。部署时将两项指向同一目录。遇到 `PROCESS_RECORD_FAILED`，先检查这两项和目录权限。
+
+| 层级 | 文件与用途 |
+| --- | --- |
+| attempt 目录 | `request.json`、`progress.json`、`result.json` 用于进程通信，`stdout.log` 和 `stderr.log` 保存输出 |
+| attempt 目录 | `process.json`、`python-children.json` 提供进程身份和子进程线索，`manifest.json` 给出执行器文件清单 |
+| 算法产物目录 | 默认 `<attempt>/artifacts`，设置 `SECURITY_MODEL_VAB_RESULT_ROOT` 后由适配器在配置根下建立运行目录。排查时以 `result.json` 的 `artifacts.path` 为准 |
+
+[执行器](../../migration-backend/src/main/java/com/securitymodel/infrastructure/executor/PythonLddTaskExecutor.java) · [进程登记](../../migration-backend/src/main/java/com/securitymodel/infrastructure/executor/AttemptProcessRegistry.java) · [Python 适配器](../../algorithm-runtime/vab/algorithm_entry.py)
+
+## 归档和保留
+
+`ExecutorArtifactPolicy` 默认按 20 MiB 上限处理收尾时的执行器日志。运行期间日志仍可增长。`ExecutorArtifactRetentionJob` 默认 `retention-days=0`。启用后只检查终态任务中已过期的非当前 attempt，并复核目录的真实路径。独立配置的外部算法产物根不在该定时任务的扫描范围内。产物预览和下载各自校验文件真实路径与允许的根目录。
+
+[日志归档](../../migration-backend/src/main/java/com/securitymodel/infrastructure/executor/ExecutorArtifactPolicy.java) · [保留任务](../../migration-backend/src/main/java/com/securitymodel/infrastructure/executor/ExecutorArtifactRetentionJob.java) · [报告及导出](../learning/04-report-and-export.md)
+
+## 历史记录
+
+<!-- knowledge:historical -->
 版本：2026-11-13；状态：**布局与保留规则已部分实现（R2）；默认不删除文件**。目录改为受控根目录属于 R1 实施项，本轮不改动现有文件位置。
 
 适用范围：单机部署（RTX 2060 6GB / 内存 16GB）。数据集与产物都必须留在本机受控目录，不上传对象存储；分布式共享存储只在可选的 R4/R8 中评估。
@@ -79,3 +100,4 @@ SECURITY_MODEL_DATA_ROOT            (建议：F:\security-model-data，仓库之
 2. 文件系统 ACL 与数据库 owner 是两套机制，容易只做一套。结论：**以数据库 owner 为唯一授权来源**，ACL 只作为纵深防御。
 3. Windows 上仍被 Python 进程占用的文件不能被改名或删除，清理逻辑必须容忍 `WinError 5` 并跳过，不得因此把任务状态改坏。
 4. `toRealPath()` containment 在符号链接场景正确，但对“根目录本身被替换”没有防护；清理与迁移动作必须绑定解析后的绝对路径，禁止对拼接字符串操作。
+<!-- /knowledge:historical -->

@@ -132,7 +132,7 @@ class KnowledgeRetrievalMySqlIT {
 
     @Test
     void retrievalServiceReturnsSharedButNeverForeignPrivateRows() {
-        Long shared = insertDocument("sdd:05.md", 1, "shared", null, "shared");
+        Long shared = insertDocument("knowledge:05.md", 1, "shared", null, "shared");
         insertChunk(shared, 0, "GPU 单槽租约过期后必须隔离，不能直接接管");
         Long foreign = insertDocument("task_report:99", 1, "private", 99L, "foreign");
         insertChunk(foreign, 0, "purity 93.1 攻击成功率 4.2");
@@ -144,40 +144,67 @@ class KnowledgeRetrievalMySqlIT {
 
         List<KnowledgeHit> sharedHits = service.search("GPU 单槽租约过期");
         assertEquals(1, sharedHits.size());
-        assertEquals("sdd:05.md", sharedHits.get(0).row().getSourceKey());
+        assertEquals("knowledge:05.md", sharedHits.get(0).row().getSourceKey());
 
         assertTrue(service.search("purity 93.1 攻击成功率").isEmpty(),
                 "the real ACL-first service must not rank a foreign private report");
     }
 
     @Test
-    void citationLinesMatchTheRealSddSourceFile() throws Exception {
-        Path source = Path.of("../docs/sdd/05-decisions.md").toAbsolutePath().normalize();
-        assertTrue(Files.isRegularFile(source), "real SDD source file must exist: " + source);
-        String raw = Files.readString(source, StandardCharsets.UTF_8);
-        String sanitized = KnowledgeSanitizer.sanitize(raw);
-        List<MarkdownKnowledgeChunker.Draft> drafts = MarkdownKnowledgeChunker.chunk(
-                sanitized, "sdd:05-decisions.md", 800);
-        assertTrue(drafts.size() > 5, "source file should produce multiple chunks");
-        writer.saveVersion("sdd", "sdd:05-decisions.md", "05-decisions.md", "shared",
-                null, "hash-real-05", drafts, LocalDateTime.now());
+    void documentCatalogPaginatesOnlyActiveReadableDocuments() {
+        insertDocument("knowledge:05.md", 1, "shared", null, "shared");
+        insertDocument("task_report:7", 1, "private", 7L, "own");
+        insertDocument("task_report:99", 1, "private", 99L, "foreign");
+        insertRetiredDocument("task_report:retired", "retired");
+
+        CurrentUserService alice = mock(CurrentUserService.class);
+        when(alice.requireStableIdentity()).thenReturn(new AuthenticatedUser(7L, "alice", false));
+        KnowledgeRetrievalService service = new KnowledgeRetrievalService(
+                documentMapper, alice, 100, 5, 0.05, 0, true);
+
+        assertEquals(2L, service.countVisibleDocuments());
+        var first = service.listDocuments(1, 1);
+        var second = service.listDocuments(2, 1);
+        assertEquals(2L, first.total());
+        assertEquals(2L, second.total());
+        assertEquals(Set.of("knowledge:05.md", "task_report:7"), Set.of(
+                first.documents().get(0).sourceKey(), second.documents().get(0).sourceKey()));
+        assertTrue(service.listDocuments(3, 1).documents().isEmpty());
+
+        when(alice.requireStableIdentity()).thenReturn(new AuthenticatedUser(7L, "alice", true));
+        assertEquals(3L, service.listDocuments(1, 10).total());
+        var restricted = new KnowledgeRetrievalService(documentMapper, alice, 100, 5, 0.05, 0, false);
+        assertEquals(2L, restricted.listDocuments(1, 10).total());
+    }
+
+    @Test
+    void citationLinesMatchTheRealKnowledgeFileAndLegacySddIsRetired() throws Exception {
+        Path source = Path.of("../knowledge-base/experiment-failure.md").toAbsolutePath().normalize();
+        List<String> lines = Files.readAllLines(source, StandardCharsets.UTF_8);
+        Long legacy = insertDocument("sdd:legacy.md", 1, "shared", null, "legacy");
+        insertChunk(legacy, 0, "legacyonlyfixture");
 
         CurrentUserService alice = mock(CurrentUserService.class);
         when(alice.requireStableIdentity()).thenReturn(new AuthenticatedUser(7L, "alice", false));
         KnowledgeRetrievalService service = new KnowledgeRetrievalService(
                 documentMapper, alice, 1000, 5, 0.05, 0, false);
-        List<KnowledgeHit> hits = service.search("GPU 单槽租约过期");
-        assertTrue(!hits.isEmpty(), "real source should answer the lease question");
-        KnowledgeHit top = hits.get(0);
-        assertEquals("sdd:05-decisions.md", top.row().getSourceKey());
-        assertTrue(top.row().getStartLine() >= 1 && top.row().getEndLine() >= top.row().getStartLine(),
-                "citation must carry a valid line range");
-        assertTrue(top.row().getContent().contains("租约"), "retrieved chunk must match its source text");
+        assertEquals(0, service.countVisibleDocuments());
+        assertTrue(service.search("legacyonlyfixture").isEmpty());
+        var index = new KnowledgeIndexService(documentMapper, writer, null, null, null,
+                source.getParent().toString(), 800);
+        assertEquals(1, index.reindexKnowledge().retired());
+        assertNull(documentMapper.findActiveBySourceKey("sdd:legacy.md"));
+
+        var citation = service.citations(service.search("GPU_OOM 显存不足")).get(0);
+        assertEquals("knowledge:experiment-failure.md", citation.sourceKey());
+        String citedLines = String.join("\n", lines.subList(citation.startLine() - 1, citation.endLine()));
+        assertTrue(citedLines.contains("GPU_OOM"));
+        assertTrue(citation.snippet().contains("GPU_OOM"));
     }
 
     @Test
     void sharedIsVisibleToAllAndPrivateOnlyToOwner() {
-        Long shared = insertDocument("sdd:05.md", 1, "shared", null, "shared");
+        Long shared = insertDocument("knowledge:05.md", 1, "shared", null, "shared");
         insertChunk(shared, 0, "共享租约知识");
         Long ownerSeven = insertDocument("task_report:7", 1, "private", 7L, "owner-seven");
         insertChunk(ownerSeven, 0, "用户七的私有报告");
@@ -189,7 +216,7 @@ class KnowledgeRetrievalMySqlIT {
         List<KnowledgeSearchRow> all = documentMapper.findSearchableAll(100);
 
         assertEquals(2, asSeven.size());
-        assertTrue(asSeven.stream().anyMatch(row -> row.getSourceKey().equals("sdd:05.md")));
+        assertTrue(asSeven.stream().anyMatch(row -> row.getSourceKey().equals("knowledge:05.md")));
         assertTrue(asSeven.stream().anyMatch(row -> row.getSourceKey().equals("task_report:7")));
         assertTrue(asSeven.stream().noneMatch(row -> row.getSourceKey().equals("task_report:8")));
         assertEquals(2, asEight.size());
@@ -198,12 +225,12 @@ class KnowledgeRetrievalMySqlIT {
 
     @Test
     void retiredVersionIsNeverRecallable() {
-        Long old = insertDocument("sdd:05.md", 1, "shared", null, "old");
+        Long old = insertDocument("knowledge:05.md", 1, "shared", null, "old");
         insertChunk(old, 0, "旧版本内容");
-        Long current = insertDocument("sdd:05.md", 2, "shared", null, "current");
+        Long current = insertDocument("knowledge:05.md", 2, "shared", null, "current");
         insertChunk(current, 0, "新版本内容");
 
-        assertEquals(1, documentMapper.retireOtherVersions("sdd:05.md", current, LocalDateTime.now()));
+        assertEquals(1, documentMapper.retireOtherVersions("knowledge:05.md", current, LocalDateTime.now()));
         assertEquals(1L, documentMapper.countActive());
         List<KnowledgeSearchRow> rows = documentMapper.findSearchableForUser(9L, 100);
         assertEquals(1, rows.size());
@@ -222,11 +249,11 @@ class KnowledgeRetrievalMySqlIT {
 
     @Test
     void writerCreatesOneActiveVersionAndRetiresTheOldOne() {
-        KnowledgeDocument first = writer.saveVersion("sdd", "sdd:writer.md", "首版", "shared",
+        KnowledgeDocument first = writer.saveVersion("knowledge", "knowledge:writer.md", "首版", "shared",
                 null, "hash-1",
                 List.of(new MarkdownKnowledgeChunker.Draft("首版", "章节", "第一版内容", 1, 1)),
                 LocalDateTime.now());
-        KnowledgeDocument second = writer.saveVersion("sdd", "sdd:writer.md", "新版", "shared",
+        KnowledgeDocument second = writer.saveVersion("knowledge", "knowledge:writer.md", "新版", "shared",
                 null, "hash-2",
                 List.of(new MarkdownKnowledgeChunker.Draft("新版", "章节", "第二版内容", 1, 1)),
                 LocalDateTime.now());
@@ -349,19 +376,19 @@ class KnowledgeRetrievalMySqlIT {
         Path file = directory.resolve("historical-only.md");
         Files.writeString(file, "# 当前能力\n\nR4 已实现。\n", StandardCharsets.UTF_8);
 
-        assertEquals(1, index.reindexSdd().changed());
-        KnowledgeDocument active = documentMapper.findActiveBySourceKey("sdd:historical-only.md");
+        assertEquals(1, index.reindexKnowledge().changed());
+        KnowledgeDocument active = documentMapper.findActiveBySourceKey("knowledge:historical-only.md");
         assertEquals(1L, documentMapper.countActive());
         assertTrue(documentMapper.findSearchableForUser(9L, 100).stream()
                 .anyMatch(row -> row.getContent().contains("R4 已实现")));
 
         Files.writeString(file, "<!-- knowledge:historical -->\n旧口径：R4 未实现。\n"
                 + "<!-- /knowledge:historical -->\n", StandardCharsets.UTF_8);
-        KnowledgeIndexService.IndexStats stats = index.reindexSdd();
+        KnowledgeIndexService.IndexStats stats = index.reindexKnowledge();
 
         assertEquals(1, stats.retired());
         assertEquals(0, stats.changed());
-        assertNull(documentMapper.findActiveBySourceKey("sdd:historical-only.md"));
+        assertNull(documentMapper.findActiveBySourceKey("knowledge:historical-only.md"));
         assertEquals(0L, documentMapper.countActive());
         assertTrue(documentMapper.findSearchableForUser(9L, 100).isEmpty());
         assertEquals("retired", jdbc.queryForObject(
@@ -370,7 +397,7 @@ class KnowledgeRetrievalMySqlIT {
 
         // Reindexing a file that stays historical-only is idempotent and does not retire
         // a second, already-retired row.
-        KnowledgeIndexService.IndexStats repeated = index.reindexSdd();
+        KnowledgeIndexService.IndexStats repeated = index.reindexKnowledge();
         assertEquals(0, repeated.retired());
         assertEquals(1, repeated.skipped());
         assertEquals(0L, documentMapper.countActive());
@@ -395,8 +422,8 @@ class KnowledgeRetrievalMySqlIT {
             Path file = directory.resolve("historical-vector.md");
             String current = "# 当前能力\n\n向量退役补偿内容甲乙丙。\n";
             Files.writeString(file, current, StandardCharsets.UTF_8);
-            assertEquals(1, index.reindexSdd().changed());
-            Long oldId = documentMapper.findActiveBySourceKey("sdd:historical-vector.md")
+            assertEquals(1, index.reindexKnowledge().changed());
+            Long oldId = documentMapper.findActiveBySourceKey("knowledge:historical-vector.md")
                     .getDocumentId();
             assertTrue(realStore.search("向量退役补偿内容甲乙丙", 5, 1L, false).hits().stream()
                     .anyMatch(hit -> hit.chunkId() == chunkIdOf(oldId)));
@@ -404,10 +431,10 @@ class KnowledgeRetrievalMySqlIT {
             Files.writeString(file, "<!-- knowledge:historical -->\n旧口径\n"
                     + "<!-- /knowledge:historical -->\n", StandardCharsets.UTF_8);
             flaky.failNextRemove = true;
-            KnowledgeIndexService.IndexStats stats = index.reindexSdd();
+            KnowledgeIndexService.IndexStats stats = index.reindexKnowledge();
 
             assertEquals(1, stats.retired());
-            assertNull(documentMapper.findActiveBySourceKey("sdd:historical-vector.md"));
+            assertNull(documentMapper.findActiveBySourceKey("knowledge:historical-vector.md"));
             assertEquals("pending", cleanupStatus(oldId));
             assertTrue(realStore.search("向量退役补偿内容甲乙丙", 5, 1L, false).hits().stream()
                     .anyMatch(hit -> hit.chunkId() == chunkIdOf(oldId)),
@@ -447,7 +474,7 @@ class KnowledgeRetrievalMySqlIT {
     private Long insertDocument(String sourceKey, int version, String visibility,
                                 Long ownerUserId, String title) {
         KnowledgeDocument document = new KnowledgeDocument();
-        document.setSourceType(sourceKey.startsWith("sdd:") ? "sdd" : "task_report");
+        document.setSourceType(sourceKey.substring(0, sourceKey.indexOf(':')));
         document.setSourceKey(sourceKey);
         document.setVersion(version);
         document.setTitle(title);

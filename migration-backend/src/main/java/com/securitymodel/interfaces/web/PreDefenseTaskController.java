@@ -34,6 +34,13 @@ public class PreDefenseTaskController {
         return taskCommandService.findRequired(taskId);
     }
 
+    @PostMapping("/parameter-preview")
+    public JsonNode previewParameters(@RequestBody PreDefenseTaskCommand command) {
+        var parameters = taskCommandService.plan(command).finalParameters().deepCopy();
+        parameters.remove("data_path");
+        return parameters;
+    }
+
     @PostMapping
     public ResponseEntity<JsonNode> create(
             @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,

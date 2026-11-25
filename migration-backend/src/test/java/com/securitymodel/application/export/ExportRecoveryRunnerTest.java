@@ -1,5 +1,7 @@
 package com.securitymodel.application.export;
 
+import com.securitymodel.application.task.DispatchRuntimePolicy;
+
 import com.securitymodel.application.audit.OperationAuditService;
 import com.securitymodel.domain.export.CleanSubsetExportTask;
 import com.securitymodel.infrastructure.persistence.mapper.CleanSubsetExportTaskMapper;
@@ -22,7 +24,15 @@ class ExportRecoveryRunnerTest {
 
     private final CleanSubsetExportTaskMapper mapper = mock(CleanSubsetExportTaskMapper.class);
     private final OperationAuditService audit = mock(OperationAuditService.class);
-    private final ExportRecoveryRunner runner = new ExportRecoveryRunner(mapper, audit);
+    private final ExportRecoveryRunner runner = new ExportRecoveryRunner(mapper, audit, new DispatchRuntimePolicy());
+
+    @Test
+    void workerStartupLeavesApiExportsAlone() {
+        new ExportRecoveryRunner(mapper, audit, new DispatchRuntimePolicy("rabbit", "worker"))
+                .recoverOrphanedExports();
+
+        org.mockito.Mockito.verifyNoInteractions(mapper, audit);
+    }
 
     @Test
     void convergesRunningAndPendingExportsToExplicitFailures() {

@@ -25,6 +25,7 @@ public interface CleanSubsetExportTaskMapper extends BaseMapper<CleanSubsetExpor
             SELECT * FROM sys_pre_defense_export
             WHERE task_id = #{taskId} AND isolation_ratio = #{ratio}
             LIMIT 1
+            FOR UPDATE
             """)
     CleanSubsetExportTask findByTaskAndRatio(@Param("taskId") Long taskId,
                                              @Param("ratio") Integer ratio);
@@ -87,9 +88,10 @@ public interface CleanSubsetExportTaskMapper extends BaseMapper<CleanSubsetExpor
             SET status = 'pending', progress = 0, start_time = NULL, end_time = NULL,
                 file_path = NULL, metadata_path = NULL, error_code = NULL,
                 failure_reason = NULL, update_time = NOW()
-            WHERE export_id = #{exportId} AND status = 'failed'
+            WHERE export_id = #{exportId} AND status = #{previousStatus}
+              AND status IN ('failed', 'success')
             """)
-    int resetForRetry(@Param("exportId") Long exportId);
+    int resetForRetry(@Param("exportId") Long exportId, @Param("previousStatus") String previousStatus);
 
     @Update("""
             UPDATE sys_pre_defense_export

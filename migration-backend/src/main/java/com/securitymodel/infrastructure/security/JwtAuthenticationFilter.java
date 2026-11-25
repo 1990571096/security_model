@@ -29,8 +29,8 @@ import java.util.List;
  * Trade-off accepted for a single-machine deployment: one indexed primary-key read per
  * authenticated request, and no revocation list to maintain.</p>
  *
- * <p>Tokens issued before R1 carry no {@code userId}: they still authenticate for shared
- * read-only resources but cannot own or write tasks, and never carry {@code ROLE_ADMIN}.</p>
+ * <p>Tokens issued before R1 carry no {@code userId}: unless the account has been deleted,
+ * they authenticate for shared read-only resources, without task ownership or admin rights.</p>
  */
 @Component
 public class JwtAuthenticationFilter extends OncePerRequestFilter {
@@ -77,7 +77,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         Long userId = userIdClaim(claims);
         String subject = claims.getSubject();
         if (userId == null) {
-            return new AuthenticatedUser(null, subject, false);
+            return userMapper.isDeletedUsername(subject) ? null : new AuthenticatedUser(null, subject, false);
         }
         SysUser user = userMapper.findStateById(userId);
         if (user == null || !Boolean.TRUE.equals(user.getEnabled())) {

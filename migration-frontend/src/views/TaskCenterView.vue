@@ -66,24 +66,24 @@
         <el-form-item label="数据集" prop="datasetId"><el-select v-model="createForm.datasetId" class="full-width" placeholder="请选择数据集" :loading="resourceLoading"><el-option v-for="item in datasets" :key="item.datasetId || item.id" :label="datasetName(item)" :value="item.datasetId || item.id" /></el-select></el-form-item>
         <el-form-item label="算法" prop="algorithmId"><el-select v-model="createForm.algorithmId" class="full-width" placeholder="请选择算法" :loading="resourceLoading"><el-option v-for="item in algorithms" :key="item.algorithmId || item.id" :label="item.algorithmName || item.name || 'LDD'" :value="item.algorithmId || item.id" /></el-select></el-form-item>
         <el-alert v-if="!resourceLoading && !datasets.length" title="没有可用的数据集" type="warning" :closable="false" show-icon />
-        <el-form-item v-if="createForm.algorithmId" label="超参模板">
-          <el-select v-model="createForm.hyperId" class="full-width" :disabled="templateLoading">
-            <el-option label="使用算法默认参数" :value="0" />
-            <el-option v-for="item in templates" :key="item.templateId" :value="item.templateId" :label="item.templateName" />
-          </el-select>
+        <el-form-item v-if="createForm.algorithmId" label="超参数来源">
+          <div class="parameter-source">
+            <span>默认值由算法配置中心维护，本表单只填写本次实验的覆盖参数。</span>
+            <el-button link type="primary" @click="$router.push(`/algorithms/${createForm.algorithmId}`)">查看算法配置</el-button>
+          </div>
         </el-form-item>
         <el-form-item label="自定义参数 JSON">
           <el-input v-model="createForm.customParams" type="textarea" :rows="12"
-                    :disabled="!loadedParameters || parameterLoading || templateLoading || creating"
+                    :disabled="!loadedParameters || parameterLoading || creating"
                     placeholder="选择数据集和算法后加载参数" />
           <el-button v-if="createForm.datasetId && createForm.algorithmId" link type="primary"
-                     :loading="parameterLoading" :disabled="templateLoading || creating" @click="restoreParameters">
+                     :loading="parameterLoading" :disabled="creating" @click="restoreParameters">
             从当前资源重新填充
           </el-button>
         </el-form-item>
         <el-alert v-if="parameterMessage" :title="parameterMessage" type="warning" :closable="false" show-icon />
       </el-form>
-      <template #footer><el-button @click="createVisible = false">取消</el-button><el-button type="primary" :loading="creating" :disabled="!loadedParameters || parameterLoading || templateLoading || Boolean(parameterMessage)" @click="submitCreate">创建任务</el-button></template>
+      <template #footer><el-button @click="createVisible = false">取消</el-button><el-button type="primary" :loading="creating" :disabled="!loadedParameters || parameterLoading || Boolean(parameterMessage)" @click="submitCreate">创建任务</el-button></template>
     </el-drawer>
 
     <el-drawer v-model="detailVisible" title="任务详情与实验报告" size="min(760px, 100vw)" @close="stopDetailPolling">
@@ -125,7 +125,7 @@
                 </el-table>
               </template>
               <el-divider content-position="left">参数快照</el-divider>
-              <el-table :data="snapshotRows" border size="small" empty-text="暂无启动快照"><el-table-column prop="attempt" label="次数" width="65" /><el-table-column prop="runId" label="运行标识" min-width="150" show-overflow-tooltip /><el-table-column prop="snapshotHash" label="快照摘要" min-width="120" show-overflow-tooltip /><el-table-column prop="launchedAt" label="启动时间" min-width="150" /></el-table>
+              <el-table :data="snapshotRows" border size="small" empty-text="暂无启动快照"><el-table-column prop="attempt" label="次数" width="65" /><el-table-column prop="runId" label="运行标识" min-width="150" show-overflow-tooltip /><el-table-column prop="snapshotHash" label="快照摘要" min-width="120" show-overflow-tooltip /><el-table-column label="启动时间" min-width="170"><template #default="{ row }">{{ formatDate(row.launchedAt) }}</template></el-table-column></el-table>
               <el-divider content-position="left">清洗数据集导出</el-divider>
               <div class="download-actions subset-download-actions">
                 <el-button v-for="ratio in exportRatios" :key="ratio" size="small" type="primary" :icon="Download"
@@ -169,10 +169,10 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Download, Plus, Refresh } from '@element-plus/icons-vue'
 import { getAvailableDatasets } from '../api/dataset'
 import { getAvailableAlgorithms } from '../api/algorithm'
-import { getTemplatesByAlgorithm } from '../api/hyper'
 import { createTask, getExecutionLogs, previewTaskParameters, submitCleanedDatasetExport, getCleanedDatasetExport, downloadCleanedDatasetExport, startTask } from '../api/preDefense'
 import { cancelTask, getCleaningReport, getExecutorStatus, getTaskStatistics, getTaskDetail, getTaskPage, retryTask } from '../api/task'
 import { getTaskAudits } from '../api/audit'
+import { formatDateTime as formatDate } from '../utils/time'
 
 const loading = ref(false); const errorMessage = ref(''); const tasks = ref([]); const statistics = ref(null); const executor = ref(null)
 const datasets = ref([]); const algorithms = ref([]); const resourceLoading = ref(false); const statusFilter = ref('')
@@ -188,17 +188,13 @@ let refreshingVersion
 let pendingCreatePayload = ''
 let pendingCreateKey = ''
 let prefillHold = false
-let prefillHyperId = null
 const startKeys = new Map()
 const retryKeys = new Map()
 const commandTasks = new Set()
-const createForm = reactive({ taskName: '', description: '', datasetId: null, algorithmId: null, hyperId: 0, customParams: '' })
-const templates = ref([])
-const templateLoading = ref(false)
+const createForm = reactive({ taskName: '', description: '', datasetId: null, algorithmId: null, customParams: '' })
 const parameterLoading = ref(false)
 const loadedParameters = ref('')
 const parameterMessage = ref('')
-let templateRequest = 0
 let parameterRequest = 0
 const createRules = { taskName: [{ required: true, message: '请输入任务名称', trigger: 'blur' }], datasetId: [{ required: true, message: '请选择数据集', trigger: 'change' }], algorithmId: [{ required: true, message: '请选择防御算法', trigger: 'change' }] }
 const statusOptions = [{ label: '等待中', value: 'pending' }, { label: '运行中', value: 'running' }, { label: '成功', value: 'success' }, { label: '失败', value: 'failed' }, { label: '已取消', value: 'canceled' }]
@@ -230,7 +226,7 @@ const detailHeartbeatStale = computed(() => {
   const timestamp = new Date(value).getTime()
   return Number.isFinite(timestamp) && Date.now() - timestamp > 60000
 })
-function unwrap(data) { return data?.data ?? data ?? {} }; function arrayData(response) { const data = unwrap(response); return Array.isArray(data) ? data : data.records || data.content || [] }; function safeProgress(value) { const progress = Number(value); return Number.isFinite(progress) ? Math.max(0, Math.min(100, progress)) : 0 }; function formatProgress(value) { return `${value}%` }; function statusLabel(status) { return statusOptions.find(item => item.value === status)?.label || status || '未知' }; function statusType(status) { return { pending: 'info', running: '', success: 'success', failed: 'danger', canceled: 'warning' }[status] || 'info' }; function formatDate(value) { return value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '-' }; function datasetName(item) { return item.datasetName || item.name || `数据集 #${item.datasetId || item.id}` }; function auditActionLabel(action) { return { CREATE: '创建任务', UPDATE: '编辑任务', START: '启动任务', RETRY: '重试任务', CANCEL: '取消任务', DELETE: '删除任务', EXPORT_SUBMIT: '提交子集导出', EXPORT_RETRY: '重试子集导出' }[action] || action || '-' }
+function unwrap(data) { return data?.data ?? data ?? {} }; function arrayData(response) { const data = unwrap(response); return Array.isArray(data) ? data : data.records || data.content || [] }; function safeProgress(value) { const progress = Number(value); return Number.isFinite(progress) ? Math.max(0, Math.min(100, progress)) : 0 }; function formatProgress(value) { return `${value}%` }; function statusLabel(status) { return statusOptions.find(item => item.value === status)?.label || status || '未知' }; function statusType(status) { return { pending: 'info', running: '', success: 'success', failed: 'danger', canceled: 'warning' }[status] || 'info' }; function datasetName(item) { return item.datasetName || item.name || `数据集 #${item.datasetId || item.id}` }; function auditActionLabel(action) { return { CREATE: '创建任务', UPDATE: '编辑任务', START: '启动任务', RETRY: '重试任务', CANCEL: '取消任务', DELETE: '删除任务', EXPORT_SUBMIT: '提交子集导出', EXPORT_RETRY: '重试子集导出' }[action] || action || '-' }
 let listRequest = 0
 watch([statusFilter, pageSize], () => { currentPage.value = 1 }, { flush: 'sync' })
 watch([statusFilter, currentPage, pageSize], loadData)
@@ -280,25 +276,12 @@ async function openCreateFromPrefill(taskId) {
   await openCreate()
   try {
     const detail = unwrap(await getTaskDetail(taskId))
-    prefillHyperId = Number(pack.draft.hyperId ?? detail.hyperId ?? 0) || 0
     loadedParameters.value = ''
     createForm.customParams = ''
     createForm.taskName = `${detail.taskName || '实验任务'} · 对照轮次`
     createForm.description = '由实验助手生成的下一轮参数草案；提交前请核对条件。'
     createForm.datasetId = pack.draft.datasetId ?? detail.datasetId
     createForm.algorithmId = pack.draft.algorithmId ?? detail.algorithmId
-    createForm.hyperId = prefillHyperId
-    for (let i = 0; i < 30; i += 1) {
-      await new Promise(resolve => window.setTimeout(resolve, 160))
-      if (!templateLoading.value && createForm.hyperId === prefillHyperId) break
-    }
-    if (prefillHyperId && !templates.value.some(item => Number(item.templateId) === prefillHyperId)) {
-      ElMessage.warning('基线超参模板当前不可用，已保留草案完整参数，但无法证明表单模板一致')
-    }
-    for (let i = 0; i < 12; i += 1) {
-      if (!templateLoading.value) break
-      await new Promise(resolve => window.setTimeout(resolve, 160))
-    }
     createForm.customParams = JSON.stringify(pack.draft.proposedParams, null, 2)
     loadedParameters.value = createForm.customParams
     parameterMessage.value = ''
@@ -310,31 +293,13 @@ async function openCreateFromPrefill(taskId) {
     ElMessage.error(error.response?.data?.message || '助手草案回填失败')
   } finally {
     sessionStorage.removeItem('ea-draft-prefill')
-    window.setTimeout(() => { prefillHold = false; prefillHyperId = null }, 1500)
+    window.setTimeout(() => { prefillHold = false }, 1500)
   }
 }
 
-watch(() => createForm.algorithmId, async (algorithmId) => {
-  const request = ++templateRequest
-  templateLoading.value = true
-  templates.value = []
-  createForm.hyperId = 0
-  try {
-    const options = algorithmId ? arrayData(await getTemplatesByAlgorithm(algorithmId)) : []
-    if (request !== templateRequest) return
-    templates.value = options
-    createForm.hyperId = prefillHold && prefillHyperId
-      ? prefillHyperId
-      : options.find(item => item.isDefault)?.templateId ?? 0
-  } catch {
-    if (request === templateRequest) ElMessage.error('超参模板读取失败')
-  } finally {
-    if (request === templateRequest) templateLoading.value = false
-  }
-})
-
-watch([() => createForm.datasetId, () => createForm.algorithmId, () => createForm.hyperId, templateLoading], () => {
-  if (createForm.customParams !== loadedParameters.value) {
+watch([() => createForm.datasetId, () => createForm.algorithmId], () => {
+  if (prefillHold) return
+  if (createForm.customParams && createForm.customParams !== loadedParameters.value) {
     parameterMessage.value = '资源已变更。请重新填充，再修改当前资源的参数。'
     return
   }
@@ -342,18 +307,16 @@ watch([() => createForm.datasetId, () => createForm.algorithmId, () => createFor
 })
 
 async function loadParameters() {
-  if (prefillHold) return
   const request = ++parameterRequest
   parameterLoading.value = false
   parameterMessage.value = ''
-  if (!createForm.algorithmId || !createForm.datasetId || templateLoading.value) return
+  if (!createForm.algorithmId || !createForm.datasetId) return
   parameterLoading.value = true
   try {
     const { data } = await previewTaskParameters({
       taskName: '参数预览',
       datasetId: createForm.datasetId,
-      algorithmId: createForm.algorithmId,
-      hyperId: createForm.hyperId || null
+      algorithmId: createForm.algorithmId
     })
     if (request !== parameterRequest) return
     loadedParameters.value = JSON.stringify(data, null, 2)
@@ -377,7 +340,7 @@ async function restoreParameters() {
 }
 
 async function submitCreate() {
-  if (creating.value || parameterMessage.value || !loadedParameters.value || parameterLoading.value || templateLoading.value) return
+  if (creating.value || parameterMessage.value || !loadedParameters.value || parameterLoading.value) return
   creating.value = true
   try {
     if (!await createFormRef.value?.validate().catch(() => false)) return
@@ -390,7 +353,7 @@ async function submitCreate() {
       ElMessage.error('自定义参数必须是 JSON 对象')
       return
     }
-    const payload = { ...createForm, hyperId: createForm.hyperId || null, customParams }
+    const payload = { ...createForm, hyperId: null, customParams }
     const serialized = JSON.stringify(payload)
     if (!pendingCreateKey || pendingCreatePayload !== serialized) {
       pendingCreateKey = idempotencyKey()
@@ -400,7 +363,7 @@ async function submitCreate() {
     pendingCreateKey = ''
     ElMessage.success('任务已创建，等待确认启动')
     createVisible.value = false
-    Object.assign(createForm, { taskName: '', description: '', datasetId: null, algorithmId: null, hyperId: 0, customParams: '' })
+    Object.assign(createForm, { taskName: '', description: '', datasetId: null, algorithmId: null, customParams: '' })
     loadedParameters.value = ''
     const alreadyOnFirstPage = !statusFilter.value && currentPage.value === 1
     statusFilter.value = ''
@@ -688,5 +651,23 @@ watch(() => route.query.prefillTaskId, prefillTaskId => {
   margin-top: 8px;
   color: var(--el-color-warning);
   font-size: 12px;
+}
+
+.parameter-source {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--el-border-color-light);
+  border-radius: 4px;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.parameter-source .el-button {
+  flex: 0 0 auto;
 }
 </style>

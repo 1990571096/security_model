@@ -37,6 +37,28 @@ class PythonLddTaskExecutorProcessTest {
     private final GpuLeaseService leaseService = mock(GpuLeaseService.class);
 
     @Test
+    void configurationRequiresReadableScriptMatchingWorkspaceAndExplicitInterpreter(@TempDir Path workspace)
+            throws IOException {
+        Path script = Files.writeString(workspace.resolve("stub.py"), "");
+        assertTrue(configured(workspace, workspace.toString(), "python", "stub.py"));
+        assertFalse(configured(workspace, "", "python", script.toString()));
+        assertFalse(configured(workspace, workspace.resolve("other").toString(), "python", script.toString()));
+        assertFalse(configured(workspace, workspace.toString(), "python", "missing.py"));
+        assertFalse(configured(workspace, workspace.toString(),
+                workspace.resolve("missing-interpreter").toString(), script.toString()));
+    }
+
+    private boolean configured(Path workspace, String registryWorkspace, String interpreter, String script) {
+        var fingerprint = new ExecutionFingerprintService(objectMapper, workspace.toString(),
+                interpreter, script, false, 1024);
+        return new PythonLddTaskExecutor(taskMapper, objectMapper, fingerprint, leaseService,
+                new ExecutorArtifactPolicy(objectMapper, 0),
+                new AttemptProcessRegistry(objectMapper, registryWorkspace),
+                new ExecutorProcessGuard(objectMapper), mock(TaskRuntimeMetrics.class),
+                interpreter, script, 1).isConfigured();
+    }
+
+    @Test
     void timeoutKillsTheWholeShortProcessTreeAndReleasesOnlyAfterExit(@TempDir Path workspace) throws Exception {
         assumeTrue(pythonAvailable(), "python is not available on this host");
         PythonLddTaskExecutor executor = executor(workspace, 1);

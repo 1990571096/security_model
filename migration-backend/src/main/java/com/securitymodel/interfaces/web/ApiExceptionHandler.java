@@ -23,6 +23,12 @@ public class ApiExceptionHandler {
 
     private static final Logger log = LoggerFactory.getLogger(ApiExceptionHandler.class);
 
+    @ExceptionHandler(com.securitymodel.application.export.CleanSubsetExportService.ExportFileUnavailableException.class)
+    public ResponseEntity<Map<String, Object>> exportFileUnavailable(RuntimeException exception) {
+        return ResponseEntity.status(HttpStatus.GONE).body(Map.of(
+                "code", "EXPORT_FILE_UNAVAILABLE", "message", exception.getMessage()));
+    }
+
     @ExceptionHandler(ResourceNotFoundException.class)
     public ResponseEntity<Map<String, Object>> handleNotFound(ResourceNotFoundException exception) {
         return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of("code", "RESOURCE_NOT_FOUND",

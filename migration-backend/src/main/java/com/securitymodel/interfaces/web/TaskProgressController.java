@@ -3,6 +3,7 @@ package com.securitymodel.interfaces.web;
 import com.securitymodel.application.task.TaskProgressQueryService;
 import com.securitymodel.application.task.TaskProgressView;
 import com.securitymodel.application.task.TaskExecutionQuotaPolicy;
+import com.securitymodel.infrastructure.observability.HostRuntimeMetricsService;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.http.ResponseEntity;
@@ -21,18 +22,21 @@ public class TaskProgressController {
     private final TaskExecutionQuotaPolicy quotaPolicy;
     private final com.securitymodel.application.task.GpuLeaseService gpuLeaseService;
     private final com.securitymodel.application.task.GpuLeaseBlockedProbe blockedProbe;
+    private final HostRuntimeMetricsService hostMetrics;
 
     public TaskProgressController(
             TaskProgressQueryService taskProgressQueryService,
             @Qualifier("taskAsync") ThreadPoolTaskExecutor taskExecutor,
             TaskExecutionQuotaPolicy quotaPolicy,
             com.securitymodel.application.task.GpuLeaseService gpuLeaseService,
-            com.securitymodel.application.task.GpuLeaseBlockedProbe blockedProbe) {
+            com.securitymodel.application.task.GpuLeaseBlockedProbe blockedProbe,
+            HostRuntimeMetricsService hostMetrics) {
         this.taskProgressQueryService = taskProgressQueryService;
         this.taskExecutor = taskExecutor;
         this.quotaPolicy = quotaPolicy;
         this.gpuLeaseService = gpuLeaseService;
         this.blockedProbe = blockedProbe;
+        this.hostMetrics = hostMetrics;
     }
 
     @GetMapping
@@ -97,6 +101,7 @@ public class TaskProgressController {
         status.put("runningTaskCount", taskStats.getOrDefault("runningCount", 0));
         status.put("maxRunningTasks", quotaPolicy.status().get("maxRunningTasks"));
         status.put("gpuSlot", gpuSlotStatus());
+        status.put("host", hostMetrics.snapshot());
         return status;
     }
 

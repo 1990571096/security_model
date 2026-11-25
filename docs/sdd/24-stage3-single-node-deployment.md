@@ -1,5 +1,10 @@
 # 阶段 3：单机部署复现、生命周期演练与收尾整改
 
+本地 `db` 模式启动 API，`rabbit` 模式可用 `-Role all` 启动 API 和 Worker。启动时检查 readiness，停止时使用与启动一致的 `StateRoot`，核对端口和遗留任务状态。[启动脚本](../../scripts/dev/Start-SecurityModelStack.ps1) · [运行步骤](../../README.md)
+
+## 历史记录
+
+<!-- knowledge:historical -->
 > **当前交付事实唯一入口**：[26-current-delivery-facts.md](26-current-delivery-facts.md)。
 > 本文记录 2026-11-18 单机部署演练；§4.6/§4.7 的 343/350 单测数字是当时快照，
 > 当前测试口径以 26 §4 为准。本文不能证明生产级多机部署。
@@ -419,3 +424,4 @@ Authorization: 'Bearer ' + token -> 401
 - 所有收尾演练进程已停止，18200/18201/18220 无 `LISTEN`。
 
 这证明的是**单机部署生命周期与故障恢复**，不是真实模型、真实 LDD 或生产高可用验收。
+<!-- /knowledge:historical -->

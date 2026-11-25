@@ -1,5 +1,10 @@
 # 框架迁移准备清单
 
+日常开发使用 Java 17 / Spring Boot 3 和 Vue 3 / Vite 工程。从根 README 选用当前构建与初始化步骤，迁移准备记录见下文。[构建与运行](../../README.md)
+
+## 历史记录
+
+<!-- knowledge:historical -->
 更新时间：2026-10-26
 
 > 本文是迁移就绪历史记录；当前测试计数、R4/单机部署状态和正式 5 epochs 边界以
@@ -104,3 +109,4 @@ Java 侧负责参数合并、资源校验、配额准入和快照，Python 侧�
 - 清洗子集导出仍按索引重建并支持失败重试。
 - 新前端可独立使用新后端完成答辩演示流程；旧工程保留为回退基线。
 - `application.yml` 与 `application-local.yml` 可由 Spring Boot YAML 加载器解析；该检查验证配置语法，不代表已连接数据库或验证外部环境变量。
+<!-- /knowledge:historical -->

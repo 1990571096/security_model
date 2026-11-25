@@ -1,42 +1,43 @@
-# SDD 文档索引
+# SDD 索引
 
-本文档集用于驱动“面向数据清洗的安全模型训练系统”的重构迭代。**当前交付状态、测试数字和验收边界的唯一权威入口是 [26-current-delivery-facts.md](26-current-delivery-facts.md)**；README、部署说明和面试材料不得高于代码、配置和测试可证明的范围。后续新增算法、裁剪模块、调整接口或数据库结构时，先更新对应 SDD，再实施代码改动。
+当前源码核对基线为 `a674a04`。首次学习请先走 [六课实操](../learning/README.md)。本目录供查设计决策、运行依据和历史验收。
 
-## 文档清单
+## 当前契约
 
-- [01-system-scope.md](01-system-scope.md)：系统目标、用户角色、核心闭环、非目标范围。
-- [02-current-state.md](02-current-state.md)：现有项目结构、可复用模块、待裁剪模块、主要技术债。
-- [03-target-architecture.md](03-target-architecture.md)：目标架构、领域模型、算法执行边界、任务生命周期。
-- [04-refactor-backlog.md](04-refactor-backlog.md)：按优先级拆分的重构任务和验收标准。
-- [05-decisions.md](05-decisions.md)：重要设计决策记录。
-- [06-mvp-runbook.md](06-mvp-runbook.md)：MVP 数据库、后端、前端和任务闭环联调步骤。
-- [07-executor-contract.md](07-executor-contract.md)：算法执行器输入、输出和 Python 进程接入契约。
-- [08-local-runtime-notes.md](08-local-runtime-notes.md)：本地 MySQL、Redis、前后端运行环境记录。
-- [09-project-status.md](09-project-status.md)：历史状态汇编（各阶段测试数字、故障和结论按当时状态保留）；当前事实引用 26。
-- [10-vab-integration.md](10-vab-integration.md)：LDD 训练前防御算法的 VaB 适配、参数和产物约定。
-- [11-platform-implementation.md](11-platform-implementation.md)：当前平台实现、业务流程、LDD 执行链路和扩展思路。
-- [12-resume-project-narrative.md](12-resume-project-narrative.md)：简历项目描述与面试讲解提纲（历史版本，当前口径引用 26 与学习入口）。
-- [13-framework-migration-readiness.md](13-framework-migration-readiness.md)：Spring Boot 3、Java 17、Vue 3 迁移验收记录。
-- [14-framework-migration-plan.md](14-framework-migration-plan.md)：框架迁移实施路线、兼容策略和阶段验收标准。
-- [16-engineering-improvement-roadmap.md](16-engineering-improvement-roadmap.md)：迁移后质量门禁、可靠任务执行、Redis/MQ 引入条件和迭代验收项。
-- [17-agent-development-guide.md](17-agent-development-guide.md)：后续逐轮开发 Agent 的任务范围、依赖门槛、验收条件和交接模板（规划文档，非实现状态）。
-- [18-multiuser-ownership-and-resources.md](18-multiuser-ownership-and-resources.md)：数据归属矩阵、共享资源权限方案、历史无 owner 迁移、GPU 并发与租约实现（R0 设计契约 + R1/R2 历史实现记录）。
-- [19-local-data-layout-and-retention.md](19-local-data-layout-and-retention.md)：受控本地目录布局与文件保留策略草案（R0 草案）。
-- [20-stage-execution-and-acceptance.md](20-stage-execution-and-acceptance.md)：逐阶段执行任务书，明确默认决策、实施顺序、故障用例、验收指标和交接证据；与 17 号总纲配套使用；§6.8 为 R3/R6/R7 逐 ID 实现/部署验收表。
-- [21-r4-outbox-rabbitmq-design.md](21-r4-outbox-rabbitmq-design.md)：R4 单机 API + 独立 Worker + Transactional Outbox + RabbitMQ 契约（实现验收通过（隔离）；单机部署演练通过；生产多机未验收；默认关闭）。
-- [22-database-boundary-and-convergence-plan.md](22-database-boundary-and-convergence-plan.md)：生产库迁移含义、`security_model` 新库初始化、旧 `eladmin` 归档、阶段 3 监控与干净库启动（当前为历史计划，隔离库已初始化，生产库仍未迁移）。
-- [23-r7-scenario-integration-closeout.md](23-r7-scenario-integration-closeout.md)：R7 助手参数策略、模型证据投影、隔离后端 + 真实前端 + 脚本化假模型的浏览器联调证据与未执行边界。
-- [24-stage3-single-node-deployment.md](24-stage3-single-node-deployment.md)：阶段 3 单机部署复现与收尾整改：固定依赖版本、干净部署库初始化、db / Rabbit 启停与 broker 故障恢复、liveness/readiness 分离、数据库备份恢复、前端生产静态托管、CI 针对性脚本与托管测试（含历史测试数字）。
-- [25-ldd-real-acceptance-checklist.md](25-ldd-real-acceptance-checklist.md)：真实 LDD 验收准备、1 epoch 与正式 5 epochs 工程验收证据；顶部准备阶段“未启动”是历史快照。
-- [26-current-delivery-facts.md](26-current-delivery-facts.md)：**当前交付事实唯一入口**：交付口径、当前代码事实、正式 5 epochs 证据、本轮测试结果、R4/部署结论和不可宣称事项。
-- [../learning/README.md](../learning/README.md)：从系统架构到源码、测试和运行命令的学习路线。
-- [../project-introduction-and-interview-guide.md](../project-introduction-and-interview-guide.md)：完整项目介绍、业务流程、当前进度和面试讲解稿。
-- [../resume-project-entry.md](../resume-project-entry.md)：简历项目简介和 4-5 条核心项目要点。
+| 我需要确认 | 当前入口 |
+| --- | --- |
+| 系统边界、业务对象、技术栈 | [设计思路](../project-design-overview.md) |
+| 任务状态、文件协议、恢复及导出 | [实现指南](../project-implementation-guide.md) |
+| 运行参数、脚本与本地演示 | [仓库运行说明](../../README.md) |
+| 交付结论和对应测试记录 | [交付事实](26-current-delivery-facts.md) |
+| 知识与助手的运行方式 | [Agent / RAG 实操](../agent-rag-demo.md) |
+| 实验助手技术扩展与验收 | [实验助手开发与验收方案](28-experiment-assistant-development-plan.md)、[实现与实测记录](29-experiment-assistant-acceptance.md) |
 
-## 迭代原则
+## 知识索引可用摘要
 
-1. 先稳定领域边界，再做大规模删除。
-2. 安全训练主链路优先于后台管理通用功能。
-3. 算法以插件/执行器方式接入，平台只负责编排、参数、数据和结果管理。
-4. 训练前防御是第一优先级，训练中防御预留统一任务接口，训练后防御作为扩展项保留但不作为当前主线。
-5. 每次代码重构必须能对应到 SDD 中的目标、模块或任务。
+**系统范围**。平台支持训练前 LDD 的真实任务执行。任务资源包含数据集、算法与可选超参模板。训练中、训练后页面为展示。数据集启用且解析为 `success` 后才可选用。
+
+**任务与文件协议**。`POST /api/pre-defense` 插入 `pending`，`POST /api/pre-defense/start/{taskId}` 领取运行并写入运行 ID、轮次、快照和意图。Java 将执行请求写为 UTF-8 `request.json`，以 `--request` 传文件路径。Python 适配器读取请求并写 `progress.json` 和 `result.json`。Java 读回文件后用当前运行 ID 和 `running` 条件写入任务。用户按任务 ID 查询报告与日志。清洗 ZIP 需实际产物包含相应比例的筛选索引与可用的 CIFAR-10 数据。
+
+**调度与恢复**。默认 `db` 模式用事务提交后的本机派发。可选 `rabbit` 模式从事务内 Outbox 到 Relay、RabbitMQ 和独立 Worker。Worker 领取单槽 GPU 租约，执行并按消息与业务结果完成消费确认。持久意图支持补派发；已开始或状态不明的运行要先确认进程退出，再决定如何恢复或隔离槽位。
+
+**数据权限与助手**。任务读写由稳定用户身份与归属判定，管理员按业务规则可以跨用户读取。知识检索按权限获取候选并返回章节/行号引用，词法匹配可由 Redis 中的哈希向量辅助重排。助手提供参数校验、任务预检和结果解释。任务写操作由预览与一次性确认触发，确认时仍执行当前业务规则。
+
+## 历史索引
+
+| 编号 | 保留的资料 | 当前学习入口 |
+| --- | --- | --- |
+| [01](01-system-scope.md)、[02](02-current-state.md)、[03](03-target-architecture.md) | 范围、旧架构分析、目标架构演进 | [设计思路](../project-design-overview.md) |
+| [04](04-refactor-backlog.md)、[05](05-decisions.md) | 早期待办与设计决策 | [可靠性课程](../learning/03-reliability.md) |
+| [06](06-mvp-runbook.md)、[08](08-local-runtime-notes.md) | MVP 运行记录、本机历史环境 | [运行说明](../../README.md) |
+| [07](07-executor-contract.md)、[10](10-vab-integration.md)、[11](11-platform-implementation.md) | 执行器契约、VaB 接入与实现演进 | [实现指南](../project-implementation-guide.md) |
+| [09](09-project-status.md)、[16](16-engineering-improvement-roadmap.md)、[20](20-stage-execution-and-acceptance.md) | 阶段状态、路线图与阶段验收 | [交付事实](26-current-delivery-facts.md) |
+| [12](12-resume-project-narrative.md) | 早期简历与面试叙述 | [简历](../resume-project-entry.md) |
+| [13](13-framework-migration-readiness.md)、[14](14-framework-migration-plan.md)、[15](15-demo-display-upgrade.md) | 框架迁移与展示升级阶段 | [设计思路](../project-design-overview.md) |
+| [17](17-agent-development-guide.md)、[23](23-r7-scenario-integration-closeout.md) | R0 至 R7 开发与助手验收 | [助手实操](../agent-rag-demo.md) |
+| [18](18-multiuser-ownership-and-resources.md)、[19](19-local-data-layout-and-retention.md) | 权限、单机 GPU、产物保留演进 | [实现指南](../project-implementation-guide.md) |
+| [21](21-r4-outbox-rabbitmq-design.md) | R4 派发契约与历史验收 | [可选组件课程](../learning/05-extensions-and-tests.md) |
+| [22](22-database-boundary-and-convergence-plan.md)、[24](24-stage3-single-node-deployment.md) | 数据库边界与部署演练 | [运行说明](../../README.md) |
+| [25](25-ldd-real-acceptance-checklist.md) | 真实算法验收准备、步骤与结果 | [交付事实](26-current-delivery-facts.md) |
+
+历史页保持原文件名和证据。`KnowledgeIndexService.reindexSdd` 先剔除历史块，再索引当前正文。更新当前事实时优先修改上表对应的主文档，若涉及知识问答，再同步本页或对应 SDD 摘要。

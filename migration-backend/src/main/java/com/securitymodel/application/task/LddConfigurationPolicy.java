@@ -45,8 +45,16 @@ public class LddConfigurationPolicy {
 
     /** Returns the exact normalized configuration that must be persisted and dispatched. */
     public ObjectNode normalizeAndValidate(String algorithmDefaults, String hyperConfig, String customParams) {
+        return normalizeAndValidate(algorithmDefaults, hyperConfig, customParams, null);
+    }
+
+    public ObjectNode normalizeAndValidate(String algorithmDefaults, String hyperConfig, String customParams,
+                                           String selectedDataset) {
         ObjectNode merged = parseObject(algorithmDefaults, "算法默认配置");
         merged.setAll(parseObject(hyperConfig, "超参数模板配置"));
+        if (selectedDataset != null) {
+            merged.put("dataset", selectedDataset);
+        }
         ObjectNode custom = parseObject(customParams, "自定义参数");
         if (custom.has("epochs") && !custom.has("num_epochs")) {
             custom.set("num_epochs", custom.get("epochs"));
@@ -61,6 +69,10 @@ public class LddConfigurationPolicy {
         }
 
         requireOneOf(merged, "dataset", SUPPORTED_DATASETS);
+        if (selectedDataset != null && !selectedDataset.equals(merged.path("dataset").asText())) {
+            throw new TaskCommandException("DATASET_PARAMETER_MISMATCH",
+                    "LDD 参数 dataset 必须与所选数据集一致：" + selectedDataset);
+        }
         requireOneOf(merged, "trigger_type", SUPPORTED_TRIGGER_TYPES);
         requireNumber(merged, "trigger_label", 0, 99, true);
         requireOneOf(merged, "poisoned_mode", "all2one", "all2all");

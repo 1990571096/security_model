@@ -4,8 +4,8 @@ import com.securitymodel.application.audit.CurrentUserService;
 import com.securitymodel.application.knowledge.KnowledgeIndexService;
 import com.securitymodel.application.knowledge.KnowledgeQueryResponse;
 import com.securitymodel.application.knowledge.KnowledgeQueryService;
+import com.securitymodel.application.knowledge.KnowledgeRetrievalService;
 import com.securitymodel.domain.knowledge.KnowledgeDocument;
-import com.securitymodel.infrastructure.persistence.mapper.KnowledgeDocumentMapper;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
@@ -20,16 +20,16 @@ public class KnowledgeController {
 
     private final KnowledgeQueryService queryService;
     private final KnowledgeIndexService indexService;
-    private final KnowledgeDocumentMapper documentMapper;
+    private final KnowledgeRetrievalService retrievalService;
     private final CurrentUserService currentUserService;
 
     public KnowledgeController(KnowledgeQueryService queryService,
                                KnowledgeIndexService indexService,
-                               KnowledgeDocumentMapper documentMapper,
+                               KnowledgeRetrievalService retrievalService,
                                CurrentUserService currentUserService) {
         this.queryService = queryService;
         this.indexService = indexService;
-        this.documentMapper = documentMapper;
+        this.retrievalService = retrievalService;
         this.currentUserService = currentUserService;
     }
 
@@ -40,14 +40,19 @@ public class KnowledgeController {
 
     @GetMapping("/status")
     public Map<String, Object> status() {
-        currentUserService.requireStableIdentity();
-        return Map.of("activeDocuments", documentMapper.countActive());
+        return Map.of("activeDocuments", retrievalService.countVisibleDocuments());
+    }
+
+    @GetMapping("/documents")
+    public KnowledgeRetrievalService.DocumentPage documents(@RequestParam(defaultValue = "1") int page,
+                                                             @RequestParam(defaultValue = "10") int size) {
+        return retrievalService.listDocuments(page, size);
     }
 
     @PostMapping("/reindex")
     public KnowledgeIndexService.IndexStats reindex() {
         currentUserService.requireAdmin();
-        return indexService.reindexSdd();
+        return indexService.reindexKnowledge();
     }
 
     @PostMapping("/algorithms/reindex")

@@ -8,15 +8,19 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 
 import java.util.Map;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -41,6 +45,9 @@ class OwnershipEndToEndCrossReadIT {
     @Autowired
     private ObjectMapper objectMapper;
 
+    @Autowired
+    private JdbcTemplate jdbc;
+
     @DynamicPropertySource
     static void properties(DynamicPropertyRegistry registry) {
         registry.add("spring.datasource.url", OwnershipE2ESupport::schemaUrl);
@@ -48,6 +55,77 @@ class OwnershipEndToEndCrossReadIT {
         registry.add("spring.datasource.password", () -> OwnershipE2ESupport.PASSWORD);
         registry.add("security-model.auth.jwt-secret", () -> JWT_SECRET);
         registry.add("security-model.ownership.admin-cross-user-read", () -> "true");
+    }
+
+    @Test
+    void accountInfoReturnsTheAuthenticatedUsernameAndCurrentRole() throws Exception {
+        mockMvc.perform(get("/auth/info").header("Authorization", login("admin")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.username").value("admin"))
+                .andExpect(jsonPath("$.admin").value(true));
+        mockMvc.perform(get("/auth/info").header("Authorization", login("bob")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.username").value("bob"))
+                .andExpect(jsonPath("$.admin").value(false));
+    }
+
+    @Test
+    void onlyAdminCanDeleteExperimenterAndHistoricalTaskRemainsReadable() throws Exception {
+        String admin = login("admin");
+        String accounts = "/api/admin/accounts";
+        String username = "account_deletion_it";
+        String password = "test-delete-password";
+        String credentials = objectMapper.writeValueAsString(Map.of("username", username, "password", password));
+        String accountInput = objectMapper.writeValueAsString(
+                Map.of("username", username, "password", password, "nickName", "Deletion test"));
+        String created = mockMvc.perform(post(accounts).header("Authorization", admin)
+                        .contentType(MediaType.APPLICATION_JSON).content(accountInput))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString();
+        long userId = objectMapper.readTree(created).path("userId").asLong();
+        String account = accounts + "/" + userId;
+        String session = loginWithCredentials(credentials);
+        long taskId = 90801L;
+        String task = "/api/pre-defense/" + taskId;
+        jdbc.update("""
+                INSERT INTO sys_pre_defense (task_id, task_name, status, dataset_id, algorithm_id, progress,
+                                             create_by, owner_user_id, data_origin)
+                VALUES (?, 'Deletion history', 'success', 1, 1, 100, ?, ?, 'platform')
+                """, taskId, username, userId);
+        try {
+            mockMvc.perform(get(task).header("Authorization", session)).andExpect(status().isOk());
+            mockMvc.perform(delete(account).header("Authorization", session)).andExpect(status().isForbidden());
+            mockMvc.perform(delete(accounts + "/1").header("Authorization", admin)).andExpect(status().isBadRequest());
+            mockMvc.perform(delete(account).header("Authorization", admin)).andExpect(status().isNoContent());
+
+            mockMvc.perform(get(task).header("Authorization", session)).andExpect(status().isUnauthorized());
+            mockMvc.perform(post("/auth/login").contentType(MediaType.APPLICATION_JSON).content(credentials))
+                    .andExpect(status().isBadRequest());
+            mockMvc.perform(get(accounts).header("Authorization", admin))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$[?(@.username == '" + username + "')]").isEmpty());
+            mockMvc.perform(put(account + "/enabled").header("Authorization", admin)
+                            .contentType(MediaType.APPLICATION_JSON).content("{\"enabled\":true}"))
+                    .andExpect(status().isNotFound());
+            mockMvc.perform(delete(account).header("Authorization", admin)).andExpect(status().isNotFound());
+            mockMvc.perform(post(accounts).header("Authorization", admin)
+                            .contentType(MediaType.APPLICATION_JSON).content(accountInput))
+                    .andExpect(status().isConflict());
+            mockMvc.perform(get(task).header("Authorization", admin))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.status").value("success"));
+            assertEquals(1, jdbc.queryForObject("""
+                    SELECT COUNT(*) FROM sys_user
+                    WHERE user_id = ? AND enabled = b'0' AND deleted_at IS NOT NULL AND password IS NULL
+                    """, Integer.class, userId));
+            assertEquals(1, jdbc.queryForObject("""
+                    SELECT COUNT(*) FROM security_operation_audit
+                    WHERE resource_type = 'user_account' AND resource_id = ? AND action = 'DELETE'
+                      AND operator = 'admin' AND after_status = 'deleted'
+                    """, Integer.class, userId));
+        } finally {
+            jdbc.update("DELETE FROM sys_pre_defense WHERE task_id = ?", taskId);
+        }
     }
 
     @Test
@@ -114,18 +192,11 @@ class OwnershipEndToEndCrossReadIT {
     }
 
     private String login(String username) throws Exception {
-        String codeResponse = mockMvc.perform(get("/auth/code"))
-                .andExpect(status().isOk())
-                .andReturn().getResponse().getContentAsString();
-        String uuid = objectMapper.readTree(codeResponse).path("uuid").asText();
-        String image = objectMapper.readTree(codeResponse).path("img").asText();
-        String svg = new String(java.util.Base64.getDecoder().decode(image.split(",")[1]));
-        var captcha = java.util.regex.Pattern.compile("<text[^>]*>(\\d{4})</text>").matcher(svg);
-        assertTrue(captcha.find(), "captcha svg must contain a 4 digit code");
+        return loginWithCredentials(objectMapper.writeValueAsString(Map.of(
+                "username", username, "password", OwnershipE2ESupport.RAW_PASSWORD)));
+    }
 
-        String body = objectMapper.writeValueAsString(Map.of(
-                "uuid", uuid, "code", captcha.group(1), "username", username,
-                "password", OwnershipE2ESupport.RAW_PASSWORD));
+    private String loginWithCredentials(String body) throws Exception {
         String response = mockMvc.perform(post("/auth/login")
                         .contentType(MediaType.APPLICATION_JSON).content(body))
                 .andExpect(status().isOk())

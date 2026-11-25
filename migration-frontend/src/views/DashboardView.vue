@@ -73,11 +73,12 @@
       </el-card>
       <el-card shadow="never">
         <template #header><div class="card-heading"><strong>执行池状态</strong><el-tag type="info">实时</el-tag></div></template>
-        <div class="activity-list">
-          <div v-for="item in executorRows" :key="item.label" class="activity-item">
-            <span class="activity-time">{{ item.label }}</span><div><strong>{{ item.value }}</strong><p>{{ item.note }}</p></div>
+        <dl class="executor-status-list">
+          <div v-for="item in executorRows" :key="item.label" class="executor-status-row">
+            <dt>{{ item.label }}</dt>
+            <dd><strong>{{ item.value }}</strong><span>{{ item.note }}</span></dd>
           </div>
-        </div>
+        </dl>
         <el-alert v-if="executorError" :title="executorError" type="warning" :closable="false" show-icon />
       </el-card>
     </section>
@@ -105,10 +106,27 @@
   </div>
 </template>
 
+<style scoped>
+.executor-status-list { margin: 0; }
+.executor-status-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px 20px;
+  padding: 14px 0;
+}
+.executor-status-row + .executor-status-row { border-top: 1px solid var(--el-border-color-lighter); }
+.executor-status-row dt { color: var(--el-text-color-regular); }
+.executor-status-row dd { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 0; }
+.executor-status-row dd span { color: var(--el-text-color-secondary); }
+</style>
+
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { getDashboardOverview } from '../api/dashboard'
 import { getExecutorStatus } from '../api/task'
+import { formatDateTime } from '../utils/time'
 
 const trendDays = 7
 const loading = ref(false)
@@ -124,7 +142,7 @@ function statusType(status) { return { success: 'success', running: 'warning', f
 const scopeLabel = computed(() => overview.value?.scope === 'all-users' ? '全库（管理员）' : '仅本人')
 const sampledAtText = computed(() => {
   const raw = overview.value?.sampledAt
-  return raw ? `统计时间 ${raw.replace('T', ' ').slice(0, 19)}` : '尚未完成统计'
+  return raw ? `统计时间 ${formatDateTime(raw)}` : '尚未完成统计'
 })
 
 const stats = computed(() => {

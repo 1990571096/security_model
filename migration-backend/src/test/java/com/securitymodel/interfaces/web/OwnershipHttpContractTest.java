@@ -214,7 +214,7 @@ class OwnershipHttpContractTest {
         // bob can log in, but the filter still refuses cross-user reads on the same task.
         when(userMapper.findStateById(BOB)).thenReturn(user(BOB, "bob", false, true));
 
-        // Real /auth/code -> /auth/login flow, then reuse the issued token against task APIs.
+        // Use the issued token against task APIs.
         String aliceToken = login("alice");
         mockMvc.perform(get("/api/pre-defense/100").header("Authorization", aliceToken))
                 .andExpect(status().isOk());
@@ -226,21 +226,10 @@ class OwnershipHttpContractTest {
     }
 
     private String login(String username) throws Exception {
-        String codeResponse = mockMvc.perform(get("/auth/code"))
-                .andExpect(status().isOk())
-                .andReturn().getResponse().getContentAsString();
-        String uuid = objectMapper.readTree(codeResponse).path("uuid").asText();
-        String image = objectMapper.readTree(codeResponse).path("img").asText();
-        String decoded = new String(java.util.Base64.getDecoder().decode(image.split(",")[1]));
-        java.util.regex.Matcher captcha = java.util.regex.Pattern
-                .compile("<text[^>]*>(\\d{4})</text>").matcher(decoded);
-        org.junit.jupiter.api.Assertions.assertTrue(captcha.find(), "captcha svg must contain a 4 digit code");
-        String code = captcha.group(1);
-
         String loginResponse = mockMvc.perform(post("/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(Map.of(
-                                "uuid", uuid, "code", code, "username", username, "password", LOGIN_PASSWORD))))
+                                "username", username, "password", LOGIN_PASSWORD))))
                 .andExpect(status().isOk())
                 .andReturn().getResponse().getContentAsString();
         return objectMapper.readTree(loginResponse).path("token").asText();
@@ -278,7 +267,8 @@ class OwnershipHttpContractTest {
                         new PreDefenseTaskController(commandService, idempotencyService, objectMapper),
                         new TaskProgressController(queryService, executor, quotaPolicy,
                                 mock(com.securitymodel.application.task.GpuLeaseService.class),
-                                mock(com.securitymodel.application.task.GpuLeaseBlockedProbe.class)),
+                                mock(com.securitymodel.application.task.GpuLeaseBlockedProbe.class),
+                                mock(com.securitymodel.infrastructure.observability.HostRuntimeMetricsService.class)),
                         new AuthController(userMapper, tokenService))
                 .addFilters(filter)
                 .setControllerAdvice(new ApiExceptionHandler())

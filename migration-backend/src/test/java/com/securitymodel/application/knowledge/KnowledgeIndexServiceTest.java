@@ -50,22 +50,22 @@ class KnowledgeIndexServiceTest {
     }
 
     @Test
-    void sddImportIndexesOnlyChangedMarkdownAndSkipsSameHash() throws Exception {
+    void knowledgeImportIndexesOnlyChangedMarkdownAndSkipsSameHash() throws Exception {
         Files.writeString(tempDir.resolve("05-decisions.md"), "# 决策\n\n租约定。\n", StandardCharsets.UTF_8);
         Files.writeString(tempDir.resolve("readme.txt"), "not markdown", StandardCharsets.UTF_8);
         KnowledgeDocument saved = document(1L);
         KnowledgeDocument active = document(1L);
         active.setContentHash(sha256(KnowledgeSanitizer.sanitize("# 决策\n\n租约定。\n")));
-        when(documentMapper.findActiveBySourceKey("sdd:05-decisions.md")).thenReturn(null, active);
+        when(documentMapper.findActiveBySourceKey("knowledge:05-decisions.md")).thenReturn(null, active);
         when(writer.saveVersion(any(), anyString(), anyString(), anyString(), any(), anyString(),
                 anyList(), any())).thenReturn(saved);
 
-        KnowledgeIndexService.IndexStats first = service(800).reindexSdd();
+        KnowledgeIndexService.IndexStats first = service(800).reindexKnowledge();
         assertEquals(1, first.scanned());
         assertEquals(1, first.changed());
         assertEquals(0, first.skipped());
 
-        KnowledgeIndexService.IndexStats second = service(800).reindexSdd();
+        KnowledgeIndexService.IndexStats second = service(800).reindexKnowledge();
         assertEquals(1, second.scanned());
         assertEquals(1, second.skipped());
         verify(writer, org.mockito.Mockito.times(1)).saveVersion(any(), anyString(), anyString(),
@@ -80,9 +80,9 @@ class KnowledgeIndexServiceTest {
         active.setDocumentId(3L);
         active.setVersion(1);
         active.setContentHash(sha256(content));
-        when(documentMapper.findActiveBySourceKey("sdd:05.md")).thenReturn(active);
+        when(documentMapper.findActiveBySourceKey("knowledge:05.md")).thenReturn(active);
 
-        KnowledgeIndexService.IndexStats stats = service(800).reindexSdd();
+        KnowledgeIndexService.IndexStats stats = service(800).reindexKnowledge();
 
         assertEquals(1, stats.skipped());
         assertEquals(0, stats.changed());
@@ -96,15 +96,15 @@ class KnowledgeIndexServiceTest {
         active.setDocumentId(4L);
         active.setVersion(1);
         active.setContentHash("stale-hash");
-        when(documentMapper.findActiveBySourceKey("sdd:05.md")).thenReturn(active);
+        when(documentMapper.findActiveBySourceKey("knowledge:05.md")).thenReturn(active);
         when(writer.saveVersion(any(), anyString(), anyString(), anyString(), any(), anyString(),
                 anyList(), any())).thenReturn(document(5L));
         Files.writeString(tempDir.resolve("05.md"), "# 新内容\n\n新内容。\n", StandardCharsets.UTF_8);
 
-        KnowledgeIndexService.IndexStats stats = service(800).reindexSdd();
+        KnowledgeIndexService.IndexStats stats = service(800).reindexKnowledge();
 
         assertEquals(1, stats.changed());
-        verify(writer).saveVersion(eq("sdd"), eq("sdd:05.md"), anyString(), eq("shared"),
+        verify(writer).saveVersion(eq("knowledge"), eq("knowledge:05.md"), anyString(), eq("shared"),
                 eq(null), anyString(), anyList(), any());
     }
 
@@ -126,7 +126,7 @@ class KnowledgeIndexServiceTest {
         when(writer.saveVersion(any(), anyString(), anyString(), anyString(), any(), anyString(),
                 anyList(), any())).thenReturn(document(12L));
 
-        KnowledgeIndexService.IndexStats stats = service(800).reindexSdd();
+        KnowledgeIndexService.IndexStats stats = service(800).reindexKnowledge();
 
         assertEquals(1, stats.changed());
         ArgumentCaptor<List<MarkdownKnowledgeChunker.Draft>> drafts =
@@ -150,10 +150,10 @@ class KnowledgeIndexServiceTest {
                 <!-- /knowledge:historical -->
                 """, StandardCharsets.UTF_8);
         KnowledgeDocument active = document(20L);
-        when(documentMapper.findActiveBySourceKey("sdd:09-project-status.md")).thenReturn(active);
+        when(documentMapper.findActiveBySourceKey("knowledge:09-project-status.md")).thenReturn(active);
         when(writer.retire(eq(20L), any())).thenReturn(true);
 
-        KnowledgeIndexService.IndexStats stats = service(800).reindexSdd();
+        KnowledgeIndexService.IndexStats stats = service(800).reindexKnowledge();
 
         assertEquals(1, stats.scanned());
         assertEquals(0, stats.changed());
@@ -182,7 +182,7 @@ class KnowledgeIndexServiceTest {
         when(writer.saveVersion(any(), anyString(), anyString(), anyString(), any(), anyString(),
                 anyList(), any())).thenReturn(document(21L));
 
-        service(800).reindexSdd();
+        service(800).reindexKnowledge();
 
         ArgumentCaptor<List<MarkdownKnowledgeChunker.Draft>> drafts =
                 ArgumentCaptor.forClass(List.class);

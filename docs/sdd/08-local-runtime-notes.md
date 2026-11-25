@@ -1,5 +1,10 @@
 # Local Runtime Notes
 
+在当前机器重新确认说明中的端口、数据库和 Python 路径。启动脚本继承当前 shell 的执行器配置。Python 工作目录与进程登记根建议指向同一受控位置。[运行变量和命令](../../README.md)
+
+## 历史记录
+
+<!-- knowledge:historical -->
 Date: 2026-07-11
 
 ## Redis
@@ -112,3 +117,4 @@ Migration backend and frontend endpoints:
 
 - Backend: `http://localhost:8100`
 - Frontend: `http://localhost:8014/`
+<!-- /knowledge:historical -->

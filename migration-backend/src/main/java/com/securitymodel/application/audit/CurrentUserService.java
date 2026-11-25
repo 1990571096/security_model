@@ -57,7 +57,7 @@ public class CurrentUserService {
     public AuthenticatedUser requireAdmin() {
         AuthenticatedUser identity = requireStableIdentity();
         if (!identity.admin()) {
-            throw new AdminRequiredException("仅管理员可维护共享数据集、算法与超参数模板");
+            throw new AdminRequiredException("此操作仅限管理员");
         }
         return identity;
     }

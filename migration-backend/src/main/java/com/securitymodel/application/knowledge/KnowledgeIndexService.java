@@ -23,12 +23,15 @@ import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.security.MessageDigest;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
@@ -51,7 +54,7 @@ public class KnowledgeIndexService {
     private final ResourceQueryService resourceQueryService;
     private final TaskAccessGuard taskAccessGuard;
     private final KnowledgeVectorStore vectorStore;
-    private final String sddRoot;
+    private final String knowledgeRoot;
     private final int maxChunkChars;
 
     public KnowledgeIndexService(
@@ -60,10 +63,10 @@ public class KnowledgeIndexService {
             AlgorithmMapper algorithmMapper,
             ResourceQueryService resourceQueryService,
             TaskAccessGuard taskAccessGuard,
-            @Value("${security-model.knowledge.sdd-root:../docs/sdd}") String sddRoot,
+            String knowledgeRoot,
             @Value("${security-model.knowledge.max-chunk-chars:800}") int maxChunkChars) {
         this(documentMapper, writer, algorithmMapper, resourceQueryService, taskAccessGuard,
-                sddRoot, maxChunkChars, null);
+                knowledgeRoot, maxChunkChars, null);
     }
 
     @org.springframework.beans.factory.annotation.Autowired
@@ -73,7 +76,7 @@ public class KnowledgeIndexService {
             AlgorithmMapper algorithmMapper,
             ResourceQueryService resourceQueryService,
             TaskAccessGuard taskAccessGuard,
-            @Value("${security-model.knowledge.sdd-root:../docs/sdd}") String sddRoot,
+            @Value("${security-model.knowledge.root:../knowledge-base}") String knowledgeRoot,
             @Value("${security-model.knowledge.max-chunk-chars:800}") int maxChunkChars,
             KnowledgeVectorStore vectorStore) {
         this.documentMapper = documentMapper;
@@ -82,14 +85,14 @@ public class KnowledgeIndexService {
         this.resourceQueryService = resourceQueryService;
         this.taskAccessGuard = taskAccessGuard;
         this.vectorStore = vectorStore;
-        this.sddRoot = sddRoot;
+        this.knowledgeRoot = knowledgeRoot;
         this.maxChunkChars = maxChunkChars;
     }
 
-    public synchronized IndexStats reindexSdd() {
-        Path root = Paths.get(sddRoot).toAbsolutePath().normalize();
+    public synchronized IndexStats reindexKnowledge() {
+        Path root = Paths.get(knowledgeRoot).toAbsolutePath().normalize();
         if (!Files.isDirectory(root)) {
-            throw new IllegalArgumentException("SDD 文档根目录不可用");
+            throw new IllegalArgumentException("知识库目录不可用");
         }
         int scanned = 0;
         int changed = 0;
@@ -98,16 +101,24 @@ public class KnowledgeIndexService {
         int failed = 0;
         int chunks = 0;
         List<String> failures = new ArrayList<>();
+        Set<String> present = new HashSet<>();
         LocalDateTime now = LocalDateTime.now();
         try (Stream<Path> files = Files.list(root)) {
             List<Path> ordered = files
-                    .filter(path -> Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS))
                     .filter(path -> path.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".md"))
                     .sorted(Comparator.comparing(path -> path.getFileName().toString()))
                     .toList();
             for (Path file : ordered) {
-                scanned++;
+                String fileName = file.getFileName().toString();
+                String sourceKey = "knowledge:" + fileName;
+                present.add(sourceKey);
                 try {
+                    if (!Files.readAttributes(file, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS)
+                            .isRegularFile()) {
+                        present.remove(sourceKey);
+                        continue;
+                    }
+                    scanned++;
                     if (!file.toRealPath().startsWith(root.toRealPath())) {
                         failed++;
                         failures.add(file.getFileName().toString() + ": 路径越界");
@@ -118,8 +129,6 @@ public class KnowledgeIndexService {
                         raw = raw.substring(1);
                     }
                     String currentFacts = stripHistoricalBlocks(raw);
-                    String fileName = file.getFileName().toString();
-                    String sourceKey = "sdd:" + fileName;
                     if (currentFacts.isBlank()) {
                         // A file made only of historical markers is no longer a current-fact
                         // source. Retire its existing active version; otherwise old chunks
@@ -139,7 +148,7 @@ public class KnowledgeIndexService {
                         sanitized = "\n".repeat(leadingBreaks) + sanitized;
                     }
                     String title = fileName.substring(0, fileName.length() - 3);
-                    UpsertResult result = upsert(KnowledgeDocument.SOURCE_SDD, sourceKey, title,
+                    UpsertResult result = upsert(KnowledgeDocument.SOURCE_KNOWLEDGE, sourceKey, title,
                             KnowledgeDocument.VISIBILITY_SHARED, null, sanitized);
                     if (result.changed()) {
                         changed++;
@@ -154,7 +163,15 @@ public class KnowledgeIndexService {
                 }
             }
         } catch (IOException exception) {
-            throw new IllegalArgumentException("SDD 文档目录读取失败");
+            throw new IllegalArgumentException("知识库目录读取失败");
+        }
+        for (KnowledgeDocument document : documentMapper.findActiveFileDocuments()) {
+            if (KnowledgeDocument.SOURCE_SDD.equals(document.getSourceType())
+                    || !present.contains(document.getSourceKey())) {
+                if (retire(document.getDocumentId())) {
+                    retired++;
+                }
+            }
         }
         return new IndexStats(scanned, changed, skipped, retired, failed, chunks, List.copyOf(failures));
     }
@@ -242,7 +259,7 @@ public class KnowledgeIndexService {
         if (removeVectorsQuietly(active.getDocumentId())) {
             documentMapper.markVectorCleanupClean(active.getDocumentId(), now);
         }
-        log.info("历史-only 文档已退役: sourceKey={}, documentId={}", sourceKey,
+        log.info("空白或仅含历史内容的文档已退役: sourceKey={}, documentId={}", sourceKey,
                 active.getDocumentId());
         return true;
     }
@@ -431,10 +448,7 @@ public class KnowledgeIndexService {
     }
 
     /**
-     * SDD pages keep current facts next to historical acceptance records. Only the current
-     * fact body may become searchable knowledge. Historical regions must be explicitly
-     * wrapped by the HTML markers below; unmarked prose is treated as current and therefore
-     * must not contain an obsolete capability claim.
+     * Removes marked historical notes while retaining source line numbers.
      */
     static String stripHistoricalBlocks(String markdown) {
         if (markdown == null || markdown.isBlank()) {

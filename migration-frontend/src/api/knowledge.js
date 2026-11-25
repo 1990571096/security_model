@@ -4,8 +4,8 @@ export function queryKnowledge(question) {
   return http.post('/api/knowledge/query', { question })
 }
 
-export function getKnowledgeStatus() {
-  return http.get('/api/knowledge/status')
+export function listKnowledgeDocuments(page, size) {
+  return http.get('/api/knowledge/documents', { params: { page, size } })
 }
 
 export function reindexKnowledge() {

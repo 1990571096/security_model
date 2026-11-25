@@ -21,6 +21,7 @@ public class KnowledgeDocument {
     public static final String VECTOR_CLEANUP_FAILED = "failed";
 
     public static final String SOURCE_SDD = "sdd";
+    public static final String SOURCE_KNOWLEDGE = "knowledge";
     public static final String SOURCE_ALGORITHM = "algorithm";
     public static final String SOURCE_TASK_REPORT = "task_report";
 

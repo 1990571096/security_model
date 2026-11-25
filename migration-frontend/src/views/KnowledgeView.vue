@@ -2,14 +2,12 @@
   <div class="page" v-loading="loading">
     <section class="hero-band knowledge-hero">
       <div>
-        <span class="eyebrow">R6 · GROUNDED KNOWLEDGE</span>
         <h2>知识检索与引用回答</h2>
-        <p>先按当前账号权限检索本地知识库，再决定是否调用外部模型；没有命中时明确拒答，不生成无依据结论。</p>
+        <p>查询共享知识库、算法说明和自己的任务报告，查看引用片段及其原文位置。</p>
       </div>
       <div class="hero-summary knowledge-summary">
-        <span>已索引文档</span>
-        <strong>{{ activeDocuments }}</strong>
-        <small>仅 active 版本可被召回</small>
+        <span>可检索文档</span>
+        <strong>{{ documentTotal ?? '—' }}</strong>
       </div>
     </section>
 
@@ -94,16 +92,59 @@
       </el-card>
     </section>
 
+    <section class="knowledge-catalog" aria-labelledby="knowledge-catalog-title">
+      <el-card shadow="never" v-loading="catalogLoading">
+        <template #header>
+          <div class="card-heading">
+            <div>
+              <strong id="knowledge-catalog-title">已索引文档</strong>
+              <span class="table-caption">仅列出当前账号可检索的有效版本。</span>
+            </div>
+            <el-button :disabled="catalogLoading" @click="loadDocuments(documentPage)">刷新列表</el-button>
+          </div>
+        </template>
+        <el-alert v-if="catalogError" type="error" :closable="false" show-icon :title="catalogError" />
+        <ul v-else-if="documents.length" class="knowledge-document-list">
+          <li v-for="document in documents" :key="`${document.sourceKey}:${document.version}`">
+            <div class="knowledge-document-title">
+              <strong>{{ document.title }}</strong>
+              <span class="table-caption">{{ document.sourceKey }}</span>
+            </div>
+            <div class="knowledge-document-meta">
+              <span>{{ sourceLabels[document.sourceType] || document.sourceType }}</span>
+              <el-tag size="small" :type="document.visibility === 'private' ? 'warning' : 'success'">
+                {{ document.visibility === 'private' ? '私有' : '共享' }}
+              </el-tag>
+              <span>版本 {{ document.version }}</span>
+              <time v-if="document.updatedAt" :datetime="document.updatedAt">{{ formatDateTime(document.updatedAt) }}</time>
+            </div>
+          </li>
+        </ul>
+        <el-empty v-else-if="!catalogLoading" description="当前没有可检索的文档" />
+        <el-pagination
+          v-if="documentTotal > documentsPerPage"
+          class="knowledge-document-pagination"
+          background
+          layout="prev, pager, next"
+          :pager-count="5"
+          :current-page="documentPage"
+          :page-size="documentsPerPage"
+          :total="documentTotal"
+          :disabled="catalogLoading"
+          @current-change="loadDocuments"
+        />
+      </el-card>
+    </section>
+
     <section class="content-grid knowledge-admin-grid">
       <el-card shadow="never">
         <template #header>
           <div class="card-heading">
-            <div><strong>管理员索引维护</strong><span class="table-caption">显式触发，不在启动时自动索引；非管理员会收到 403</span></div>
-            <el-tag type="warning" effect="light">管理端</el-tag>
+            <strong>知识索引</strong>
           </div>
         </template>
-        <div class="knowledge-actions">
-          <el-button :loading="maintaining" @click="runReindex('sdd')">重建 SDD 知识</el-button>
+        <div v-if="isAdmin" class="knowledge-actions">
+          <el-button :loading="maintaining" @click="runReindex('knowledge')">同步共享知识库</el-button>
           <el-button :loading="maintaining" @click="runReindex('algorithm')">重建算法知识</el-button>
         </div>
         <el-input
@@ -128,10 +169,11 @@
       <el-card shadow="never">
         <template #header><strong>边界说明</strong></template>
         <div class="definition-list knowledge-boundaries">
-          <div><span>知识来源</span><p>SDD 文档、启用算法元数据、当前账号自己的任务报告摘要。</p></div>
+          <div><span>共享知识库</span><p>管理员可同步独立知识库目录中的 Markdown 文档。</p></div>
+          <div><span>算法目录</span><p>管理员可索引已启用算法的名称和说明。</p></div>
+          <div><span>任务报告</span><p>输入自己的任务 ID 可索引报告摘要，默认仅本人可检索。原始产物从任务详情查看。</p></div>
           <div><span>不外发</span><p>本机路径、凭据、原始样本、日志、其他用户私有报告不会进入模型请求。</p></div>
-          <div><span>外部模型</span><p>默认关闭；设置 provider 并激活演示 profile 后才调用外部模型。未配置时保持 retrieval_only，不伪造模型结论。</p></div>
-          <div><span>引用校验</span><p>模型回答出现候选集之外的 [C99] 时整段丢弃并回退为检索片段。</p></div>
+          <div><span>检索回答</span><p>知识检索的回答模型独立配置。模型关闭或不可用时，页面显示检索片段和引用。</p></div>
         </div>
       </el-card>
     </section>
@@ -141,17 +183,26 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
+import { getUserInfo } from '../api/auth'
 import {
-  getKnowledgeStatus,
   indexTaskReport,
+  listKnowledgeDocuments,
   queryKnowledge,
   reindexKnowledge,
   reindexKnowledgeAlgorithms
 } from '../api/knowledge'
+import { formatDateTime } from '../utils/time'
 
 const loading = ref(false)
 const maintaining = ref(false)
-const activeDocuments = ref(0)
+const isAdmin = ref(false)
+const documents = ref([])
+const documentTotal = ref(null)
+const documentPage = ref(1)
+const documentsPerPage = 10
+const catalogLoading = ref(false)
+const catalogError = ref('')
+const sourceLabels = { knowledge: '共享知识库', algorithm: '算法目录', task_report: '任务报告' }
 const question = ref('')
 const result = ref(null)
 const taskId = ref('')
@@ -170,12 +221,24 @@ const statusType = computed(() => ({
   unknown: 'info'
 }[result.value?.status] || 'info'))
 
-async function loadStatus() {
+async function loadDocuments(page = 1) {
+  catalogLoading.value = true
+  catalogError.value = ''
   try {
-    const response = await getKnowledgeStatus()
-    activeDocuments.value = Number(response.data?.activeDocuments || 0)
+    let response = await listKnowledgeDocuments(page, documentsPerPage)
+    if (page > 1 && !response.data.documents.length) {
+      page = 1
+      response = await listKnowledgeDocuments(page, documentsPerPage)
+    }
+    documentPage.value = page
+    documentTotal.value = response.data.total
+    documents.value = response.data.documents
   } catch (error) {
-    activeDocuments.value = 0
+    documents.value = []
+    documentTotal.value = null
+    catalogError.value = error.response?.data?.message || '文档列表加载失败，请刷新列表。'
+  } finally {
+    catalogLoading.value = false
   }
 }
 
@@ -205,11 +268,11 @@ async function runReindex(kind) {
   maintaining.value = true
   maintenanceMessage.value = ''
   try {
-    const response = kind === 'sdd' ? await reindexKnowledge() : await reindexKnowledgeAlgorithms()
+    const response = kind === 'knowledge' ? await reindexKnowledge() : await reindexKnowledgeAlgorithms()
     const data = response.data || {}
     maintenanceMessage.value = `扫描 ${data.scanned ?? 0}，更新 ${data.changed ?? 0}，退役 ${data.retired ?? 0}，跳过 ${data.skipped ?? 0}，失败 ${data.failed ?? 0}，新增分块 ${data.chunks ?? 0}`
     maintenanceType.value = Number(data.failed || 0) > 0 ? 'warning' : 'success'
-    await loadStatus()
+    await loadDocuments()
   } catch (error) {
     maintenanceType.value = error.response?.status === 403 ? 'warning' : 'error'
     maintenanceMessage.value = error.response?.status === 403
@@ -232,7 +295,7 @@ async function indexReport() {
     await indexTaskReport(id)
     maintenanceMessage.value = `任务 ${id} 的私有报告摘要已重建。`
     maintenanceType.value = 'success'
-    await loadStatus()
+    await loadDocuments()
   } catch (error) {
     maintenanceType.value = 'warning'
     maintenanceMessage.value = error.response?.data?.message || '报告索引失败'
@@ -241,7 +304,10 @@ async function indexReport() {
   }
 }
 
-onMounted(loadStatus)
+onMounted(() => {
+  loadDocuments()
+  getUserInfo().then(({ data }) => { isAdmin.value = data.admin === true }).catch(() => {})
+})
 </script>
 
 <style scoped>
@@ -303,6 +369,46 @@ onMounted(loadStatus)
   margin-top: 16px;
 }
 
+.knowledge-catalog {
+  margin-top: 16px;
+}
+
+.knowledge-document-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.knowledge-document-list li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px 20px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--el-border-color-lighter);
+}
+
+.knowledge-document-list li:last-child {
+  border-bottom: 0;
+}
+
+.knowledge-document-title {
+  overflow-wrap: anywhere;
+}
+
+.knowledge-document-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  font-size: 13px;
+  color: var(--el-text-color-secondary);
+}
+
+.knowledge-document-pagination {
+  margin-top: 12px;
+}
+
 .knowledge-task-input {
   margin-top: 12px;
   max-width: 520px;
@@ -319,6 +425,12 @@ onMounted(loadStatus)
 @media (max-width: 900px) {
   .knowledge-grid {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 760px) {
+  .knowledge-document-list li {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 </style>

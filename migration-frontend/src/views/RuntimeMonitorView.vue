@@ -4,7 +4,7 @@
       <div>
         <span class="eyebrow">RUNTIME OBSERVABILITY</span>
         <h2>运行监控中心</h2>
-        <p>按 API 线程池、RabbitMQ Outbox、Worker 状态、消费积压、GPU 租约五组展示真实计数；没有采集源的能力明确标记为不可用，不用 0 冒充健康。</p>
+        <p>先看本机 CPU、内存、JVM 堆和磁盘的真实采样，再看 API 线程池、RabbitMQ Outbox、Worker、消费积压与 GPU 租约。没有采集源的能力明确标记为不可用，不用 0 冒充健康。</p>
       </div>
       <div class="hero-summary monitor-summary">
         <span>调度状态</span>
@@ -12,6 +12,65 @@
         <small>{{ dispatchModeLabel }} · 采样时间 {{ sampledAtLabel }}</small>
       </div>
     </section>
+
+    <section class="host-panel">
+      <div class="host-panel-head">
+        <div>
+          <span class="eyebrow">LOCAL HOST TELEMETRY</span>
+          <h3>本机运行环境</h3>
+          <p>来自当前 API 进程所在机器的实时采样；磁盘口径为后端工作目录所在卷。</p>
+        </div>
+        <div class="host-panel-actions">
+          <span v-if="host.sampledAt" class="host-sampled">采样 {{ formatDateTime(host.sampledAt) }}</span>
+          <el-tag :type="hostAvailable ? 'success' : 'info'" effect="light">{{ hostAvailable ? '实时采集' : '不可用' }}</el-tag>
+        </div>
+      </div>
+      <div class="host-metric-grid">
+        <div class="host-metric-card">
+          <div class="host-metric-title"><span>CPU 使用率</span><small>{{ host.cpuLoadPercent != null && host.cpuLoadPercent >= 0 ? `${host.cpuLoadPercent}%` : '未采集' }}</small></div>
+          <el-progress :percentage="safePercent(host.cpuLoadPercent)" :stroke-width="8" :show-text="false" :color="loadColor(host.cpuLoadPercent)" />
+          <div class="host-metric-foot">
+            <span>{{ host.availableProcessors || '—' }} 个逻辑处理器</span>
+            <span>进程占用 {{ host.processCpuLoadPercent != null && host.processCpuLoadPercent >= 0 ? `${host.processCpuLoadPercent}%` : '—' }}</span>
+          </div>
+        </div>
+        <div class="host-metric-card">
+          <div class="host-metric-title"><span>物理内存</span><small>{{ host.memoryUsedPercent != null ? `${host.memoryUsedPercent}%` : '未采集' }}</small></div>
+          <el-progress :percentage="safePercent(host.memoryUsedPercent)" :stroke-width="8" :show-text="false" :color="loadColor(host.memoryUsedPercent)" />
+          <div class="host-metric-foot">
+            <span>已用 {{ formatBytes(host.memoryUsedBytes) }}</span>
+            <span>总量 {{ formatBytes(host.memoryTotalBytes) }}</span>
+          </div>
+        </div>
+        <div class="host-metric-card">
+          <div class="host-metric-title"><span>JVM 堆内存</span><small>{{ host.heapUsedPercent != null ? `${host.heapUsedPercent}%` : '未采集' }}</small></div>
+          <el-progress :percentage="safePercent(host.heapUsedPercent)" :stroke-width="8" :show-text="false" color="#7c3aed" />
+          <div class="host-metric-foot">
+            <span>已用 {{ formatBytes(host.heapUsedBytes) }}</span>
+            <span>上限 {{ formatBytes(host.heapMaxBytes) }}</span>
+          </div>
+        </div>
+        <div class="host-metric-card">
+          <div class="host-metric-title"><span>磁盘空间</span><small>{{ host.disk?.usedPercent != null ? `${host.disk.usedPercent}%` : '不可用' }}</small></div>
+          <el-progress :percentage="safePercent(host.disk?.usedPercent)" :stroke-width="8" :show-text="false" :color="loadColor(host.disk?.usedPercent)" />
+          <div class="host-metric-foot">
+            <span>已用 {{ formatBytes(host.disk?.usedBytes) }}</span>
+            <span>可用 {{ formatBytes(host.disk?.usableBytes) }}</span>
+          </div>
+        </div>
+      </div>
+      <div class="host-meta-line">
+        <span>操作系统 {{ host.osName || '—' }} {{ host.osArch || '' }}</span>
+        <span>Java {{ host.javaVersion || '—' }}</span>
+        <span>JVM 已运行 {{ formatUptime(host.jvmUptimeSeconds) }}</span>
+        <span v-if="host.disk?.path" class="host-path">磁盘卷 {{ host.disk.path }}</span>
+      </div>
+    </section>
+
+    <div class="monitor-section-label">
+      <div><strong>分布式运行与派发</strong><span>以下指标来自 MySQL 调度账本、线程池、Worker 和 GPU 租约，不代表本机硬件负载。</span></div>
+      <el-tag type="info" effect="plain">分布式观测</el-tag>
+    </div>
 
     <section class="stat-grid monitor-stat-grid">
       <el-card v-for="item in overviewStats" :key="item.label" class="stat-card" shadow="never">
@@ -94,7 +153,7 @@
           <span>持有任务 {{ gpuAvailable ? (gpuSlot.taskId ?? '无') : '—' }}</span>
           <span>run {{ gpuAvailable ? (gpuSlot.runId || '无') : '—' }}</span>
           <span>attempt {{ gpuAvailable ? (gpuSlot.attempt ?? '无') : '—' }}</span>
-          <span>{{ gpuSlot.state === 'leased' ? `到期 ${gpuSlot.expiresAt || '—'}` : (gpuSlot.blockedReason || '无活动租约') }}</span>
+          <span>{{ gpuSlot.state === 'leased' ? `到期 ${formatDateTime(gpuSlot.expiresAt)}` : (gpuSlot.blockedReason || '无活动租约') }}</span>
           <span>fencing {{ gpuAvailable ? (gpuSlot.fencingToken ?? '无') : '—' }}</span>
         </div>
       </el-card>
@@ -141,6 +200,7 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { getDispatchObservability, getExecutorStatus, getObservabilitySummary, getRunningTasks } from '../api/task'
+import { formatDateTime } from '../utils/time'
 
 const loading = ref(false)
 const executor = ref({})
@@ -150,6 +210,8 @@ const adminSummary = ref(null)
 const refreshedAt = ref('')
 
 const executorAvailable = computed(() => executor.value.acceptingTasks !== undefined)
+const host = computed(() => executor.value.host || {})
+const hostAvailable = computed(() => host.value.available === true)
 const outboxAvailable = computed(() => dispatch.value?.outboxAvailable === true)
 const workerApplicable = computed(() => dispatch.value?.workerConsumerExpected === true)
 const gpuSlot = computed(() => dispatch.value?.gpuSlot || executor.value.gpuSlot || {})
@@ -171,7 +233,7 @@ const dispatchReadyLabel = computed(() => {
   return dispatch.value.dispatchReady ? '可接收任务' : '启动恢复未完成'
 })
 
-const sampledAtLabel = computed(() => dispatch.value?.sampledAt || refreshedAt.value || '—')
+const sampledAtLabel = computed(() => formatDateTime(dispatch.value?.sampledAt || host.value.sampledAt || refreshedAt.value, '—'))
 
 const overviewStats = computed(() => [
   { label: '运行中任务', value: executor.value.runningTaskCount ?? 0, desc: 'MySQL status=running', badge: '实时', type: 'success' },
@@ -244,13 +306,50 @@ function formatDuration(millis) {
   return `${hours}:${minutes}:${seconds}`
 }
 
+function safePercent(value) {
+  const number = Number(value)
+  if (!Number.isFinite(number) || number < 0) return 0
+  return Math.min(100, Math.round(number))
+}
+
+function loadColor(value) {
+  const number = Number(value)
+  if (!Number.isFinite(number) || number < 0) return '#9ca3af'
+  if (number >= 85) return '#dc2626'
+  if (number >= 70) return '#f59e0b'
+  return '#2f80ed'
+}
+
+function formatBytes(value) {
+  const bytes = Number(value)
+  if (!Number.isFinite(bytes) || bytes < 0) return '—'
+  if (bytes < 1024) return `${Math.round(bytes)} B`
+  const units = ['KB', 'MB', 'GB', 'TB', 'PB']
+  let amount = bytes / 1024
+  let index = 0
+  while (amount >= 1024 && index < units.length - 1) {
+    amount /= 1024
+    index += 1
+  }
+  return `${amount.toFixed(amount >= 100 ? 0 : 1)} ${units[index]}`
+}
+
+function formatUptime(seconds) {
+  const value = Number(seconds)
+  if (!Number.isFinite(value) || value < 0) return '—'
+  const days = Math.floor(value / 86400)
+  const hours = Math.floor((value % 86400) / 3600)
+  const minutes = Math.floor((value % 3600) / 60)
+  return days > 0 ? `${days} 天 ${hours} 小时` : `${hours} 小时 ${minutes} 分`
+}
+
 async function load() {
   loading.value = true
   try {
     const [statusResponse, runningResponse] = await Promise.all([getExecutorStatus(), getRunningTasks()])
     executor.value = statusResponse.data || {}
     runningTasks.value = runningResponse.data || []
-    refreshedAt.value = new Date().toLocaleString()
+    refreshedAt.value = formatDateTime(new Date())
     try {
       const dispatchResponse = await getDispatchObservability()
       dispatch.value = dispatchResponse.data || null
@@ -272,6 +371,131 @@ onMounted(load)
 </script>
 
 <style scoped>
+.host-panel {
+  margin-bottom: 22px;
+  padding: 20px 22px 16px;
+  border: 1px solid #dce9f6;
+  border-radius: 16px;
+  background: linear-gradient(180deg, #fff, #f8fbff);
+  box-shadow: 0 18px 34px -32px rgba(23, 58, 94, .45);
+}
+
+.host-panel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 16px;
+}
+
+.host-panel-head h3 {
+  margin: 4px 0 3px;
+  color: var(--ea-navy, #183a5a);
+  font-size: 20px;
+}
+
+.host-panel-head p {
+  margin: 0;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.host-panel-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.host-sampled {
+  color: var(--el-text-color-secondary);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.host-metric-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+}
+
+.host-metric-card {
+  padding: 12px 14px;
+  border: 1px solid #e5eef8;
+  border-radius: 12px;
+  background: #fff;
+}
+
+.host-metric-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 9px;
+}
+
+.host-metric-title span {
+  color: #36516d;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.host-metric-title small {
+  color: #2f80ed;
+  font-size: 15px;
+  font-weight: 750;
+}
+
+.host-metric-card :deep(.el-progress) {
+  margin-bottom: 9px;
+}
+
+.host-metric-foot {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--el-text-color-secondary);
+  font-size: 10.5px;
+}
+
+.host-meta-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px dashed #e2ecf7;
+  color: var(--el-text-color-secondary);
+  font-size: 11px;
+}
+
+.host-path {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.monitor-section-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 6px 0 12px;
+}
+
+.monitor-section-label strong {
+  color: var(--ea-navy, #183a5a);
+  font-size: 15px;
+}
+
+.monitor-section-label span {
+  display: block;
+  margin-top: 2px;
+  color: var(--el-text-color-secondary);
+  font-size: 11px;
+}
+
 .monitor-five-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
@@ -282,5 +506,20 @@ onMounted(load)
 .monitor-five-grid .resource-meta {
   flex-wrap: wrap;
   gap: 8px 18px;
+}
+
+@media (max-width: 760px) {
+  .host-panel {
+    padding: 16px;
+  }
+  .host-panel-head {
+    flex-direction: column;
+  }
+  .host-panel-actions {
+    justify-content: flex-start;
+  }
+  .monitor-section-label {
+    align-items: flex-start;
+  }
 }
 </style>

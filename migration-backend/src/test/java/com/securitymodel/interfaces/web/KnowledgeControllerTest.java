@@ -4,7 +4,7 @@ import com.securitymodel.application.audit.AuthenticatedUser;
 import com.securitymodel.application.audit.CurrentUserService;
 import com.securitymodel.application.knowledge.KnowledgeIndexService;
 import com.securitymodel.application.knowledge.KnowledgeQueryService;
-import com.securitymodel.infrastructure.persistence.mapper.KnowledgeDocumentMapper;
+import com.securitymodel.application.knowledge.KnowledgeRetrievalService;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -31,7 +31,7 @@ class KnowledgeControllerTest {
     void setUp() {
         KnowledgeController controller = new KnowledgeController(
                 mock(KnowledgeQueryService.class), indexService,
-                mock(KnowledgeDocumentMapper.class), new CurrentUserService());
+                mock(KnowledgeRetrievalService.class), new CurrentUserService());
         mockMvc = MockMvcBuilders.standaloneSetup(controller)
                 .setControllerAdvice(new ApiExceptionHandler())
                 .build();

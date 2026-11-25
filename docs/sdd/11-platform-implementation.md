@@ -1,5 +1,10 @@
 # 当前平台实现说明
 
+当前登录为用户名、密码加 JWT。创建请求返回 `taskId` 并保留 `pending`，用户确认后再发独立启动请求。以 `runId` 和 `attempt` 连起派发意图、执行快照与结果，以 `exportId` 追踪独立 ZIP 导出。[实现指南](../project-implementation-guide.md) · [贯穿案例](../learning/00-one-experiment.md)
+
+## 历史记录
+
+<!-- knowledge:historical -->
 更新时间：2026-10-26
 
 ## 1. 文档目的
@@ -359,3 +364,4 @@ PyTorch/NumPy 版本、CUDA 版本、CUDA 可用性、设备数量和 GPU 型号
 - [算法执行器契约](07-executor-contract.md)
 - [项目目标与阶段进度说明](09-project-status.md)
 - [VaB 训练前防御算法集成说明](10-vab-integration.md)
+<!-- /knowledge:historical -->

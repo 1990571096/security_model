@@ -1,6 +1,7 @@
 package com.securitymodel.infrastructure.persistence.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import com.securitymodel.application.knowledge.KnowledgeDocumentSummary;
 import com.securitymodel.application.knowledge.KnowledgeSearchRow;
 import com.securitymodel.domain.knowledge.KnowledgeDocument;
 import org.apache.ibatis.annotations.Mapper;
@@ -14,6 +15,13 @@ import java.util.List;
 @Mapper
 public interface KnowledgeDocumentMapper extends BaseMapper<KnowledgeDocument> {
 
+    String VISIBLE_DOCUMENTS = """
+            FROM sys_knowledge_document
+            WHERE status = 'active'
+              AND source_type <> 'sdd'
+              AND (#{allVisible} = TRUE OR visibility = 'shared' OR owner_user_id = #{ownerUserId})
+            """;
+
     @Select("""
             SELECT * FROM sys_knowledge_document
             WHERE source_key = #{sourceKey} AND status = 'active'
@@ -21,8 +29,28 @@ public interface KnowledgeDocumentMapper extends BaseMapper<KnowledgeDocument> {
             """)
     KnowledgeDocument findActiveBySourceKey(@Param("sourceKey") String sourceKey);
 
-    @Select("SELECT COUNT(*) FROM sys_knowledge_document WHERE status = 'active'")
+    @Select("""
+            SELECT document_id, source_key, source_type FROM sys_knowledge_document
+            WHERE status = 'active' AND source_type IN ('sdd', 'knowledge')
+            """)
+    List<KnowledgeDocument> findActiveFileDocuments();
+
+    @Select("SELECT COUNT(*) FROM sys_knowledge_document WHERE status = 'active' AND source_type <> 'sdd'")
     long countActive();
+
+    @Select("SELECT COUNT(*) " + VISIBLE_DOCUMENTS)
+    long countVisible(@Param("ownerUserId") Long ownerUserId, @Param("allVisible") boolean allVisible);
+
+    @Select("""
+            SELECT title, source_key AS sourceKey, source_type AS sourceType, visibility,
+                   version, updated_at AS updatedAt
+            """ + VISIBLE_DOCUMENTS + """
+            ORDER BY source_type, title, document_id
+            LIMIT #{size} OFFSET #{offset}
+            """)
+    List<KnowledgeDocumentSummary> findVisible(@Param("ownerUserId") Long ownerUserId,
+                                               @Param("allVisible") boolean allVisible,
+                                               @Param("size") int size, @Param("offset") long offset);
 
     @Select("""
             SELECT * FROM sys_knowledge_document
@@ -89,6 +117,7 @@ public interface KnowledgeDocumentMapper extends BaseMapper<KnowledgeDocument> {
             FROM sys_knowledge_chunk c
             JOIN sys_knowledge_document d ON d.document_id = c.document_id
             WHERE d.status = 'active'
+              AND d.source_type <> 'sdd'
               AND (d.visibility = 'shared' OR d.owner_user_id = #{ownerUserId})
             ORDER BY d.document_id, c.chunk_index
             LIMIT #{limit}
@@ -103,6 +132,7 @@ public interface KnowledgeDocumentMapper extends BaseMapper<KnowledgeDocument> {
             FROM sys_knowledge_chunk c
             JOIN sys_knowledge_document d ON d.document_id = c.document_id
             WHERE d.status = 'active'
+              AND d.source_type <> 'sdd'
             ORDER BY d.document_id, c.chunk_index
             LIMIT #{limit}
             """)

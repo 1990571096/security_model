@@ -86,6 +86,7 @@ if ($markerRecordCount -eq '0') {
 }
 
 $files = @(
+    'sql\security_model_account_deletion.sql',
     'sql\security_model_execution_snapshot.sql',
     'sql\security_model_task_run_context.sql',
     'sql\security_model_clean_subset_export.sql',
@@ -98,6 +99,7 @@ $files = @(
     'sql\security_model_knowledge.sql',
     'sql\security_model_knowledge_vector_reconcile.sql',
     'sql\security_model_assistant.sql',
+    'sql\security_model_experiment_note.sql',
     'sql\security_model_mvp_seed.sql',
     'sql\security_model_legacy_running_task_baseline.sql',
     'sql\security_model_dataset_verification_baseline.sql'
@@ -157,10 +159,23 @@ if (-not [string]::IsNullOrWhiteSpace($VabDatasetRoot)) {
     if ($missingCifar.Count -gt 0) {
         throw "VaB 数据集目录不是可运行的 CIFAR-10 结构，缺少或为空: $($missingCifar -join ', ')"
     }
+    $cifar100Dir = Join-Path $vabPath 'cifar-100-python'
+    $registerCifar100 = 0
+    if (Test-Path -LiteralPath $cifar100Dir) {
+        $missingCifar100 = foreach ($name in @('meta', 'train', 'test')) {
+            $item = Get-Item -LiteralPath (Join-Path $cifar100Dir $name) -ErrorAction SilentlyContinue
+            if (-not $item -or $item.PSIsContainer -or $item.Length -le 0) { $name }
+        }
+        if ($missingCifar100) {
+            Write-Warning "跳过 CIFAR-100 登记，缺少或为空: $($missingCifar100 -join ', ')"
+        } else {
+            $registerCifar100 = 1
+        }
+    }
     $vabPathForSql = $vabPath.Replace('\', '/').TrimEnd('/')
     $escapedVab = $vabPathForSql.Replace("'", "''")
-    $vabPreamble = "SET @vab_dataset_root = '$escapedVab';"
-    $vabMode = "dataset root=$vabPathForSql (CIFAR-10 structure verified; seed registers pending)"
+    $vabPreamble = "SET @vab_dataset_root = '$escapedVab'; SET @vab_register_cifar100 = $registerCifar100;"
+    $vabMode = "dataset root=$vabPathForSql (CIFAR-10 checked, CIFAR-100=$registerCifar100; seed registers pending)"
 }
 $watch = [System.Diagnostics.Stopwatch]::StartNew()
 Invoke-SqlFile 'sql\security_model_vab_seed.sql' $vabPreamble

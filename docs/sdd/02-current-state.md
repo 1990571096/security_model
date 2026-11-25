@@ -1,5 +1,10 @@
-# 当前状态分析
+# 旧工程现状分析
 
+当前代码从 `migration-frontend` 和 `migration-backend` 进入，LDD 适配器位于 `algorithm-runtime/vab`。下文记录迁移前代码的职责与问题，阅读新实现时从任务中心的 `submitCreate` 出发。[源码阅读路线](../learning/01-follow-a-task.md)
+
+## 历史记录
+
+<!-- knowledge:historical -->
 > 本文记录的是旧 ELADMIN 工程的历史基线，不代表迁移版当前运行技术栈。迁移版当前交付事实以
 > [26-current-delivery-facts.md](26-current-delivery-facts.md) 为准；实现细节可参考
 > [11-platform-implementation.md](11-platform-implementation.md)。
@@ -71,3 +76,4 @@
 ## 第一阶段不直接删除的原因
 
 当前菜单来自数据库动态路由，后端模块、前端视图和 SQL 初始化脚本耦合较多。直接删除文件会导致已有菜单指向不存在组件，或者 Maven 模块依赖断裂。第一阶段先确定裁剪清单和首页入口，第二阶段通过 SQL 菜单、前端路由、后端依赖三处同步裁剪。
+<!-- /knowledge:historical -->

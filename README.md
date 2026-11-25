@@ -1,6 +1,6 @@
 # 面向数据清洗的安全模型训练系统
 
-本项目是一个**单机实验平台工程交付版**：把原有 Python 安全算法重构为可编排的实验平台。Java 侧通过任务快照、状态机、幂等控制和执行器协议隔离算法实现；MySQL 管理任务事实，Redis 缓存热点资源；Outbox/RabbitMQ 支持可选的独立 Worker；基于 SDD 知识库接入 RAG 和受控 Assistant，为参数校验、任务预检、结果分析提供辅助。真实任务执行始终受后端权限和状态机控制。
+本项目是一个**单机实验平台工程交付版**，把原有 Python 安全算法重构为可编排的实验平台。Java 侧通过任务快照、状态机、幂等控制和执行器协议隔离算法实现。MySQL 管理任务事实，Redis 缓存热点资源，Outbox 和 RabbitMQ 支持可选的独立 Worker。实验助手基于独立知识库和任务证据提供知识问答与失败诊断。真实任务执行始终受后端权限和状态机控制。
 
 > **当前状态、测试数字和验收边界的唯一权威入口**：
 > [`docs/sdd/26-current-delivery-facts.md`](docs/sdd/26-current-delivery-facts.md)。
@@ -41,6 +41,7 @@
 ```text
 .
 ├── docs/sdd/                  # SDD、验收清单、部署记录
+├── knowledge-base/            # 实验人员使用的共享知识库
 ├── docs/learning/             # 从架构到源码的学习路线
 ├── migration-backend/         # Spring Boot 3 后端
 ├── migration-frontend/        # Vue 3 / Vite 前端
@@ -90,7 +91,7 @@ Set-Location $repo
 $env:MYSQL_IT_PASSWORD = '<本机隔离 MySQL 管理员密码>'
 $env:SECURITY_MODEL_JWT_SECRET = '<至少 32 字节的本地随机密钥>'
 
-# 可选：提供 VaB 数据集根目录；不提供时只注册 LDD 算法与超参模板
+# 可选：提供包含 CIFAR 批次子目录的 VaB 数据集根目录
 pwsh -File scripts\dev\InitializeSecurityModelDatabase.ps1 `
   -SchemaName security_model_delivery_20261119 `
   -VabDatasetRoot '<VaB 数据集目录>'
@@ -105,6 +106,14 @@ pwsh -File scripts\dev\Start-SecurityModelStack.ps1 `
 # 健康检查
 Invoke-RestMethod http://127.0.0.1:8100/actuator/health/readiness
 ```
+
+使用本地 CIFAR 数据时，`-VabDatasetRoot` 指向包含 `cifar-10-batches-py` 和 `cifar-100-python` 的目录。初始化完成登记后，管理员可在「数据集」页面点击「验证数据」。官方批次经校验和核对后显示训练样本数及类别数，其他可读资源显示「仅路径可用」。新建 LDD 任务时，表单以算法默认值、所选模板和实际数据集生成可编辑 JSON。保存后由实验员另行启动。清洗子集 ZIP 导出目前支持 CIFAR-10。
+
+共享知识维护在 [knowledge-base](knowledge-base/experiment-failure.md)。管理员在「知识」页面点击「同步共享知识库」，即可在「已索引文档」中查看生效的资料。试搜 `GPU_OOM 显存不足`，并核对引用的文件和行号。部署时可通过 `SECURITY_MODEL_KNOWLEDGE_ROOT` 或 `-KnowledgeRoot` 指定独立目录。
+
+实验助手提供一个对话窗口。可直接询问报告术语和实验排查问题，也可从自己的失败任务详情点击「分析失败」，让助手核对当前尝试的报告和派发证据。两个入口均可在本地工作。详见 [知识检索与助手实操](docs/agent-rag-demo.md)。
+
+当前实验助手页面的知识问答和失败诊断均在本地运行。兼容的外部模型接口可通过启动参数 `-EnableDeepSeek` 启用，密钥默认从 `secrets/deepseek.key.txt` 读取，也可通过 `-DeepSeekKeyFile` 指定。管理员可在「账号管理」中创建、启用或禁用实验员，在「超参模板」中编辑共享模板。
 
 停止并确认端口释放：
 
@@ -220,9 +229,9 @@ pwsh -File scripts\dev\Start-FrontendStatic.ps1 -StaticPort 8014 -ApiPort 8100
 - 以管理员身份点击“验证/Validate”，或调用 `POST /api/dataset/{datasetId}/validate`；状态变为 `success` 后才可被任务选用。
 - 这一步不是“解析真实 CIFAR-10”，只证明目录存在、可读且非空；短桩任务不依赖真实样本。
 
-6. 在任务中心创建 LDD 任务，选择 `Stub Demo Dataset` 和 `LDD (VaB)`，先做参数校验/预检，再启动。等待任务进入 `success`。
+6. 在任务中心创建 LDD 任务，选择 `Stub Demo Dataset` 和 `LDD (VaB)`。创建后任务状态为 `pending`。核对参数后，在任务详情点击“启动任务”并确认，等待任务进入 `success`。
 
-7. 在任务详情查看状态、报告、日志和清洗子集导出入口。
+7. 在任务详情核对状态、报告和短桩调用标记。清洗子集 ZIP 需要可读取的 CIFAR-10 原始批次及对应保留比例的筛选索引，普通短桩任务没有这些产物。
 
 8. 停止并确认端口释放：
 
@@ -234,7 +243,7 @@ Get-NetTCPConnection -State Listen -LocalPort 8100 -ErrorAction SilentlyContinue
 
 短桩只用于 UI/API 闭环演示，不代表真实 LDD/GPU 结果。真实 LDD 必须按
 [`docs/sdd/25-ldd-real-acceptance-checklist.md`](docs/sdd/25-ldd-real-acceptance-checklist.md)
-在受控环境另立运行窗口，本轮不启动。
+在受控环境另立运行窗口。
 
 ## 构建与验证
 
@@ -257,7 +266,7 @@ pwsh -File scripts\run-mysql-it.ps1
 ```
 
 测试数字、本轮实际结果和未执行项统一记录在
-[`docs/sdd/26-current-delivery-facts.md`](docs/sdd/26-current-delivery-facts.md) §4。
+[`docs/sdd/26-current-delivery-facts.md`](docs/sdd/26-current-delivery-facts.md) 的证据表。
 
 ## 数据、日志与运行产物
 
@@ -270,6 +279,7 @@ pwsh -File scripts\run-mysql-it.ps1
 ## 文档与学习入口
 
 - **当前事实**：[`docs/sdd/26-current-delivery-facts.md`](docs/sdd/26-current-delivery-facts.md)
+- **文档总入口**：[`docs/README.md`](docs/README.md)
 - **SDD 索引**：[`docs/sdd/README.md`](docs/sdd/README.md)
 - **源码学习路线**：[`docs/learning/README.md`](docs/learning/README.md)
 - **R4 契约与证据**：[`docs/sdd/21-r4-outbox-rabbitmq-design.md`](docs/sdd/21-r4-outbox-rabbitmq-design.md)

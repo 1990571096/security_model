@@ -1,5 +1,42 @@
 # 设计决策记录
 
+以下规则以 `a674a04` 的运行代码为准。分阶段的决策背景和原始验收记录保留在本页末尾。[设计思路](../project-design-overview.md) · [可靠性练习](../learning/03-reliability.md)
+
+## ADR-013 任务归属与读取权限
+
+任务归属由 `owner_user_id` 表达，它存放当前登录用户的稳定 ID。创建人名称用于审计展示。`TaskAccessGuard` 核验详情、报告、日志和导出关联任务的读取权限。只有启用 `admin-cross-user-read` 时管理员才有跨用户读取权限。变更还要求本人拥有任务，历史 demo 行禁止变更，未归属记录也无法写入。[TaskAccessGuard](../../migration-backend/src/main/java/com/securitymodel/application/task/TaskAccessGuard.java)
+
+## ADR-014 R2 GPU 单槽租约过期与接管
+
+MySQL GPU 单槽租约在 `db` 模式由启动事务取得，在 `rabbit` 模式由 Worker 领取时取得。租约过期代表心跳失效，旧 Python 或训练子进程仍可能占 GPU。`GpuLeaseService` 将过期但尚未确认退出的槽位置为 `blocked`，等待恢复核验。心跳与正常释放带 `lease_token` 条件，防止旧执行者修改新租约。[GpuLeaseService](../../migration-backend/src/main/java/com/securitymodel/application/task/GpuLeaseService.java)
+
+### 原执行者失联
+
+例如 API 进程意外退出，训练子进程可能仍在运行。此时直接接管 GPU 会让两轮训练争用一个槽位。R2 的恢复路径先按 `taskId` 和 `runId` 找到旧进程记录，再检查退出依据。租约有效期用于识别失联，进程退出依据用于决定槽位能否重新分配。
+
+## ADR-017 进程树退出与恢复
+
+取消或超时进入 Java 进程清理逻辑。执行器检查适配器进程、后代和已登记的 Python 子进程。已确认退出后才能释放相应租约，证据不充分时隔离槽位。恢复扫描先对比意图记录的 `run_id`、`attempt` 与任务当前运行，旧意图退出自身的恢复路径，避免探测或终止新 attempt。[恢复协调器](../../migration-backend/src/main/java/com/securitymodel/application/task/DispatchRecoveryCoordinator.java) · [执行器等待与清理](../project-implementation-guide.md#5-失败重试取消与恢复)
+
+## ADR-018 调度意图与请求幂等
+
+调度意图随启动事务写入 `pending`。派发方用条件更新竞争 `pending → submitting`，完成交接登记后转为 `submitted`。无法继续的旧轮次或失败派发可转为 `abandoned`。恢复协调器结合意图阶段、进程证据与当前运行身份决定后续动作。[TaskDispatchCoordinator](../../migration-backend/src/main/java/com/securitymodel/application/task/TaskDispatchCoordinator.java) · [Rabbit 派发契约](21-r4-outbox-rabbitmq-design.md)
+
+请求幂等的唯一键由 `owner_user_id`、`operation`、`idempotency_key` 组成。`request_hash` 单独比较请求内容。同键同内容可以重放已完成响应，同键不同内容产生冲突。任务启动的行锁、状态条件和当前运行 ID 仍负责执行层并发保护。[幂等表定义](../../sql/security_model_request_idempotency.sql) · [RequestIdempotencyService](../../migration-backend/src/main/java/com/securitymodel/application/task/RequestIdempotencyService.java)
+
+## ADR-019 Redis 资源缓存与可观测性
+
+Redis 资源目录缓存用代际值防止旧值回填。读取方先读代际再回源 MySQL。写事务提交后，缓存组件推进代际并删除条目。回填的 Lua 脚本只在代际仍一致时写入，Redis 失败时资源查询可以回源，已有缓存按 TTL 收敛。[ResourceCatalogCache](../../migration-backend/src/main/java/com/securitymodel/infrastructure/cache/ResourceCatalogCache.java)
+
+Actuator 配置暴露 `health`、`info`、`metrics`。`health/liveness` 反映进程健康，`health/readiness` 纳入调度 readiness。Rabbit 派发健康由管理员接口 `/api/observability/dispatch` 提供。端点暴露范围和访问控制分别由运行配置与 Spring Security 决定。[application.yml](../../migration-backend/src/main/resources/application.yml)
+
+## ADR-020 至 ADR-026 知识、助手与 Rabbit
+
+知识检索从有权访问的材料生成词法候选，本地哈希向量可参与重排。未知问题通过词法门槛回空。助手通过服务端工具与确认记录约束业务动作。Rabbit 使用事务内 Outbox 和消费账本，Worker 从 MySQL 恢复权威执行请求。[Agent / RAG 实操](../agent-rag-demo.md) · [Rabbit 派发契约](21-r4-outbox-rabbitmq-design.md)
+
+## 历史记录
+
+<!-- knowledge:historical -->
 > 本文是 ADR 历史记录。当前测试计数、R4/单机部署状态和正式 5 epochs 边界以
 > [`26-current-delivery-facts.md`](26-current-delivery-facts.md) 为准；ADR 中的
 > “部署验收未执行”等状态按当时决策快照理解。
@@ -532,3 +569,4 @@ Agent 采用外部大模型 API，本机不部署大模型。生成模型和 emb
 **结果**：详细设计、故障矩阵、实施顺序与未决问题写入 `21-r4-outbox-rabbitmq-design.md`。2026-11-16 本机已用真实 RabbitMQ + MySQL + 双 JVM + 短 Python 桩执行：R4-01 正常/停 Broker 恢复/事务回滚零残留；R4-02 重复消息幂等、不可路由、旧 claim token、真实 Broker confirm/return、7s 延迟 confirm 3 次失败后 dead 且不误判 success；R4-03 Worker 强杀后孤儿 PID 4736 被杀、任务 uncertain 收敛、无新 attempt；R4-04 GPU_BUSY 三次退避耗尽、毒消息 DLQ、DB 中断不误 ACK、恢复代理后不重启 Worker 自动重取归属并延迟开消费；R4-05 执行中取消、完成后取消返回冲突且终态保持；R4-06 `db/worker` 启动拒绝、drain 拒绝、v2 旧队列隔离、db→rabbit→db 双向切换；R4-07 API 重启；R4-08 failed 重放拒绝、非 owner 403、Broker 故障自然 dead 后成功重放、replay/cancel 并发、旧 dead 与新 attempt 竞争返回 `DLQ_REPLAY_IDENTITY_MISMATCH`。当时全量 287 单测 + 106 IT 全绿（`tmp/stage2-full-verify-new.log`，历史快照）；提交 `ee10704`/`cd5a6ae`，远端 run `43846823071` backend/python/frontend 全绿（历史 CI）。剩余边界仅 R4-04 长期 DB 故障/多任务退避压力与跨主机；详见 `20` §6.8 与 `21` §16。**实现验收通过（隔离）+ 单机启停演练通过，生产多机未验收，不得写成生产部署通过**。
 
 **边界**：单机单 GPU 槽、单 API、单 Worker；不做多机/Kubernetes/对象存储/Kafka，不承诺 exactly-once；生产库 `eladmin` 未迁移；正式 5 epochs 仅完成工程验收，论文效果与生产多机未验收。
+<!-- /knowledge:historical -->

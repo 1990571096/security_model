@@ -4,6 +4,7 @@ import com.securitymodel.application.audit.CurrentUserService;
 import com.securitymodel.application.audit.OperationAuditService;
 import com.securitymodel.domain.algorithm.Algorithm;
 import com.securitymodel.domain.dataset.Dataset;
+import com.securitymodel.domain.dataset.VabCifarDataset;
 import com.securitymodel.infrastructure.cache.ResourceCatalogCache;
 import com.securitymodel.infrastructure.persistence.mapper.AlgorithmMapper;
 import com.securitymodel.infrastructure.persistence.mapper.DatasetMapper;
@@ -59,20 +60,21 @@ public class ResourceCommandService {
         currentUser.requireAdmin();
         Dataset dataset = id == null ? new Dataset() : requiredDataset(id);
         String previousPath = dataset.getFilePath();
+        String previousType = dataset.getDatasetType();
         dataset.setDatasetName(input.datasetName().trim());
         dataset.setDatasetType(input.datasetType().trim());
         dataset.setFilePath(input.filePath().trim());
-        dataset.setSampleCount(input.sampleCount());
-        dataset.setClassCount(input.classCount());
         dataset.setDescription(input.description());
         dataset.setEnabled(input.enabled());
         // Registration alone does not establish that a dataset can be parsed by LDD.
         try {
             Path.of(input.filePath());
-            if (id == null || !input.filePath().trim().equals(previousPath)) {
+            if (id == null || !dataset.getFilePath().equals(previousPath)
+                    || !dataset.getDatasetType().equals(previousType)) {
                 dataset.setParseStatus("pending");
                 dataset.setParseMessage("待文件格式与内容验证");
                 dataset.setParseTime(null);
+                clearStatistics(dataset);
             }
         } catch (InvalidPathException exception) {
             throw new IllegalArgumentException("数据集路径格式无效");
@@ -152,17 +154,12 @@ public class ResourceCommandService {
         return algorithm;
     }
 
-    /**
-     * Admin-only verification step that turns a registered path into a usable dataset.
-     *
-     * <p>R1 scope: existence and readability only. It does not parse samples, count labels or
-     * hash content, and a failure is reported as {@code parse_status='failed'} instead of an
-     * exception so the operator can read the reason in the UI.</p>
-     */
+    /** Verifies known CIFAR batches before storing their published dataset statistics. */
     @Transactional
     public Dataset verifyDataset(Long id) {
         currentUser.requireAdmin();
         Dataset dataset = requiredDataset(id);
+        clearStatistics(dataset);
         Path path;
         try {
             path = Path.of(dataset.getFilePath()).toAbsolutePath().normalize();
@@ -176,6 +173,20 @@ public class ResourceCommandService {
             return markVerification(dataset, "failed", "路径不可读：" + path);
         }
         try {
+            VabCifarDataset cifar = VabCifarDataset.fromDirectory(path);
+            if (cifar != null) {
+                var unusable = cifar.unusableFiles(path);
+                if (!unusable.isEmpty()) {
+                    return markVerification(dataset, "failed", "CIFAR 批次文件缺失、为空或不可读：" + String.join(", ", unusable));
+                }
+                var statistics = cifar.verifyOfficialBatches(path);
+                dataset.setSampleCount(statistics.trainingSamples());
+                dataset.setClassCount(statistics.classes());
+                dataset.setFeatureCount(statistics.features());
+                dataset.setFileSize(statistics.fileSize());
+                return markVerification(dataset, "success", "CIFAR 官方批次校验通过：训练集 %d，测试集 %d，类别 %d"
+                        .formatted(statistics.trainingSamples(), statistics.testSamples(), statistics.classes()));
+            }
             if (Files.isRegularFile(path) && Files.size(path) == 0) {
                 return markVerification(dataset, "failed", "数据集文件为空：" + path);
             }
@@ -192,6 +203,13 @@ public class ResourceCommandService {
         return markVerification(dataset, "success", "路径验证通过：存在且可读");
     }
 
+    private void clearStatistics(Dataset dataset) {
+        dataset.setSampleCount(null);
+        dataset.setClassCount(null);
+        dataset.setFeatureCount(null);
+        dataset.setFileSize(null);
+    }
+
     private Dataset markVerification(Dataset dataset, String status, String message) {
         dataset.setParseStatus(status);
         dataset.setParseMessage(message);
@@ -206,7 +224,7 @@ public class ResourceCommandService {
     }
 
     private Dataset requiredDataset(Long id) {
-        Dataset dataset = datasets.selectById(id);
+        Dataset dataset = datasets.lockForUpdate(id);
         if (dataset == null) throw new ResourceNotFoundException("数据集不存在");
         return dataset;
     }

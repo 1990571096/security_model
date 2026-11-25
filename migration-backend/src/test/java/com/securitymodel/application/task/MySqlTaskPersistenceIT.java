@@ -1152,7 +1152,8 @@ class MySqlTaskPersistenceIT {
                 + "VALUES (90, 5, 'pending', 0), (91, 10, 'running', 40)");
 
         new com.securitymodel.application.export.ExportRecoveryRunner(exportMapper,
-                mock(com.securitymodel.application.audit.OperationAuditService.class))
+                mock(com.securitymodel.application.audit.OperationAuditService.class),
+                new DispatchRuntimePolicy("db", "api"))
                 .recoverOrphanedExports();
 
         assertEquals("failed", jdbc.queryForObject(

@@ -51,6 +51,10 @@ public class AttemptProcessRegistry {
         this.workspace = configured.isEmpty() ? null : Paths.get(configured).toAbsolutePath().normalize();
     }
 
+    public boolean matchesWorkspace(Path workingDirectory) {
+        return workingDirectory.equals(workspace);
+    }
+
     /**
      * Marks an attempt as accepted by this JVM before the (possibly async) executor starts.
      * Recovery scanning must not reap an attempt that this JVM still owns.

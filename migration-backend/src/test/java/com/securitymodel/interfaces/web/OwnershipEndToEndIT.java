@@ -23,7 +23,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 /**
  * Full-chain ownership test: real Spring Security filter chain, real controllers, real
  * services and real MySQL rows — no mocked mapper or service. Two accounts sign in through
- * /auth/code + /auth/login and then address the same task.
+ * /auth/login and then address the same task.
  *
  * <p>Cross-user read is explicitly disabled here; the enabled variant lives in
  * {@link OwnershipEndToEndCrossReadIT}.</p>
@@ -223,6 +223,14 @@ class OwnershipEndToEndIT {
     }
 
     @Test
+    void artifactPreviewRejectsTaskWithoutAnArtifactRoot() throws Exception {
+        mockMvc.perform(get("/api/pre-defense/artifact-preview/" + OwnershipE2ESupport.ALICE_TASK)
+                        .param("artifactPath", OwnershipE2ESupport.PREVIEW_PNG.toString())
+                        .header("Authorization", login("alice")))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
     void auditQueryIsOwnerScoped() throws Exception {
         String alice = login("alice");
         String bob = login("bob");
@@ -238,17 +246,8 @@ class OwnershipEndToEndIT {
     }
 
     private String login(String username) throws Exception {
-        String codeResponse = mockMvc.perform(get("/auth/code"))
-                .andExpect(status().isOk())
-                .andReturn().getResponse().getContentAsString();
-        String uuid = objectMapper.readTree(codeResponse).path("uuid").asText();
-        String image = objectMapper.readTree(codeResponse).path("img").asText();
-        String svg = new String(java.util.Base64.getDecoder().decode(image.split(",")[1]));
-        var captcha = java.util.regex.Pattern.compile("<text[^>]*>(\\d{4})</text>").matcher(svg);
-        assertTrue(captcha.find(), "captcha svg must contain a 4 digit code");
-
         String body = objectMapper.writeValueAsString(Map.of(
-                "uuid", uuid, "code", captcha.group(1), "username", username,
+                "username", username,
                 "password", OwnershipE2ESupport.RAW_PASSWORD));
         String response = mockMvc.perform(post("/auth/login")
                         .contentType(MediaType.APPLICATION_JSON).content(body))

@@ -1,5 +1,7 @@
 package com.securitymodel.application.audit;
 
+import java.security.Principal;
+
 /**
  * Authenticated identity carried by the JWT.
  *
@@ -8,7 +10,7 @@ package com.securitymodel.application.audit;
  * Tokens issued before the R1 rollout carry no {@code userId}, in which case it is
  * {@code null} and task writes are rejected until the user signs in again.</p>
  */
-public record AuthenticatedUser(Long userId, String username, boolean admin) {
+public record AuthenticatedUser(Long userId, String username, boolean admin) implements Principal {
 
     public static final String ROLE_USER = "ROLE_USER";
     public static final String ROLE_ADMIN = "ROLE_ADMIN";
@@ -19,6 +21,11 @@ public record AuthenticatedUser(Long userId, String username, boolean admin) {
 
     public static AuthenticatedUser system() {
         return new AuthenticatedUser(null, "system", false);
+    }
+
+    @Override
+    public String getName() {
+        return username;
     }
 
     public boolean hasStableIdentity() {

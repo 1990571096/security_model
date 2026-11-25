@@ -12,6 +12,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.dao.DuplicateKeyException;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -37,6 +38,7 @@ class ResourceCommandServiceTest {
         assertEquals("CIFAR", dataset.getDatasetName());
         assertEquals("pending", dataset.getParseStatus());
         assertNull(dataset.getParseTime());
+        assertNull(dataset.getSampleCount());
         assertEquals("operator", dataset.getCreateBy());
         verify(datasets).insert(dataset);
         verify(audit).recordResource(eq("dataset"), any(), eq("CREATE"), eq("pending"), any());
@@ -48,12 +50,14 @@ class ResourceCommandServiceTest {
         existing.setDatasetId(4L);
         existing.setFilePath("old.zip");
         existing.setParseStatus("success");
-        when(datasets.selectById(4L)).thenReturn(existing);
+        existing.setSampleCount(50_000);
+        when(datasets.lockForUpdate(4L)).thenReturn(existing);
 
         Dataset updated = service.saveDataset(4L,
                 new ResourceCommandService.DatasetInput("CIFAR", "image", "new.zip", 1, 2, null, true));
 
         assertEquals("pending", updated.getParseStatus());
+        assertNull(updated.getSampleCount());
         verify(datasets).updateById(existing);
         verify(cache).evict(ResourceCatalogCache.DATASET_LIST, "security-model:resource:dataset:4");
     }
@@ -93,7 +97,7 @@ class ResourceCommandServiceTest {
     void verificationPromotesAReadableDirectory(@TempDir Path directory) throws Exception {
         java.nio.file.Files.createFile(directory.resolve("cifar10.bin"));
         Dataset existing = existingDataset(3L, directory.toString());
-        when(datasets.selectById(3L)).thenReturn(existing);
+        when(datasets.lockForUpdate(3L)).thenReturn(existing);
         when(user.username()).thenReturn("admin");
 
         Dataset verified = service.verifyDataset(3L);
@@ -108,7 +112,7 @@ class ResourceCommandServiceTest {
     @Test
     void verificationReportsMissingPathWithoutThrowing() {
         Dataset existing = existingDataset(4L, "F:/security-model/definitely-missing-dataset");
-        when(datasets.selectById(4L)).thenReturn(existing);
+        when(datasets.lockForUpdate(4L)).thenReturn(existing);
         when(user.username()).thenReturn("admin");
 
         Dataset verified = service.verifyDataset(4L);
@@ -122,13 +126,31 @@ class ResourceCommandServiceTest {
     @Test
     void verificationRejectsAnEmptyDirectory(@TempDir Path directory) {
         Dataset existing = existingDataset(5L, directory.toString());
-        when(datasets.selectById(5L)).thenReturn(existing);
+        when(datasets.lockForUpdate(5L)).thenReturn(existing);
         when(user.username()).thenReturn("admin");
 
         Dataset verified = service.verifyDataset(5L);
 
         assertEquals("failed", verified.getParseStatus());
         assertTrue(verified.getParseMessage().contains("目录为空"));
+    }
+
+    @Test
+    void verifiesTheRequiredCifar100FilesBeforeMakingTheDatasetAvailable(@TempDir Path root) throws Exception {
+        Path directory = Files.createDirectory(root.resolve("cifar-100-python"));
+        Files.writeString(directory.resolve("meta"), "metadata");
+        Files.writeString(directory.resolve("train"), "training data");
+        Files.createFile(directory.resolve("test"));
+        Dataset dataset = existingDataset(6L, directory.toString());
+        when(datasets.lockForUpdate(6L)).thenReturn(dataset);
+
+        assertEquals("failed", service.verifyDataset(6L).getParseStatus());
+        assertTrue(dataset.getParseMessage().contains("test"));
+
+        Files.writeString(directory.resolve("test"), "test data");
+        assertEquals("failed", service.verifyDataset(6L).getParseStatus());
+        assertTrue(dataset.getParseMessage().contains("校验和不匹配"));
+        assertNull(dataset.getSampleCount());
     }
 
     private Dataset existingDataset(Long id, String path) {

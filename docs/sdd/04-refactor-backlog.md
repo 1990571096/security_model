@@ -1,5 +1,10 @@
 # 重构待办与验收标准
 
+以下是早期重构清单。核对当前实现时，优先沿创建、启动、运行、报告与导出五个步骤定位代码，再按版本检查对应的测试与验收记录。[实现指南](../project-implementation-guide.md) · [交付事实](26-current-delivery-facts.md)
+
+## 历史记录
+
+<!-- knowledge:historical -->
 ## R0：SDD 与展示范围收敛
 
 状态：已完成。
@@ -92,3 +97,4 @@
 - 已迁移至 Spring Boot 3 + Java 17，并将当前 LDD 业务范围迁至新后端。
 - 已迁移至 Vue 3 + Vite + Element Plus + Pinia，迁移版前端连接新后端。
 - 旧系统保留为回归和回滚基线，不参与迁移版主流程。
+<!-- /knowledge:historical -->

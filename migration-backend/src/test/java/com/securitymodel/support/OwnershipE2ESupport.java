@@ -124,12 +124,15 @@ public final class OwnershipE2ESupport {
     private static void createUserTable(Statement statement, String schema) throws Exception {
         statement.execute("""
                 CREATE TABLE `sys_user` (
-                  user_id BIGINT NOT NULL,
+                  user_id BIGINT NOT NULL AUTO_INCREMENT,
                   username VARCHAR(180) NULL,
                   nick_name VARCHAR(255) NULL,
                   password VARCHAR(255) NULL,
                   is_admin BIT(1) NULL DEFAULT b'0',
                   enabled BIT(1) NULL,
+                  update_by VARCHAR(255) NULL,
+                  update_time DATETIME NULL,
+                  deleted_at DATETIME(3) NULL,
                   PRIMARY KEY (user_id),
                   UNIQUE KEY uniq_username (username)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
@@ -232,12 +235,12 @@ public final class OwnershipE2ESupport {
     }
 
     private static void seedUsers(Statement statement) throws Exception {
-        statement.execute("INSERT INTO sys_user VALUES (1, 'admin', '管理员', '" + ENCODED_PASSWORD
-                + "', b'1', b'1')");
-        statement.execute("INSERT INTO sys_user VALUES (2, 'alice', 'Alice', '" + ENCODED_PASSWORD
-                + "', b'0', b'1')");
-        statement.execute("INSERT INTO sys_user VALUES (3, 'bob', 'Bob', '" + ENCODED_PASSWORD
-                + "', b'0', b'1')");
+        statement.execute("""
+                INSERT INTO sys_user (user_id, username, nick_name, password, is_admin, enabled)
+                VALUES (1, 'admin', '管理员', '%1$s', b'1', b'1'),
+                       (2, 'alice', 'Alice', '%1$s', b'0', b'1'),
+                       (3, 'bob', 'Bob', '%1$s', b'0', b'1')
+                """.formatted(ENCODED_PASSWORD));
     }
 
     private static void seedTasks(Statement statement) throws Exception {
@@ -300,7 +303,11 @@ public final class OwnershipE2ESupport {
         try {
             Path dir = Files.createTempDirectory("security-model-e2e-artifacts-");
             Files.write(dir.resolve("preview.png"), Base64.getDecoder().decode(PNG_BASE64));
-            Files.createFile(dir.resolve("selected_indices_" + EXPORT_RATIO + ".npy"));
+            Files.write(dir.resolve("selected_indices_" + EXPORT_RATIO + ".npy"), new byte[] {1});
+            Path batches = Files.createDirectory(dir.resolve("cifar-10-batches-py"));
+            for (int number = 1; number <= 5; number++) {
+                Files.write(batches.resolve("data_batch_" + number), new byte[] {1});
+            }
             try (ZipOutputStream zip = new ZipOutputStream(
                     Files.newOutputStream(dir.resolve("clean-subset-" + EXPORT_RATIO + ".zip")))) {
                 zip.putNextEntry(new ZipEntry("subset-index.txt"));
