@@ -54,7 +54,7 @@ Python 适配器
 
 将文件看成一本交接记录。Java 在请求写 `runId: "r1"` 和 `attempt: 1`。Python 解出它们，再用结果字段 `run_id: "r1"` 和 `attempt: 1` 标记结果。Java 检查退出码、文件结构、状态和身份，再按 `task_id=42 AND current_run_id='r1' AND status='running'` 写回。进度更新也带运行条件。Python 的交付动作就是落文件，Java 负责持久化任务状态。
 
-[真实文件协议](../project-implementation-guide.md#3-java-怎样把参数交给-python) · [只需 Python 的 3 分钟练习](02-java-python.md)
+[真实文件协议](../project-implementation-guide.md#7-java-到-python文件协议) · [只需 Python 的 3 分钟练习](02-java-python.md)
 
 ## 第五步 看报告，再决定是否导出
 

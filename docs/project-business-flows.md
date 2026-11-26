@@ -10,6 +10,65 @@
 
 ## 场景索引
 
+第一次学习先读下面的主线，再按需要进入各场景。示例统一使用 `taskId=42`、`runId=r1`、`attempt=1`、`exportId=701`。实际 ID 由系统生成，`runId` 是 UUID。示例使用已核验的 CIFAR-10，派发模式是仓库默认的 `db/api`。
+
+### 一次 CIFAR-10 实验怎样完成
+
+```mermaid
+sequenceDiagram
+    actor User as 实验者
+    participant UI as Vue 任务页面
+    participant API as Java HTTP 接口与业务服务
+    participant DB as MySQL
+    participant Exec as Java taskAsync 执行线程
+    participant Py as Python 适配器与 VaB
+    User->>UI: 选择已核验的数据集与 LDD
+    UI->>API: POST /api/pre-defense/parameter-preview
+    API-->>UI: 返回校验后的参数供编辑
+    User->>UI: 保存任务
+    UI->>API: POST /api/pre-defense
+    API->>DB: 插入任务 42，pending
+    API-->>UI: 201，返回任务 42
+    User->>UI: 点击启动并确认
+    UI->>API: POST /api/pre-defense/start/42
+    API->>DB: 加锁校验，写 r1/1、快照、租约、派发意图
+    DB-->>API: 启动事务提交
+    API->>Exec: afterCommit 提交本地异步执行
+    API-->>UI: 200，启动命令已处理
+    Exec->>Py: 写 request.json，传文件路径并启动进程
+    loop 训练期间
+        Py-->>Exec: 更新 progress.json 并写日志
+        Exec->>DB: 写入当前轮次进度
+        UI->>API: 轮询任务详情与增量日志
+        API-->>UI: 进度与日志片段
+    end
+    Py-->>Exec: 写 result.json 后退出
+    Exec->>DB: 校验身份并写结果，再更新终态
+    UI->>API: 查询报告
+    API-->>UI: 本轮结果与可导出比例
+    User->>UI: 选择已有保留比例并提交导出
+    UI->>API: POST /cleaned-dataset/exports/42
+    API->>DB: 登记或复用导出记录 701
+    API->>Exec: 新建或重建时，提交后异步打包
+    Exec->>Py: 根据索引与原数据生成 ZIP
+    Exec->>DB: 更新导出进度与文件位置
+    UI->>API: 查 701 的状态，成功后下载 ZIP
+```
+
+图中的导出路径相对于 `/api/pre-defense`。训练与导出复用 `taskAsync`，各自提交独立工作。HTTP 启动响应和工作线程真正开始运行的先后由调度决定。
+
+| 阶段 | 请求和业务规则 | 留下什么证据 | 下一步是谁 |
+| --- | --- | --- | --- |
+| 准备数据 | 管理员登记路径并验证文件。任务页查询可用资源，选中数据和算法后请求预览 | 数据集校验结果、参数编辑框 | 用户确认建档 |
+| 创建 | `submitCreate` 封装 ID 和参数 JSON 字符串，`create` 校验归属信息、资源和参数并保存最终参数 | Network 可见 `201`，任务行 `pending`、`progress=0` | 用户再次发起启动 |
+| 启动 | 命令服务锁任务行，检查归属和 `pending`，分配 `r1/1`，同步登记租约、快照和派发意图 | 任务行 `running`，`current_run_id=r1`，快照中有本轮请求 | 提交后的派发协调器 |
+| 交给 Python | 异步执行器写入 `request.json`。操作系统启动 Python，把路径交给适配器 | `attempt-1` 下的请求和日志文件 | Python 读取请求，再启动 VaB |
+| 观测 | Python 更新进度快照，Java 等待子进程时采样。Vue 运行期间约每 3 秒请求 Java | `progress.json`、数据库进度、日志字节偏移 | 用户或系统等待本轮结束 |
+| 回收结果 | Python 收集指标、样本索引和产物引用并退出。Java 核对 JSON 内容、轮次和状态，条件更新结果及终态 | `result.json`、`cleaning_result`、`success` 或 `failed` | 报告查询服务、用户 |
+| 导出交付 | 报告按产物判断可选比例。用户提交后，根据 `taskId` 和比例创建、复用或重建导出工作 | `exportId`、导出状态、ZIP。父任务保持 `success` | 浏览器用 `exportId` 获取文件 |
+
+顺着表走一遍时，每行只记录「输入、状态变化、下一个执行者」。随后合上文档，把两条 POST、三类 JSON 和独立导出画在一张纸上。进一步跟教案定位源码和验证点。[逐步跟读练习](learning/01-follow-a-task.md)
+
 | 编号 | 场景 | 主要验证点 |
 | --- | --- | --- |
 | 0 | 全局角色与状态 | 页面职责、`running` 的真实含义 |
@@ -201,7 +260,7 @@ TaskCenterView 选择数据集/算法/参数
 PreDefenseTaskController.create
   → PreDefenseTaskCommandService.create
   → 校验当前用户、数据集、算法
-  → LddConfigurationPolicy.merge
+  → LddConfigurationPolicy.normalizeAndValidate
   → INSERT sys_pre_defense(status='pending')
   → 返回 201 + taskId
 ```
@@ -270,7 +329,7 @@ afterCommit
   result.json
 ```
 
-`request.json` 中的关键内容：
+`request.json` 的局部投影如下。实际 `customParams` 是后端已合并、校验的完整最终配置，外层序列化时保留为字符串。
 
 ```json
 {
@@ -281,7 +340,7 @@ afterCommit
   "dataset": { "path": "F:/.../VaB-main/dataset" },
   "algorithm": {
     "path": "vab://pre-defense/ldd",
-    "configJson": "{\"dataset\":\"cifar10\",...}"
+    "configJson": "{\"dataset\":\"cifar10\"}"
   },
   "customParams": "{\"num_epochs\":1}"
 }
@@ -308,7 +367,7 @@ Java 写入 request.json
 
 ### 2.6 Python 写结果
 
-`result.json` 至少包含：
+`result.json` 的成功结果示意如下，实际路径以本轮产物目录为准。
 
 ```json
 {
@@ -316,11 +375,13 @@ Java 写入 request.json
   "run_id": "r1",
   "attempt": 1,
   "status": "success",
-  "executor": "vab-ldd",
+  "executor": "python-vab-adapter",
+  "message": "VaB LDD completed",
   "started_at": "...",
   "finished_at": "...",
   "artifacts": {
-    "retained_clean_subset": "..."
+    "selection_kind": "retained_clean_subset",
+    "selection_files": ["<本轮产物目录>/selected_indices_10.npy"]
   }
 }
 ```
@@ -349,6 +410,25 @@ GET /api/pre-defense/logs/42?offsets=...
 ```
 
 报告从任务、结果、资源和导出状态拼装；日志按字节 offset 增量读取。报告不是重新跑训练。
+
+### 2.9 看着同一份状态推演三次故障
+
+```mermaid
+stateDiagram-v2
+    [*] --> pending: 创建任务 42
+    pending --> pending: 启动预检失败，事务回滚
+    pending --> running: 接受第一次启动，r1 和 attempt 1
+    running --> failed: 执行失败或不可安全恢复
+    running --> canceled: 本轮取消条件更新成功
+    running --> success: 当前轮结果校验并完成
+    failed --> running: 重试事务生成 r2 和 attempt 2
+```
+
+| 把流程暂停的位置 | 往后推演 | 去哪里验证 |
+| --- | --- | --- |
+| 两个请求都要从 `pending` 启动 42 | 第一个锁住任务行并写入 `running`。第二个即使换幂等键，拿到锁后读取的状态也变了 | `selectByIdForUpdate`、`start`、`claimForExecution` |
+| `r1` 已失败，`r2` 在跑，`r1` 的结果晚到 | `r1` 的文件可以匹配 `r1` 的内存请求。SQL 还要比较数据库的 `current_run_id`，因此写入影响 0 行 | `validateResult`、`updateResultForRun`、`finishForRun` |
+| `42` 已成功，`701` 的 ZIP 被清掉 | 下载返回 `410`。任务页捕获后尝试提交一次同一比例重建。原训练批次、索引和路径仍可用时，所有者可用已有导出 ID 重新获取 ZIP | `exportSubset`、`resolveDownloadFile`、`submit` |
 
 ## 3. 场景三：GTSRB 任务的差异
 
@@ -550,6 +630,25 @@ Worker 启动
 数据库断连后，不能只重连就开始消费；必须重新取得 ownership、重跑恢复、确认没有本地存活进程后才开消费。
 
 ## 9. 场景九：清洗子集导出
+
+```mermaid
+flowchart TD
+    R[成功任务报告展示已有清洗索引比例] --> S[所有者提交 taskId 和 isolationRatio]
+    S --> Q{同任务同比例有导出记录}
+    Q -->|排队或运行中| A[返回现有 exportId]
+    Q -->|已成功且 ZIP 可读| A
+    Q -->|失败或 ZIP 失效| C[校验资格并重置现有导出记录]
+    Q -->|无记录| N[校验资格并登记 pending]
+    C --> W[提交后异步执行]
+    N --> W
+    W --> P[读取 CIFAR-10 批次与索引并生成 ZIP]
+    P -->|生成成功| Z[导出记录 success]
+    P -->|生成失败| F[导出记录 failed]
+    A --> D[用 exportId 查询状态]
+    Z --> D
+    D -->|成功且文件可读| L[下载 ZIP]
+    D -->|记录成功但文件已失效| G[下载请求返回 410]
+```
 
 ### 9.1 前提
 

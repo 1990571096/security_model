@@ -6,6 +6,17 @@
 
 ## 1. 代码地图与启动顺序
 
+带着 `42 / r1 / 1` 学。先打开页面和 API 文件，再进入 Java。每看到一个方法，把传入值、持久化位置和下一个调用者写下来。下面的顺序和[业务流程时序图](project-business-flows.md#一次-cifar-10-实验怎样完成)一致。
+
+| 跟读点 | 打开文件，搜索方法 | 要回答的问题 |
+| --- | --- | --- |
+| 预览与建档 | [TaskCenterView.vue](../migration-frontend/src/views/TaskCenterView.vue) 搜 `loadParameters`、`submitCreate`，再读 [preDefense.js](../migration-frontend/src/api/preDefense.js) | ID 选自哪里，哪一步只预览，哪一步写任务？ |
+| HTTP 与 DTO | [PreDefenseTaskController.java](../migration-backend/src/main/java/com/securitymodel/interfaces/web/PreDefenseTaskController.java) 搜 `previewParameters`、`create`、`start` | 两个 POST 传参分别走 `@RequestBody` 和 `@PathVariable`，框架如何找到对应方法？ |
+| 业务事务 | [PreDefenseTaskCommandService.java](../migration-backend/src/main/java/com/securitymodel/application/task/PreDefenseTaskCommandService.java) 搜 `create`、`lockOwned`、`launchTask` | 哪些值来自表单，哪些由后端生成，哪些行必须同事务提交？ |
+| 数据库边界 | [PreDefenseTaskMapper.java](../migration-backend/src/main/java/com/securitymodel/infrastructure/persistence/mapper/PreDefenseTaskMapper.java) 搜 `claimForExecution`、`finishForRun` | 启动和完成分别允许从什么状态进入？SQL 返回 0 行时发生了什么？ |
+| 跨语言执行 | [PythonLddTaskExecutor.java](../migration-backend/src/main/java/com/securitymodel/infrastructure/executor/PythonLddTaskExecutor.java) 搜 `invoke`，跟进 [algorithm_entry.py](../algorithm-runtime/vab/algorithm_entry.py) 的 `main`、`run`、`build_config` | 参数文本在哪里写入、在哪里解析？Java 凭什么认领结果？ |
+| 交付 | [PreDefenseReportController.java](../migration-backend/src/main/java/com/securitymodel/interfaces/web/PreDefenseReportController.java) 搜 `cleaned-dataset/exports`，跟到 [CleanSubsetExportService.java](../migration-backend/src/main/java/com/securitymodel/application/export/CleanSubsetExportService.java) 的 `submit` | 为什么报告可读、导出成功和 ZIP 可下载要分别判断？ |
+
 | 层 | 目录 | 主要职责 |
 | --- | --- | --- |
 | 前端 | `migration-frontend/src` | 页面、表单、轮询、错误提示 |
@@ -106,12 +117,39 @@ await openDetail(created)
 
 响应 `201` 返回任务行。此时还没有 `runId`，也不会占用 GPU。
 
+把一次请求拆成四个交接点。
+
+1. Vue 在 `loadParameters` 调 `POST /api/pre-defense/parameter-preview`。Java 解析 `PreDefenseTaskCommand` 后调用 `plan`，返回去掉 `data_path` 的参数对象，Vue 格式化后填充编辑框。预览结果可以在创建前编辑。
+2. 点击保存时，`submitCreate` 对编辑框文本做 `JSON.parse`，确认它是对象，再 `JSON.stringify` 回字符串。因此外层 HTTP Body 是 JSON 对象，里面的 `customParams` 是一段 JSON 文本。
+3. Spring MVC 按 HTTP 方法和映射找到 `create`。`@RequestBody` 让 Jackson 把外层 JSON 反序列化成命令 DTO。DTO 是接口传递数据的对象。`ownerUserId` 和状态由服务端建立，当前身份来自认证上下文。
+4. 服务通过 `requireApprovedPlan` 计算最终配置，把它存入任务的 `customParams`，而后 `taskMapper.insert(task)`。Mapper 把 Java 参数交给 MyBatis-Plus 生成或执行 SQL，实体映射到 `sys_pre_defense`。
+
+下面是删去细节后的教学伪代码。创建读资源、计算参数与建档。启动读取已建档任务，再计算用于本轮的执行计划。
+
+```java
+// Controller 层简化结构
+create(command, key) -> idempotency("task.create", key, command, createService)
+start(taskId, key)   -> idempotency("task.start", key, {taskId}, startService)
+
+// Service 层的两条入口
+createService(command):
+    plan = resolveAndValidate(command)
+    row = newPendingTask(ownerFromAuthentication, plan.finalParameters)
+    insert(row)
+    return row
+
+startService(taskId):
+    row = lockOwned(taskId)
+    requirePending(row)
+    launchTask(row, plan(row))
+```
+
 ### 3.3 幂等键
 
-`RequestIdempotencyService` 用 `(userId, operation, key, requestHash)` 记录请求：
+`RequestIdempotencyService` 按 `(userId, operation, key)` 定位幂等记录，并比较 `requestHash`：
 
 - 同键同内容已完成 → 返回原响应；
-- 同键不同内容 → `REQUEST_IN_PROGRESS` / 冲突；
+- 同键不同内容 → `IDEMPOTENCY_KEY_REUSED`；
 - 处理中重复 → 返回进行中，不重复写任务。
 
 幂等键解决 HTTP 重发，不替代数据库行锁。
@@ -130,7 +168,7 @@ await openDetail(created)
 BEGIN
   SELECT * FROM sys_pre_defense WHERE task_id=? FOR UPDATE
   校验 owner、status=pending、资源仍可用、执行器配置有效
-  attempt = max(历史 attempt)+1
+  attempt = 历史快照 attempts 数量 + 1，首次为 1
   runId = UUID
   db 模式：申请 GPU 单槽租约
   构建 DefenseTaskRequest（最终参数、资源路径、配额）
@@ -153,7 +191,7 @@ COMMIT
 
 ### 4.3 快照内容
 
-`execution_snapshot` 是 JSON 数组，每次 attempt 追加一项，至少包含：
+`execution_snapshot` 是含 `version` 和 `attempts` 数组的 JSON 对象，每轮向数组追加一项，至少包含：
 
 - 本轮 `DefenseTaskRequest`；
 - 请求/运行指纹；
@@ -163,9 +201,13 @@ COMMIT
 
 它的作用不是“日志”，而是回答“这一轮实际提交了什么”。算法配置在启动后被修改，不会改写历史快照。
 
+设计上同时使用锁和状态条件。`SELECT ... FOR UPDATE` 让同一行的并发命令依次完成整组校验和写入。`UPDATE ... WHERE status='pending'` 把状态机的前置条件放在写入点，调用方按受影响行数判断结果。Python 写进度时会带当前轮次和 `running` 条件，因为这条写入发生在另一个线程、另一个时刻。
+
+Spring 的事务代理包裹外部调用的 Service 方法。方法内部的数据库操作共享这次事务，抛出符合回滚规则的异常时一起回滚。`AfterCommitTaskDispatcher` 注册事务同步回调，提交后调用协调器。真正的线程池切换发生在另一个 Bean 的 `@Async("taskAsync")` 入口。后续工作线程不继承原请求的事务。
+
 ### 4.4 启动后返回什么
 
-响应 `200` 只表示启动命令已受理，任务已进入 `running`。此时 Python 可能还没创建。正确表述是“已提交执行”，不是“已经开始训练”。
+响应 `200` 的业务体包含 `message` 和 `taskId`。事务已经领取本轮运行。Python 何时创建取决于后台调度，页面通过任务详情查询状态和进度。若线程池拒绝提交，后台失败处理会把任务收敛到终态。
 
 ## 5. `db` 模式：事务提交后进入本地线程池
 
@@ -253,6 +295,37 @@ dispatchAfterCommit(request)
 即使 Broker 重投，任务身份和意图状态仍会阻止第二个训练进程。
 
 ## 7. Java 到 Python：文件协议
+
+### 交接时序
+
+```mermaid
+sequenceDiagram
+    participant J as Java 执行线程
+    participant F as 本轮目录
+    participant P as algorithm_entry.py
+    participant V as VaB 训练进程
+    participant D as MySQL
+    J->>F: Jackson 序列化请求并写 UTF-8 文件
+    J->>P: ProcessBuilder 传 stage 与三个文件路径
+    P->>F: 按 request 路径读取文本
+    F-->>P: 外层 JSON 和字段里的配置字符串
+    P->>P: 解析外层，解析配置，合成 VaB 参数
+    P->>V: Popen 启动本轮生成的脚本
+    loop 等待训练
+        V->>F: 更新进度快照
+        J->>F: 采样 progress.json
+        J->>D: 写当前 run 的进度
+    end
+    V-->>P: 训练结束并生成产物
+    P->>F: 汇总并写 result.json
+    P-->>J: 操作系统报告进程退出与退出码
+    J->>F: 读取 result.json
+    J->>D: 校验后条件写结果和终态
+```
+
+`ProcessBuilder` 接收的是一个参数列表。假设目录是 `F:/my workspace/...`，路径带空格，它仍然是列表里的同一个参数。`--request` 的值是文件名，JSON 内容由 Python 打开文件获得。stdout/stderr 路径在 Java 侧设为重定向目标，Python 不需要把整个结果塞进标准输出。
+
+可把请求目录当作一张工单夹。Java 放入工单、交出工单夹的位置，Python 在同一夹里更新进度和放回验收单。软件中的验收还包括进程退出码、JSON 字段和数据库的当前运行编号三道检查。跟着做一次无数据库练习。[02 亲手交接 JSON](learning/02-java-python.md)
 
 ### 7.1 目录
 
@@ -344,8 +417,8 @@ WHERE task_id = ?
 
 再执行：
 
-1. `persistResult` 写 `cleaning_result`、进度、结束时间；
-2. `finish` 条件更新终态；
+1. `persistResult` 通过 `updateResultForRun` 写 `cleaning_result`；
+2. `finish` 通过 `finishForRun` 写终态、最终进度和结束时间；
 3. 释放/隔离 GPU 租约；
 4. 清除 accepted 标记；
 5. 写审计。
@@ -385,13 +458,21 @@ WHERE task_id = ?
 
 导出是独立生命周期，父任务保持 `success`。
 
+用 Network 串起三次请求。提交接口用父任务 `taskId` 和 `isolationRatio`，返回 `202` 和导出记录。随后用返回的 `exportId` 查询，完成后再用同一个 `exportId` 下载。三条地址都在 `PreDefenseReportController`。`CleanSubsetExportExecutor.execute` 通过 `--export-clean-subset` 调用适配器的另一个入口，使用保留样本索引和原始训练批次装配 ZIP。它复用 `taskAsync`，有独立的导出状态变更。
+
+`TaskCenterView.exportSubset` 会先检查已有导出记录。新建或失败时提交导出，已有成功记录时直接尝试下载。下载遇到 `410` 后，本次操作最多提交一次重建，再继续查询和下载。换到另一条任务时，`detailVersion` 阻止旧页面操作更新当前详情。
+
+### 9.5 怎样判断一轮实验能否复盘
+
+从 `execution_snapshot.attempts` 找到 `r1/1` 的请求，然后在 `attempt-1` 找对应结果文件。启动快照的 `runtime` 由 `ExecutionFingerprintService` 构建，记录 Java 环境、执行路径及资源指纹。文件内容 SHA-256 受开关和大小上限约束，目录只记录路径和元信息。Python 结果中的 `runtime` 则由适配器采集，包含该进程观察到的 Python、PyTorch 与 CUDA 环境。这些信息用来检查两次实验的输入与环境差异。完整复现还取决于能否取到原文件、运行环境和对应代码。
+
 ## 10. 失败、取消、重试与恢复
 
 | 场景 | 代码入口 | 结果 |
 | --- | --- | --- |
 | 创建/启动预检失败 | `resolveCommand` / `launchTask` | 任务仍 pending，返回明确错误码 |
 | 线程池拒绝 | `dispatchAfterCommit` catch | 释放租约，失败收敛，意图 abandoned |
-| Python 退出无结果 | `PythonLddTaskExecutor.invoke` | `RESULT_MISSING` |
+| Python 正常退出无结果 | `PythonLddTaskExecutor.invoke` | `RESULT_MISSING`，非零退出且没有合法结构化失败时走退出故障分类 |
 | Python 失败结果 | `validateResult` | 写 failed + error_code |
 | 用户取消 | `cancel` | 条件更新 canceled，通知执行器/Worker 终止进程 |
 | 取消后旧结果晚到 | `updateResultForRun` | `current_run_id/status` 不匹配，0 行 |
@@ -778,7 +859,44 @@ styles.css
 
 后端接口、数据表和派发逻辑没有改。不要把“页面显示短类型”误写成“后端类型改成 image”，也不要把“统计页增加图表”误写成“新增统计接口”。
 
-## 18. 一页代码索引
+## 18. 实验助手怎样接入现有 Java 服务
+
+先选一个运行已结束的任务，练习询问「任务 42 为什么失败」和「帮我预览重试任务 42」。前一句需要业务证据，后一句还需要保留用户确认的机会。
+
+```mermaid
+sequenceDiagram
+    actor U as 实验者
+    participant C as AssistantController
+    participant A as AssistantChatService
+    participant P as AssistantPreviewService
+    participant K as AssistantConfirmationService
+    participant S as Java 业务服务
+    U->>C: POST /api/assistant/chat
+    C->>A: 传问题、会话和场景上下文
+    alt 查询任务或解释失败
+        A->>S: 通过注册工具取授权业务证据
+        S-->>A: 任务状态、错误码或报告摘要
+        A-->>U: 返回解释及工具证据
+    else 请求写操作
+        A->>P: 校验工具参数并预览影响
+        P-->>U: 返回确认编号、凭据和预览
+        U->>C: POST /api/assistant/confirmations/confirm
+        C->>K: 核验身份、凭据、任务版本及上下文
+        alt 上下文仍匹配
+            K->>S: 通过 AssistantWriteExecutor 调用业务命令
+            S-->>K: 任务或导出操作结果
+            K-->>U: 保存并返回可回放的确认结果
+        else 上下文发生变化
+            K-->>U: 要求重新预览
+        end
+    end
+```
+
+按代码读三层。`AssistantToolRegistry` 管理可调用能力，输入参数由工具校验。`AssistantPreviewService` 保存将要执行的请求和上下文依据。`AssistantConfirmationService.confirm` 验证凭据，针对已有任务锁行，重新检查上下文并条件消费确认凭据。`AssistantWriteExecutor` 最终调用 `PreDefenseTaskCommandService` 或 `CleanSubsetExportService`。配置变动时可从 `requireApprovedPlan` 继续看指纹比较。
+
+RAG 用于检索授权的知识片段。讲失败诊断时先指出状态和错误码从哪个业务工具取得，再说知识检索和模型如何辅助解释。关于检索和脱敏的完整例子见 [Agent / RAG 实操](agent-rag-demo.md)。
+
+## 19. 一页代码索引
 
 | 关注点 | 先看 |
 | --- | --- |

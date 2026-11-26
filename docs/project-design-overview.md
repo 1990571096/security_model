@@ -2,6 +2,20 @@
 
 本文回答三个问题：平台为什么存在，一次实验在系统里怎样流动，关键技术为什么放在当前的位置。具体的接口、SQL、文件和异常分支见 [实现指南](project-implementation-guide.md)；按场景阅读请直接看 [业务流程详解](project-business-flows.md)。
 
+## 0. 先看懂设计解决了什么
+
+实验者原本需要在 Python 环境里准备数据、修改参数、运行脚本，再从输出目录找结果。平台负责把这些动作组织成可在网页上操作和追踪的任务。用 `42 / r1 / 1` 举例：`42` 是实验配置的身份，`r1` 是第一次启动时生成的运行身份，`1` 是这条任务的第一次尝试。运行成功后选择一个有索引的保留比例，系统再创建独立的导出记录。
+
+| 用户遇到的问题 | 设计决定 | 学习时验证什么 |
+| --- | --- | --- |
+| 配置还要检查，训练需要等待 | 创建保存 `pending`，确认后领取一次运行 | 在 Network 找两个 POST，在库里找到只在启动时出现的 `current_run_id` |
+| 刷新网页后仍要知道任务去了哪里 | 当前状态、每轮快照与派发意图写入 MySQL | `running` 表示任务已领取。继续查看意图和进程证据才能判断 Python 有没有启动 |
+| Java 管业务，算法依赖 PyTorch | `DefenseTaskExecutor` 定义 Java 侧执行入口，Python 进程通过文件协议接收输入并产出结果 | 找出绝对路径通过哪个参数传递、JSON 由哪个进程读、数据库由谁更新 |
+| 前一轮晚到会污染后一轮 | 文件按 attempt 分开，写库再校验 `runId` 和状态 | 把 SQL 中的 `current_run_id` 代入 `r1` 和 `r2`，算出受影响行数 |
+| ZIP 存储和任务执行的故障可以独立发生 | 导出有自己的 ID、状态和文件有效性检查 | 任务 `success` 时找出四种导出状态，以及已成功记录对应文件失效的处理 |
+
+架构图读三次。第一遍只走默认 `db` 路线，找到请求线程交给工作线程的位置。第二遍给每个箭头标记数据载体，分别是 HTTP、数据库行、命令行参数和文件。第三遍再看 RabbitMQ 替换了哪一段派发，以及助手在哪里复用现有接口后面的业务服务。
+
 ## 1. 项目定位
 
 这是一个面向深度神经网络后门防御实验的单机平台。当前真正开放的执行入口是训练前 **LDD 数据清洗**：
@@ -67,10 +81,14 @@ flowchart LR
     A -->|rabbit 模式 同事务| O[(Outbox 表)]
     O -->|Relay 发布 + confirm| Q[(RabbitMQ)]
     Q -->|手动 ACK| W[Worker JVM]
-    E --> P[Python 适配器]
-    W --> P
+    E -->|启动子进程| P[Python 适配器]
+    W -->|启动子进程| P
     P --> V[VaB / PyTorch 训练]
-    P -->|progress.json / result.json| A
+    P -->|写进度及结果| F[本轮工作目录]
+    F -->|db 执行器读取| E
+    F -->|rabbit 执行器读取| W
+    E -->|条件写进度和结果| M
+    W -->|条件写进度和结果| M
     A -->|报告 / 日志 / 导出| U
 ```
 
@@ -101,9 +119,9 @@ failed ──重试──> running（新 runId / attempt）
 
 `running` 只表示启动命令已经领取，**不保证 Python 已经创建**。判断“后台是否接手”要看派发意图和 attempt 目录，不能只看任务状态。
 
-### 4.3 五张核心表
+### 4.3 核心持久化记录
 
-| 表 | 回答的问题 | 关键字段 |
+| 记录位置 | 回答的问题 | 关键字段 |
 | --- | --- | --- |
 | `sys_pre_defense` | 任务当前怎样 | `status`、`current_run_id`、`current_attempt`、`progress` |
 | `sys_pre_defense.execution_snapshot` | 本轮用什么跑 | 请求 JSON、资源指纹、配额、租约 |
@@ -111,13 +129,13 @@ failed ──重试──> running（新 runId / attempt）
 | `sys_dispatch_outbox` | 消息是否要发/已发 | `message_id`、发布状态、claim token |
 | `sys_dispatch_consumption` | Worker 是否消费过 | `message_id`、处理状态、claim token |
 
-前两行回答任务事实，后三行回答派发事实。两套事实通过 `taskId + runId + attempt + messageId` 对齐，不能互相替代。
+前两行位于同一张任务表，后三行用于派发追踪。默认 `db` 模式用任务与派发意图对齐轮次，`rabbit` 模式再用 `messageId` 对齐发布和消费。
 
 ## 5. 一次正常实验的设计主线
 
 ### 5.1 创建和启动分开
 
-创建 `POST /api/pre-defense` 只做资源解析、参数校验和 `pending` 建档，不启动进程。用户核对快照后再发 `POST /api/pre-defense/start/{taskId}`。这样：
+创建 `POST /api/pre-defense` 做资源解析、参数校验和 `pending` 建档。用户核对任务后再发 `POST /api/pre-defense/start/{taskId}`。执行快照在启动事务内建立。这样：
 
 - 创建失败不会留下半个运行；
 - 用户可以在真正消耗 GPU 前检查参数；
@@ -219,6 +237,16 @@ API JVM ──写 Outbox──> MySQL
 因此，单机环境完全可以使用消息队列通信；当前实现已经支持，只是默认没有开启。
 
 ## 7. 技术栈分工
+
+| 初学者遇到的术语 | 在项目里可以怎样理解 | 对应代码 |
+| --- | --- | --- |
+| Controller / Service / Mapper | 把一次实验申请想成柜台收表、业务人员审批和账本登记。HTTP 地址和输入属于 Controller，审批规则属于 Service，SQL 属于 Mapper | `PreDefenseTaskController.create` → `PreDefenseTaskCommandService.create` → `PreDefenseTaskMapper.insert` |
+| 依赖注入和代理 | Spring 把已创建的 Service 注入 Controller。调用事务 Service 时，代理负责开始事务与提交或回滚。调度协调器经异步代理调用执行器时，切换到线程池 | `@Transactional` 的命令入口、`@Async("taskAsync")` 的 `runPreDefense` |
+| 线程池和进程 | 工作线程是 JVM 里负责处理任务的工作人员，Python 是它启动的另一个程序。工作线程可以一直等子进程，因此需要限制工作线程和等待队列 | `TaskExecutorConfig`、`PythonLddTaskExecutor` |
+| 派发意图与 Outbox | 派发意图记录这次运行的交接阶段。Outbox 是 Rabbit 模式下记录待发消息的表。消息发布后还需要消费账本记住处理结果 | `TaskDispatchIntentService`、`TaskOutboxRelay`、`TaskDispatchConsumptionService` |
+| Tool / RAG / 人工确认 | Tool 是带输入约束和业务实现的能力，RAG 先检索授权知识作为回答依据，确认接口负责核验后执行写入 | `AssistantToolRegistry`、`AssistantPreviewService`、`AssistantConfirmationService` |
+
+沿一个主题扩展开发基础，例如从「连续点两次启动」复习 Spring 事务代理、InnoDB 行锁、条件更新和 HTTP 幂等。每个概念都要能指出它解决的那个并发窗口。分层练习见 [技术栈学习地图](learning/technology-map.md)。
 
 | 技术 | 在业务中的具体职责 | 不能替代什么 |
 | --- | --- | --- |

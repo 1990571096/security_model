@@ -1,6 +1,6 @@
 # 安全模型训练平台文档
 
-本文档按 2026 年 11 月 25 日当前工作区核对。初次学习先走完整实验，再按课程读源码；准备面试时直接看项目讲解和追问；需要契约与验收证据时回到 SDD。
+学习文档以当前仓库源码为准。六份文档共同使用一次 CIFAR-10 实验讲解，编号 `42 / r1 / 1` 分别表示任务、运行和尝试次数，导出示例编号为 `701`。
 
 ## 1. 文档地图
 
@@ -11,7 +11,7 @@
 | [技术栈学习地图](learning/technology-map.md) | Java、Python、MySQL、Redis、MQ 各自负责什么 | 补开发基础 |
 | [设计思路](project-design-overview.md) | 系统为什么这样分层，页面和状态如何组织 | 画架构图、写论文设计章 |
 | [实现指南](project-implementation-guide.md) | 沿着接口、类、SQL 和文件协议看代码 | 开发、调试、改功能 |
-| [业务流程详解](project-business-flows.md) | 用户点下按钮后，13 个典型场景分别发生什么 | 验收、答辩、排查 |
+| [业务流程详解](project-business-flows.md) | 一次实验如何从参数预览走到下载，各场景如何分支 | 入门、验收、答辩、排查 |
 | [项目讲解与演示](project-introduction-and-interview-guide.md) | 30 秒、90 秒、三分钟怎样讲 | 面试和现场演示 |
 | [面试题与模拟面试](project-interview-preparation.md) | 技术追问怎样落到代码和边界 | 面试前自测 |
 | [简历参考](resume-project-entry.md) | 项目经历怎样写成可追问的条目 | 写简历 |
@@ -26,7 +26,7 @@
 | 可执行数据集 | CIFAR-10、CIFAR-100、GTSRB；Tiny ImageNet-200 可登记和校验，但 LDD 不消费 |
 | 默认派发 | `dispatch.mode=db`、`role=api`，事务提交后进入 API 进程的 `taskAsync` 线程池 |
 | 可选派发 | `dispatch.mode=rabbit`，同一事务写 Outbox，Relay 发布到真实 RabbitMQ，Worker 手动 ACK 消费 |
-| 消息队列现状 | 代码和单机启停流程已具备；当前本机实例是 `db/api`，Broker 未启动，不能表述为“MQ 正在启用” |
+| 消息队列现状 | 代码支持可选的真实 RabbitMQ。实例的模式和消费者状态以运行时接口为准 |
 | 任务事实源 | MySQL；Redis 只做资源目录缓存和可选知识向量，RabbitMQ 只传派发事件 |
 | 页面统计口径 | 工作台用于行动概览；数据统计用于图表分析；没有真实采集源的 ASR、GPU 利用率等不展示估算值 |
 | 前端验收 | 数据集短类型与二态状态、任务页与运行监控分工、统计页图表化均已构建并在浏览器复验 |
@@ -37,15 +37,17 @@
 
 ### 第一次接触项目
 
-1. [设计思路](project-design-overview.md)：先建立系统图、页面分工和任务状态机。
-2. [业务流程详解](project-business-flows.md)：按“创建 → 启动 → 执行 → 回写 → 监控 → 统计”走一遍。
-3. [实现指南](project-implementation-guide.md)：对照 Controller、Service、Mapper、前端页面和 Python 文件协议。
+1. 花 15 分钟读业务时序图。关掉文档，写出「创建、启动、看结果、导出」各自新增或更新了什么。 [正常实验主线](project-business-flows.md#一次-cifar-10-实验怎样完成)
+2. 跟着实现指南的源码表走约 45 分钟。在 Controller 找出两条路由，在 Service 找出 `runId` 首次赋值，在 Mapper 圈出两个状态更新条件。 [实现指南](project-implementation-guide.md)
+3. 动手完成 JSON 文件交接练习。用自己的话解释路径和文件内容分别由谁处理，以及哪个进程最终写 MySQL。 [Python 实验](learning/02-java-python.md)
+4. 回头读架构与故障分支。模拟两次点击、服务提交后中断、旧结果晚到和 ZIP 失效。把每种情况的恢复证据写在同一张工作表。 [设计思路](project-design-overview.md) · [追踪工作表](learning/task-notebook.md)
 
 ### 准备面试
 
 1. [项目讲解与演示](project-introduction-and-interview-guide.md)：练 30 秒、90 秒、三分钟白板和页面走查。
 2. [面试准备与追问题](project-interview-preparation.md)：覆盖业务、事务、MQ、缓存、前端和可观测性。
-3. 准备一个真实改动，按“场景 → 代码 → 验证 → 边界”讲，不要只背架构名词。
+3. 录一遍 90 秒讲解，白板画出两条 HTTP 请求、两次进程启动和一次独立导出。选一项自己做过的改动，准备对应代码、测试证据和适用范围。
+4. 主线熟练后，从一个故障发散一个知识点。双击启动学习事务和行锁，进程占用学习线程池和取消，消息重投学习 Outbox 与 ACK，报告问答学习工具调用和人工确认。 [技术栈学习地图](learning/technology-map.md)
 
 ### 做开发和排查
 

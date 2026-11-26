@@ -62,4 +62,4 @@ try {
 
 **答案**。Java 等 Python 结束，读 `result.json` 并校验结果，按 `taskId + current_run_id + running` 写回。浏览器轮询或刷新任务详情读取数据库结果。日志文件可用于诊断，也由 Java 对外提供读取接口。
 
-[协议和源码摘录](../project-implementation-guide.md#3-java-怎样把参数交给-python) · [下一课：状态与恢复](03-reliability.md)
+[协议和源码摘录](../project-implementation-guide.md#7-java-到-python文件协议) · [下一课：状态与恢复](03-reliability.md)

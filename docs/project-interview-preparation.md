@@ -42,7 +42,7 @@
 | 24. GPU 怎么管理？ | 单槽租约 + fencing token；确认进程树退出后释放，否则隔离。 | `GpuLeaseService` |
 | 25. 取消能立即回收 GPU 吗？ | 不能。先改业务状态并通知，等进程退出证据。 | `cancel`、`TaskCancellationDispatcher` |
 | 26. 为什么不用 Java `synchronized`？ | 多 JVM/重启后锁丢失；任务事实在 MySQL，必须用持久条件。 | 设计取舍 |
-| 27. `@Transactional` 为什么会失效？ | 自调用、非 public、异常被吞、异步线程都在事务外。入口在 Service Bean，`afterCommit` 单独注册。 | `TransactionSynchronization` |
+| 27. `@Transactional` 在这里怎么生效？ | Controller 通过 Spring 注入的 Service 调用事务入口。默认代理模式下，同类直接调用无法触发被调用方法自己的事务拦截；如果外层已有事务，内层代码仍可参与它。异常是否回滚取决于规则与调用结果。异步线程有自己的执行上下文。 | `PreDefenseTaskCommandService.create` 的两个重载、`AfterCommitTaskDispatcher` |
 | 28. 线程池满了？ | 有界队列 + `AbortPolicy`，拒绝后释放租约、意图 abandoned、任务失败。 | `TaskExecutorConfig` |
 
 ## 四、RabbitMQ 深挖
@@ -100,7 +100,7 @@
 | 62. 为什么只提供 7/14/30 天？ | 后端允许 1–30 天，页面只暴露三个常用窗口，兼顾可读性和请求量。30 天以上标签会过密，且当前没有大数据降采样。 | `DashboardOverviewService.overview` |
 | 63. 为什么不用 ECharts？ | 当前数据量小，CSS `conic-gradient` 和堆叠柱足够，能减少依赖和包体。代价是没有缩放、刷选、导出；数据量增大或多图联动时再引入图表库。 | `StatisticsView.vue` |
 | 64. 为什么统计页没有 ASR、GPU 利用率？ | 没有真实采集源。平台只展示任务、资源、报告和状态聚合；未知指标明确写“未采集”，不用 0 或常量冒充实验结论。 | 统计口径卡片 |
-| 65. 怎么判断当前有没有启用消息队列？ | 查 `/api/observability/dispatch` 的 `mode/role/workerConsumerExpected/workerConsumerStarted/workerOwned`，再查 5672/5673/15672 和 `rabbit/erl` 进程。当前实例是 `db/api`、Broker 未启动。 | `DispatchOperationsService` |
+| 65. 怎么判断当前有没有启用消息队列？ | 查 `/api/observability/dispatch` 的 `mode/role/workerConsumerExpected/workerConsumerStarted/workerOwned`，再按配置确认 Broker 端口和进程。仓库默认 `db/api`。 | `DispatchOperationsService` |
 | 66. `dispatchReady=true` 等于 MQ 已就绪吗？ | 不等于。它只说明当前派发模式完成启动恢复、可以接单；可能是 `db` 线程池，也可能是 `rabbit` Worker。必须结合 `mode` 和消费者字段。 | `DispatchRecoveryCoordinator` |
 | 67. `db` 和 `rabbit` 的核心区别？ | `db` 是事务提交后 API 进程内直接派发；`rabbit` 是同事务写 Outbox，Relay 发 Broker，Worker 消费。两者都以 MySQL 为事实源，`db` 不是假队列，`rabbit` 也不替代数据库。 | `DispatchRuntimePolicy`、`AfterCommitTaskDispatcher`、`TaskOutboxRelay` |
 | 68. Rabbit 模式数据库故障时会不会一直重投？ | 不热循环 `nack requeue`。消费层把数据库故障转延迟队列，保留未确认消息；恢复后重新 claim，先用消费账本和任务身份判断能否执行。 | `DispatchMessageHandler` |
@@ -196,6 +196,82 @@
 **再追问**：那 db 和 rabbit 的本质区别是什么？
 
 **回答**：`db` 是事务提交后由 API 的 `taskAsync` 直接执行；`rabbit` 是同事务写 Outbox，Relay 发到 Broker，Worker 消费并手动 ACK。两者都复用同一套任务、意图、Python 协议和 MySQL 事实源；`db` 不是“假 MQ”，`rabbit` 也不是“把任务状态搬到 MQ”。
+
+## 七组深挖题
+
+每组先读提问，关掉答案讲 45 秒。答完后用最后一段的代码来核对。面试官继续追问时，用具体时序和状态解释。
+
+### 71. 两个人同时从不同浏览器点启动，幂等键和行锁各管什么？
+
+**第一问：** 假设任务 `42` 是 `pending`，两个启动请求使用不同的键，结果怎样？
+
+**答法：** 请求幂等表以用户、操作和键定位记录，因此两个键可以分别进入业务服务。两个请求试图取得同一任务行的 `FOR UPDATE` 锁。第一个写入 `r1/1`、`running` 并提交，第二个取得锁后读到 `running`，启动校验失败。最终 SQL 的 `WHERE status='pending'` 再约束允许的迁移。
+
+**追问：** 换成同一个键，第一次已经成功但响应在网络上丢了呢？
+
+**答法：** 同键同载荷且已完成时重放原响应。处理中返回 `REQUEST_IN_PROGRESS`；同键不同载荷返回 `IDEMPOTENCY_KEY_REUSED`。区分两个保护对象：请求重发与同一业务行的状态竞争。
+
+**源码练习。** 搜 `RequestIdempotencyService.execute`、`lockOwned`、`claimForExecution`。把成功后的行状态代入 SQL，解释为何第二次更新不能命中。
+
+### 72. Spring 已提交，JVM 在提交后回调之前退出，会不会永远 running？
+
+**答法：** 启动事务同时提交任务、执行快照和 `pending` 派发意图。进程重启后，恢复协调器检查当前轮和派发意图，结合租约与进程证据决定后续动作。能证明未提交执行的 `pending` 允许补派发。已经进入 `submitting` 但证据不足时，系统按不确定情形收敛，保留人工重试入口。
+
+**追问：** 为什么不能把线程池提交放在数据库事务里？
+
+**答法：** 数据库回滚时，已交给线程池的任务仍可能起 Python。工作线程也无法继承请求线程里的事务。先提交可恢复的业务记录，提交后再交接外部工作。长时间持有任务行锁也会拖住后续命令。
+
+**源码练习。** 顺着 `launchTask`、`AfterCommitTaskDispatcher`、`dispatchAfterCommit`、`DispatchRecoveryCoordinator` 分别标注「已写库、线程池已接收、进程确认启动」。
+
+### 73. Python 正常退出、日志说完成，但数据库为什么是失败？
+
+**答法：** Java 先等适配器进程退出，再读取 `result.json`。退出码为 0 且文件缺失时是 `RESULT_MISSING`。有文件则要检查 JSON 结构、`stage`、`run_id`、`attempt` 和结果字段。非零退出若附带结构化失败结果，Java 可以保存具体失败信息。日志留给排查，`result.json` 保存执行结果协议。
+
+**追问：** `r1` 文件合法，数据库已进入 `r2` 呢？
+
+**答法：** 对照 `r1` 的请求，结果可能通过协议校验。持久化还要检查任务行当前是 `r1` 且 `running`，所以 `r2` 不会被覆盖。两道校验分别约束「文件属于哪次调用」和「这次调用还有没有资格写当前任务」。
+
+**源码练习。** 对照 `invoke`、`validateResult`、`updateResultForRun` 和 `finishForRun`，口述每个判断读的证据来自哪里。
+
+### 74. 取消后立刻启动另一个任务，为什么可能仍拿不到 GPU？
+
+**答法：** 取消条件更新成功后，任务可以已经显示 `canceled`。操作系统中的原进程及子进程仍需终止。分配 GPU 需要租约控制，执行器确认进程树退出后才释放，无法确认时按隔离处理。取消和成功竞争时，条件 SQL 保证先取得有效终态的一方能够决定业务状态。
+
+**追问：** 线程池设成单线程能替代租约吗？
+
+**答法：** 一个 JVM 的单线程池只能限制本进程内进入的工作。重启后残留进程、不同进程发起执行等情况还需要持久租约与进程证据。用线程池解决执行容量，用租约协调物理资源归属。
+
+**源码练习。** 查 `cancelForRun`、`TaskCancellationDispatcher`、`PythonLddTaskExecutor.executeAndWait` 的清理路径。
+
+### 75. 报告成功、导出成功、文件可下载，分别由什么证明？
+
+**答法：** 任务成功表明本轮写入了成功终态。报告还需判断是否有可用数据和筛选索引；导出记录的 `success` 表明打包曾经完成；下载时还要确认 ZIP 仍是产物目录内可读的非空文件。成功记录对应文件失效时会返回 `410`。
+
+**追问：** 再点生成，会不会重新训练或产生一堆记录？
+
+**答法：** `submit` 锁父任务后用任务和比例查导出。已有进行中的工作或有效 ZIP 时复用；已有失败记录或 ZIP 失效时，在输入仍有效的条件下重置原导出记录。执行器调用单独的 `--export-clean-subset` 按索引打包。父任务状态保持成功。
+
+**源码练习。** 在 `CleanSubsetExportService` 对照 `submit`、`availability` 和 `resolveDownloadFile`，画出「数据库状态」和「磁盘文件状态」两列。
+
+### 76. RabbitMQ 显示发布确认了，为什么 Worker 仍可能收到两次？
+
+**答法：** 发布确认是 Broker 对发布者的响应。Relay 收到确认后如果还来不及写 `published` 就退出，Outbox 超时可被重新领取并发布相同 `messageId`。消费 ACK 发给 Broker，表示当前投递已经处理到可确认的结果。Worker 写完终态后还未 ACK 就退出，也可能触发重投。消费账本以及任务运行身份决定重投能否继续执行。
+
+**追问：** Broker Confirm 成功就一定有队列收到了吗？
+
+**答法：** 还要检查路由。在本项目，发布者开 `mandatory` 并处理 return。发布和消费两个方向各有明确的确认点，数据库仍记录任务和消费事实。
+
+**源码练习。** 对照 `TaskOutboxRelay`、`RabbitDispatchTransport.publish`、`DispatchMessageListener`、`TaskDispatchConsumptionService`，画出 Relay 和 Worker 各一次崩溃窗口。
+
+### 77. 用户让助手启动任务，谁决定最终使用的参数？
+
+**答法：** 聊天链路可以生成写操作预览。服务端基于任务和当前参数计划产生确认凭据并保存预览上下文。用户确认时，Java 验证身份、token 和有效状态，针对任务操作锁行并比较上下文。配置指纹不一致时要求重新预览。通过后 `AssistantWriteExecutor` 调同一个任务命令服务，服务层继续负责权限、状态和参数规则。
+
+**追问：** 公共知识检索能代替查用户任务吗？重复点确认呢？
+
+**答法：** 知识检索用于概念说明和可见知识引用，实时任务事实来自授权的业务工具。已消费的有效凭据可以回放保存的结果。待确认请求要经过条件消费，写动作和确认结果受业务事务约束。
+
+**源码练习。** 跟 `AssistantChatService` 的工具调用分支，找到 `AssistantPreviewService` 产生确认的地方，再从 `AssistantConfirmationService.confirm` 跟到 `AssistantWriteExecutor.execute`。
 
 ## 快速自检
 
