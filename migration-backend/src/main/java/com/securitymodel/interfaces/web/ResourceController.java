@@ -2,6 +2,8 @@ package com.securitymodel.interfaces.web;
 
 import com.securitymodel.application.resource.ResourceQueryService;
 import com.securitymodel.application.resource.ResourceCommandService;
+import com.securitymodel.application.resource.AlgorithmConfigCommandService;
+import com.securitymodel.application.resource.HyperTemplateCommandService;
 import com.securitymodel.domain.algorithm.Algorithm;
 import com.securitymodel.domain.dataset.Dataset;
 import com.securitymodel.domain.hyper.Hyper;
@@ -23,10 +25,16 @@ public class ResourceController {
 
     private final ResourceQueryService resourceQueryService;
     private final ResourceCommandService resourceCommandService;
+    private final HyperTemplateCommandService hyperTemplates;
+    private final AlgorithmConfigCommandService algorithmConfig;
 
-    public ResourceController(ResourceQueryService resourceQueryService, ResourceCommandService resourceCommandService) {
+    public ResourceController(ResourceQueryService resourceQueryService, ResourceCommandService resourceCommandService,
+                              HyperTemplateCommandService hyperTemplates,
+                              AlgorithmConfigCommandService algorithmConfig) {
         this.resourceQueryService = resourceQueryService;
         this.resourceCommandService = resourceCommandService;
+        this.hyperTemplates = hyperTemplates;
+        this.algorithmConfig = algorithmConfig;
     }
 
     @GetMapping("/api/dataset")
@@ -48,6 +56,12 @@ public class ResourceController {
         return resourceCommandService.disableDataset(datasetId);
     }
 
+    /** Admin-only: validates a registered dataset and records available statistics. */
+    @PostMapping("/api/dataset/{datasetId}/validate")
+    public Dataset validateDataset(@PathVariable Long datasetId) {
+        return resourceCommandService.verifyDataset(datasetId);
+    }
+
     @GetMapping("/api/algorithm")
     public List<Algorithm> algorithms() { return resourceQueryService.findAlgorithms(); }
 
@@ -60,6 +74,12 @@ public class ResourceController {
     public Algorithm updateAlgorithm(@PathVariable Long algorithmId,
                                      @Valid @RequestBody ResourceCommandService.AlgorithmInput input) {
         return resourceCommandService.saveAlgorithm(algorithmId, input);
+    }
+
+    @PutMapping("/api/algorithm/{algorithmId}/config")
+    public Algorithm updateAlgorithmConfig(@PathVariable Long algorithmId,
+                                           @Valid @RequestBody AlgorithmConfigCommandService.Input input) {
+        return algorithmConfig.update(algorithmId, input);
     }
 
     @DeleteMapping("/api/algorithm/{algorithmId}")
@@ -98,6 +118,12 @@ public class ResourceController {
     @GetMapping("/api/hyper/{templateId}")
     public ResponseEntity<Hyper> hyper(@PathVariable Long templateId) {
         return entityOrNotFound(resourceQueryService.findHyper(templateId));
+    }
+
+    @PutMapping("/api/hyper/{templateId}")
+    public Hyper updateHyper(@PathVariable Long templateId,
+                             @Valid @RequestBody HyperTemplateCommandService.Input input) {
+        return hyperTemplates.update(templateId, input);
     }
 
     @GetMapping("/api/hyper/algorithm/{algorithmId}")

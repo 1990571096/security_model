@@ -1,171 +1,423 @@
 # Executor Contract
 
-Date: 2026-10-26
+## 当前执行协议
+
+### 运行配置
+
+`DefenseTaskExecutor` 定义训练前执行入口。迁移版通过 `security-model.executor.python.*` 配置 Python 解释器、脚本、工作目录和超时。进程登记校验执行目录位于 `security-model.executor.workspace` 内。本地配置可让两个工作目录指向同一路径。
+
+### 请求文件与命令参数
+
+Java 写 UTF-8 `request.json` 后，以命令参数 `--stage`、`--request`、`--result`、`--progress-file` 传阶段和路径。任务请求包含 `taskId`、`runId`、`attempt` 和资源快照。`customParams` 与资源的 `configJson` 在 JSON 外层中为字符串。[逐行实现](../project-implementation-guide.md#3-java-怎样把参数交给-python) · [离线练习](../learning/02-java-python.md)
+
+### 进度与日志
+
+`PythonProcessWaiter` 等待适配器进程并触发进度文件采样。Java 检查进度对应的轮次，持久化匹配运行的进度。标准输出和错误输出重定向到 attempt 目录的 `stdout.log` 和 `stderr.log`，供日志 API 按偏移量读取。
+
+### 结果校验与写回
+
+Java 等待进程退出并检查 `stage`、`run_id`、`attempt`、`status`、`message`、`started_at`、`finished_at` 与 `artifacts` 的协议约束。失败结果还携带错误码与原因。任务结果和终态以当前 `runId` 和 `running` 为写入条件。
+
+### 工件和导出
+
+短桩写调用标记，真实 LDD 可以生成模型和选中索引。相应比例的选中索引、数据集及结果状态均满足条件时，独立导出任务生成清洗子集 ZIP。查看下载状态时用 `exportId`。[报告与导出课](../learning/04-report-and-export.md)
+
+## 历史记录
+
+<!-- knowledge:historical -->
+Updated: 2026-11-15 (R3 production-chain closure evidence; contract text unchanged; supersedes the 2026-11-13 date).
+
+This document is the frozen contract for the migration backend (`migration-backend`) and the
+Python adapter (`algorithm-runtime/vab/algorithm_entry.py`). Every rule below is verified
+against the code cited in the section it describes. Anything not in this document is not
+guaranteed by the platform.
 
 ## Decision
 
-`DefenseTaskExecutor` accepts a `DefenseTaskRequest` instead of a raw task id.
+`DefenseTaskExecutor` accepts a `DefenseTaskRequest` instead of a raw task id. The request is
+a validated execution snapshot that carries: task id, name, stage, description, creator
+(username snapshot only — **not** an identity claim), dataset reference, algorithm reference,
+optional hyper-parameter template and optional model reference.
 
-The request is a validated execution snapshot containing:
+Each launch persists this request with its resources and custom parameters into
+`sys_pre_defense.execution_snapshot` as an append-only attempt list (`version: 2`, entries
+carrying `attempt`, `runId`, `launchedAt`, `request`, `runtime`, `quota`, `snapshotHash`).
+Changing a resource after launch never rewrites history. `current_run_id` and
+`current_attempt` mirror the live attempt.
 
-- task id, task name, stage, description, creator
-- dataset resource reference
-- algorithm resource reference
-- optional hyper-parameter template reference
-- optional input model reference
+## Configuration (migration backend)
 
-Each task launch persists this request together with its dataset, algorithm, hyperparameter
-template and task custom parameters in `sys_pre_defense.execution_snapshot`. The field is
-an append-only attempt list: changing a resource after launch never changes the historical
-experiment record. The active `run_id` and `attempt` are also stored in
-`current_run_id` and `current_attempt`.
+The migration backend has **no** `python-executor` Spring profile. That profile exists only in
+the legacy `eladmin` project (`@Profile("python-executor")` on its
+`PythonDefenseTaskExecutor`). Setting `--spring.profiles.active=dev,python-executor` on
+`migration-backend` changes nothing and must not be documented as the way to enable Python.
 
-## Reason
+The adapter is configured through these properties (Spring relaxed binding, so the
+environment variable name is the upper-snake-case form):
 
-Real security algorithms will often run through Python, PyTorch, a shell process, RPC, or a task queue. They need stable paths, configs, model metadata, and task metadata at task start time. Passing only a task id would force each executor to query business tables again and would couple runtime algorithm code to CRUD services.
+| Property | Environment variable | Default | Meaning |
+| --- | --- | --- | --- |
+| `security-model.executor.python.executable` | `SECURITY_MODEL_EXECUTOR_PYTHON_EXECUTABLE` | `python` | Interpreter that can import torch |
+| `security-model.executor.python.script` | `SECURITY_MODEL_EXECUTOR_PYTHON_SCRIPT` | *(empty)* | Absolute path to `algorithm_entry.py` |
+| `security-model.executor.python.workspace` | `SECURITY_MODEL_EXECUTOR_PYTHON_WORKSPACE` | `${java.io.tmpdir}/security-model-executor` | Attempt directory root |
+| `security-model.executor.workspace` | `SECURITY_MODEL_EXECUTOR_WORKSPACE` | *(empty; must be set for a real run)* | Process-record guard root; must equal or contain `python.workspace` |
+| `security-model.executor.python.timeout-seconds` | `SECURITY_MODEL_EXECUTOR_PYTHON_TIMEOUT_SECONDS` | `3600` | Wall-clock timeout per attempt |
+| `security-model.executor.python.fingerprint-content` | `SECURITY_MODEL_EXECUTOR_PYTHON_FINGERPRINT_CONTENT` | `true` | Hash dataset files ≤1GB |
+| `security-model.executor.python.fingerprint-max-bytes` | `SECURITY_MODEL_EXECUTOR_PYTHON_FINGERPRINT_MAX_BYTES` | `1073741824` | Size limit for hashing |
+| `security-model.executor.quota.max-running-tasks` | `SECURITY_MODEL_EXECUTOR_QUOTA_MAX_RUNNING_TASKS` | `4` | JVM quota, **not** a GPU budget |
+| `security-model.executor.quota.max-running-tasks-per-user` | `SECURITY_MODEL_EXECUTOR_QUOTA_MAX_RUNNING_TASKS_PER_USER` | `2` | Quota keyed by username |
+| `security-model.executor.quota.max-task-timeout-seconds` | `SECURITY_MODEL_EXECUTOR_QUOTA_MAX_TASK_TIMEOUT_SECONDS` | `3600` | Recorded in the quota snapshot |
+| `SECURITY_MODEL_VAB_RESULT_ROOT` | same | unset | Optional external artifact root for VaB runs |
+| `VAB_ROOT` | same | unset | Required by the adapter; points to the external `VaB-main` |
 
-## Result Envelope
+An empty `script` fails the attempt with the stable code `EXECUTOR_NOT_CONFIGURED`. There is
+no fallback to a demo or mock executor in this backend. In db mode the API rejects
+`start/retry` before it claims a lease, increments an attempt, writes a snapshot or creates
+a dispatch intent, so the task keeps its previous state. The recovery replay path and the
+Rabbit Worker apply the same executor check; a Rabbit API instance does not require its own
+Python script, because it never starts Python.
 
-Executors should keep writing result JSON into the existing task result fields:
+For a real run, set both `SECURITY_MODEL_EXECUTOR_PYTHON_WORKSPACE` and
+`SECURITY_MODEL_EXECUTOR_WORKSPACE`. The first creates `pre_defense-<taskId>/attempt-<n>`; the
+second is the guard that refuses to record a child outside the controlled root. They must be
+the same directory, or the guard root must contain the attempt root. If the guard is blank,
+the executor fails before starting the child with `PROCESS_RECORD_FAILED`; the attempt is
+failed and the lease is released without starting Python (the 2026-11-18 acceptance run used
+this failure path to verify that no orphan is created).
 
-- pre-defense: `cleaning_result`
-- during-defense: `training_log`
+The error message names the bound property and environment variable explicitly:
+`security-model.executor.python.script` / `SECURITY_MODEL_EXECUTOR_PYTHON_SCRIPT`. No short
+alias is bound.
 
-Required result keys:
+`isConfigured()` is a lightweight preflight only: it checks that the script property is
+non-blank, not that the file exists or that the interpreter is runnable. A missing file or
+broken interpreter is surfaced by the actual process launch and converged as a task failure;
+it is not guessed from configuration.
 
-- `executor`
-- `stage`
-- `status`
-- `message`
-- `run_id`
-- `attempt`
-- `started_at`
-- `finished_at`
-- `artifacts`
-
-Python/PyTorch executors should additionally write a `runtime` object containing the
-actual interpreter and machine-learning environment used by the attempt, such as
-Python, PyTorch, NumPy, CUDA, GPU and key dependency versions. This is separate from the Java-side
-launch snapshot: the launch snapshot records what the platform intended to run, while
-`runtime` records what the external process actually loaded.
-
-Failure result keys:
-
-- `error_code`
-- `failure_reason`
-
-The backend treats the result envelope as untrusted external-process output. Before persisting
-the result, it verifies `executor`, `stage`, `run_id`, `attempt`, `message`, timestamps and
-the `artifacts` object. A failed result must additionally provide a non-empty `error_code` and
-`failure_reason`; malformed or mismatched output is converted into a platform failure result
-instead of being shown as a successful LDD execution.
-
-## Retry Contract
-
-Only a `failed` pre-defense task can be retried. Retry clears the previous runtime result,
-progress, timestamps and output dataset reference, returns the task to `pending`, and then
-starts it as a new attempt. The original failure result remains available only through the
-previous entry in the execution snapshot; retry does not overwrite prior launch parameters.
-
-The historical MVP mock executor wrote a `task` snapshot into result JSON for protocol
-debugging. It is not the active migration-backend runtime.
-
-Each launch receives a UUID `run_id` and a monotonically increasing `attempt` value.
-The Python executor stores request/result/log files below an attempt-specific directory,
-so retrying a task cannot overwrite the previous attempt's runtime files.
-
-The task claim is an atomic `pending -> running` update. Every progress, result and finish
-callback includes the `task_id` and `run_id`, and the database update additionally requires
-`status = 'running'` and the same `current_run_id`. A late callback from an older timed-out
-or retried attempt therefore updates zero rows and is ignored instead of overwriting the
-current run.
-
-The external executor is dispatched after the surrounding transaction commits. This keeps
-the persisted task claim and immutable snapshot ahead of process startup.
-
-If the bounded executor rejects dispatch, the service writes a retryable `failed` result with
-`TASK_QUEUE_FULL`, guarded by the current `task_id`, `run_id`, `attempt` and `running` status.
-Migration-backend unit tests cover dispatch rejection and verify that retry appends a new attempt
-without changing the previous attempt snapshot. The `mysql-it` suite additionally verifies atomic
-claims, completion racing with recovery, and orphan-task recovery against an isolated MySQL schema.
-Remote CI results must be checked in GitHub Actions; a local pass does not establish remote status.
-
-## Cancel Contract
-
-Only a `running` task can be canceled. The service uses `task_id + current_run_id + status=running`
-as the cancellation condition and atomically writes the terminal `canceled` result first. The
-external process is then terminated after transaction commit. The executor remembers the canceled
-`run_id`; progress, result and finish callbacks require the same `run_id` and `status=running`, so
-late callbacks update zero rows and are discarded.
-
-## Extension Rule
-
-Future real executors should implement `DefenseTaskExecutor` and treat `DefenseTaskRequest` as the input contract. Controllers and task CRUD services should not directly depend on algorithm implementation code.
-
-## Python Process Executor
-
-The active migration-backend runtime uses `PythonLddTaskExecutor` for the allow-listed
-VaB LDD algorithm. The executor is dispatched through the bounded `taskAsync` thread pool
-after the task-claim transaction commits. Other algorithm implementations are not enabled
-for real execution yet.
-
-Python execution is configured for the migration backend through:
-
-```bash
---spring.profiles.active=dev,python-executor
-```
-
-Configuration keys:
-
-- `security-model.executor.python.executable`
-- `security-model.executor.python.script`
-- `security-model.executor.python.workspace`
-- `security-model.executor.python.timeout-seconds`
-
-The adapter script is called as:
+## Invocation
 
 ```bash
 python algorithm_entry.py --stage pre_defense --request request.json \
   --result result.json --progress-file progress.json
 ```
 
-The script should read `request.json`, run the algorithm, and write `result.json` using the
-result envelope defined above. During execution it atomically replaces `progress.json` with
-a small JSON snapshot containing `phase`, `phase_label`, `progress`, `message`,
-`heartbeat_at`, `run_id`, `attempt`, and, when available, `epoch` and `total_epochs`.
-The run identity is present in both adapter-level and epoch-level snapshots so stale
-attempts cannot update the active task. The Java executor polls this file while the adapter
-process is alive, persists the percentage to MySQL, and exposes
-the full snapshot through the task log endpoint. The frontend continues to poll that
-endpoint and therefore can show the active training stage and latest heartbeat before
-Python exits.
+The adapter also supports `--validate-only`, but the Java executor never passes it: every
+platform launch runs training. `--validate-only` is a manual preflight tool only.
 
-The progress file is supplementary and never replaces `result.json` as the completion
-source of truth. If `result.json` is missing but the process exits with code `0`, the backend
-records a minimal successful envelope with the executor workspace as an artifact.
+Adapter modes:
+
+| Mode | Flag | Notes |
+| --- | --- | --- |
+| Task (training) | `--stage pre_defense` | Requires CUDA in preflight |
+| Preflight only | `--validate-only` | Generates the single-task script, runs no training |
+| Clean subset export | `--export-clean-subset` | Requires `--selection-file`, `--dataset-root`, `--dataset`, `--output`; numpy only |
+
+## Attempt Directory Layout (v1)
+
+```text
+<workspace>/pre_defense-<taskId>/attempt-<n>/
+├── request.json        # DefenseTaskRequest written by Java
+├── result.json         # final envelope, written by the adapter
+├── progress.json       # atomically replaced live snapshot
+├── stdout.log          # adapter stdout
+├── stderr.log          # adapter stderr
+└── artifacts/          # default VaB output root (unless SECURITY_MODEL_VAB_RESULT_ROOT)
+```
+
+Attempt directories are keyed by task id, not by user. Ownership can only be enforced in the
+service layer (see ADR-012 and `18-multiuser-ownership-and-resources.md`).
+
+## Result Envelope (v1)
+
+`result.json` is the **only** completion source of truth. Required keys: `executor`, `stage`,
+`status`, `message`, `started_at`, `finished_at`, `run_id`, `attempt`, `artifacts`.
+
+Rules enforced by `PythonLddTaskExecutor.validateResult()`:
+
+- `stage` must equal `pre_defense`.
+- `run_id` must equal the request's `runId`; `attempt` must equal the request's `attempt`.
+- `status` must be `success` or `failed`.
+- `artifacts` must be a JSON object.
+- A `failed` result must additionally provide non-empty `error_code` and `failure_reason`.
+
+Any violation becomes a platform failure (`RESULT_PROTOCOL_ERROR` / `RESULT_INVALID_JSON`); it is
+never rendered as a successful LDD run. A malformed or missing `result.json` is a failure —
+**there is no "minimal success envelope" fallback**. Specifically, when the process exits 0 but
+`result.json` is absent, the executor raises `RESULT_MISSING` and the task is marked `failed`.
+
+Optional but expected keys produced by the VaB adapter: `algorithm`, `effective_config`,
+`metrics`, `runtime`.
+
+```json
+{
+  "executor": "python-vab-adapter",
+  "stage": "pre_defense",
+  "status": "success",
+  "message": "VaB LDD completed",
+  "run_id": "<uuid>",
+  "attempt": 1,
+  "started_at": "2026-08-19T…Z",
+  "finished_at": "…Z",
+  "algorithm": "vab://pre-defense/ldd",
+  "effective_config": {"dataset": "cifar10", "trigger_type": "SIG", "…": "…"},
+  "metrics": {
+    "clean_purity_percent_by_isolation_ratio": {"5": 96.4},
+    "selected_sample_count_by_isolation_ratio": {"5": 47500},
+    "metric_note": "clean_purity uses VaB's known poisoned-sample labels…"
+  },
+  "artifacts": {
+    "type": "vab-task-output",
+    "available": true,
+    "path": "<absolute artifact root>",
+    "generated_script": "<path>",
+    "selection_kind": "retained_clean_subset",
+    "logs": ["<path>", "…"],
+    "images": ["<path>", "…"],
+    "model_files": ["<path>", "…"],
+    "selection_files": ["<path>/selected_indices_5.npy"]
+  },
+  "runtime": {
+    "adapterVersion": "1.1.0",
+    "pythonVersion": "3.x",
+    "pythonExecutable": "<path>",
+    "numpyVersion": "…",
+    "torchVersion": "…",
+    "cudaVersion": "…",
+    "cudaAvailable": true,
+    "cudaDeviceCount": 1,
+    "cudaDevices": ["NVIDIA GeForce RTX 2060"],
+    "dependencyManifest": {"packages": […]}
+  }
+}
+```
+
+`metrics.clean_purity_percent_by_isolation_ratio` is an oracle metric computed from VaB's known
+poisoned indices; it must not be described as an unlabeled production-data metric.
+
+Failure envelope (adapter): `status: "failed"`, `error_code: "VAB_INTEGRATION_ERROR"`,
+`failure_reason: "<message>"`, and the process exits 1. The adapter collapses every internal
+failure into this single code; the platform's own codes are in §"Error Code Registry".
+
+## Progress Snapshot (v1)
+
+`progress.json` is supplemental. It never replaces `result.json`, and it must never be used to
+decide that a task failed. Fields written by the adapter/generated script:
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `run_id` | string \| null | `null` in the very first `preparing` snapshot, before the request is parsed |
+| `attempt` | int \| null | Same as above |
+| `phase` | string | `preparing`, `training`, `finalizing`, `completed`, `failed` |
+| `phase_label` | string | Human-readable Chinese label |
+| `progress` | int | 0–100 as written; Java clamps to 0–99 while running |
+| `message` | string | Latest status text |
+| `heartbeat_at` | ISO-8601 UTC | Rewritten on every snapshot |
+| `epoch`, `total_epochs` | int | Only during `training` |
+
+Phases and percentages in the current adapter: `preparing` 5 → 10, `training` 12, then
+`min(85, 15 + 70·(epoch−1)/max(1, num_epochs−1))`, `finalizing` 90, terminal `completed` 100 /
+`failed` 0. Note the quirk: the generated callback reports `total_epochs = num_epochs − 1`
+(`platform_report_epoch` does `total = max(1, int(total) - 1)`), so the UI shows “epoch x / (n−1)”
+while LDD actually runs `n` epochs. This is a display inconsistency, not a training change; fixing
+it must not alter the frozen 128 batch / 5 epochs configuration.
+
+Consumer rules (implemented in `PythonLddTaskExecutor.updateProgressFromSnapshot` and
+`PreDefenseLogQueryService`):
+
+- A snapshot whose `run_id` differs from the active run is ignored; `null` is tolerated.
+- A snapshot whose `attempt` is missing (`-1`) is tolerated; a mismatch is ignored.
+- Only `progress` is written to MySQL; the rest is exposed through the log endpoint.
+- Heartbeat staleness is **display-only**. The frontend shows “较久未更新” after 60 s; it does
+  not mark the task failed. There is no server-side stale-heartbeat judgement.
+
+## Claim, Retry, Cancel, Recovery
+
+- Claim: atomic `pending → running` with `run_id`, `attempt`, `execution_snapshot`.
+- Progress/result/finish updates require `status = 'running'` and the same `current_run_id`.
+- Retry: only `failed → pending` (`resetForRetry`), which clears runtime fields but keeps the
+  attempt list, so `nextAttempt` continues to grow. The old attempt's files stay on disk.
+- Cancel: only `running`; the terminal `canceled` row is written first, then the process tree is
+  destroyed after commit (`process.descendants()` + `destroyForcibly`).
+- Dispatch rejection: `markDispatchFailure` writes `TASK_QUEUE_FULL`, guarded by
+  `task_id + run_id + attempt + status='running'`.
+- Timeout: `PythonProcessWaiter` destroys the process tree and the executor fails the attempt
+  with `TASK_TIMEOUT`.
+- Startup recovery: every row still `running` becomes `failed` with `EXECUTOR_RESTARTED`
+  (`failOrphanedForRun` matches `current_run_id`, so a task that finished first wins). This is a
+  single-instance assumption, not a lease.
+
+## Error Code Registry (v1)
+
+| Code | Producer | Meaning | Auto-retryable |
+| --- | --- | --- | --- |
+| `EXECUTOR_NOT_CONFIGURED` | Java | `script` property empty | No (config fix) |
+| `TASK_TIMEOUT` | Java | Exceeded `timeout-seconds` | Manual, after inspection |
+| `PYTHON_PROCESS_EXITED` | Java | Non-zero exit without a `failed` result | Manual |
+| `RESULT_MISSING` | Java | Exit 0 but no `result.json` | Manual |
+| `RESULT_INVALID_JSON` | Java | `result.json` unparsable | Manual |
+| `RESULT_PROTOCOL_ERROR` | Java | Missing/mismatched required fields | Manual |
+| `PYTHON_EXECUTION_ERROR` | Java | Unclassified exception | Manual |
+| `TASK_INTERRUPTED` | Java | Executor thread interrupted | Manual |
+| `TASK_QUEUE_FULL` | Java | Bounded pool rejected dispatch | Yes (retry) |
+| `TASK_QUEUE_UNAVAILABLE` | Java | Pool shut down | No |
+| `TASK_QUOTA_EXCEEDED` | Java | Global running quota hit | Yes (later) |
+| `TASK_USER_QUOTA_EXCEEDED` | Java | Per-username quota hit | Yes (later) |
+| `EXECUTOR_RESTARTED` | Java | Recovery after app restart | Yes (retry) |
+| `TASK_CANCELED` | Java | Cancelled by operator | No |
+| `VAB_INTEGRATION_ERROR` | Python adapter | Adapter failure with no more specific code (script/config error, non-zero child exit) | Manual |
+| `GPU_LOCK_BUSY` | Python adapter / Java fallback | Adapter runtime lock held by a live process (or unreclaimable) | Retry later |
+| `GPU_OOM` | Python adapter / Java fallback | CUDA/CUBLAS/CUDNN allocation failure | Manual, lower batch |
+| `CUDA_UNAVAILABLE` | Python adapter / Java fallback | No CUDA device or driver/runtime mismatch | No automatic retry |
+| `EXPORT_QUEUE_FULL` | Java | Export dispatch rejected | Yes |
+| `EXPORT_FAILED` | Java | Export process failed/timeout/no ZIP | Manual |
+| `EXPORT_INTERRUPTED` | Java | Export thread interrupted | Manual |
+
+Note: since 2026-11-13 the adapter classifies lock conflicts, CUDA OOM and missing-CUDA
+separately (`GPU_LOCK_BUSY` / `GPU_OOM` / `CUDA_UNAVAILABLE`); Java applies the same text
+classification only when the child died without writing `result.json`. `GPU_OOM` and
+`CUDA_UNAVAILABLE` are not automatically retried; `GPU_LOCK_BUSY` may be retried later by the
+operator (no queue yet).
 
 ## Clean Subset Export Contract
 
-For LDD CIFAR-10 tasks, the adapter can receive an export-only request:
+For LDD CIFAR-10 tasks the adapter can run in export-only mode:
 
 ```bash
 python algorithm_entry.py --export-clean-subset \
   --selection-file selected_indices_5.npy \
   --dataset-root <cifar-root> \
   --dataset cifar10 \
-  --output clean-subset-ratio-5.zip \
-  --metadata export-metadata.json
+  --output clean-subset-ratio-5.zip.part \
+  --metadata clean-subset-ratio-5.metadata.json.part
 ```
 
-The selection file is validated as a task artifact. The exporter reconstructs the retained
-raw CIFAR-10 training samples by their original indices and writes a ZIP containing metadata,
-the original index file, CSV labels and PNG images. It does not claim to reproduce VaB's
-in-memory poisoned tensors.
+The Java side (`CleanSubsetExportExecutor`) writes `<artifactRoot>/clean-subset-exports/`, redirects
+stdout+stderr to `*.export.log`, then renames `.part` → final only when the process exited 0 and
+the `.part` ZIP is non-empty. On timeout `ExecutorProcessGuard` kills and confirms the whole tree
+(root, `descendants()`, recorded children); if any process cannot be confirmed gone the export fails
+with an explicit "timeout and child not confirmed exited" reason instead of reporting success.
+`ExportRecoveryRunner` converges rows left `pending`/`running` after a restart to
+`EXPORT_NOT_STARTED` / `EXPORT_INTERRUPTED`; it never marks a half-written ZIP as success.
 
-## VaB Adapter
+Selection files must resolve inside the task artifact root and match `selected_indices_(\d+).npy`;
+the export is idempotent per `(task_id, isolation_ratio)` via a unique key.
 
-The first real training-pre-defense integration uses
-`algorithm-runtime/vab/algorithm_entry.py`. It accepts the standard command above and
-dispatches only allow-listed VaB implementation paths. See
-[VaB training-pre-defense integration](10-vab-integration.md) for supported algorithms,
-parameter mapping, artifacts, and runtime requirements.
+## Attempt Artifacts and Retention
+
+Each run writes into `<executor-workspace>/pre_defense-<taskId>/attempt-<n>/`. The directory is the
+artifact boundary: a retry increments `attempt` and never overwrites an earlier directory.
+
+After the child process ends (success, failure or cancel), `ExecutorArtifactPolicy`:
+
+- trims `stdout.log` / `stderr.log` to the last `security-model.executor.artifacts.max-log-bytes`
+  (default 20 MiB) and prefixes a truncation marker with the original byte count. This is an
+  **archive-size bound applied after the process ends**, not a runtime disk-growth limit;
+- writes `manifest.json` listing every top-level file with `bytes` and `sha256`;
+- never changes the task outcome if trimming or hashing fails (warn only).
+
+`ExecutorArtifactRetentionJob` deletes an attempt directory only when all hold: retention is
+enabled (`retention-days > 0`), the task exists with status `success|failed|canceled`, the attempt
+is not `current_attempt`, the directory is older than the retention window, and `toRealPath()` of
+the candidate is inside `workspace.toRealPath()` and equals its own absolute normalized path (so
+symlinks, junctions and `..` escapes are refused). All other directories are left untouched.
+
+The executor writes `process.json` **before** starting the child (`schema_version: 2`,
+`state: starting`) and rewrites it with `pid`, `command` and `started_at` after
+`ProcessBuilder.start()`; both writes use a temporary file plus `ATOMIC_MOVE` (plain move fallback).
+If the pre-start file cannot be written the launch is refused with `PROCESS_RECORD_FAILED`; if the
+post-start record cannot be written the executor kills the tree and fails the attempt. The adapter
+records its spawned training pids in `python-children.json` and removes the file when training ends.
+
+On restart, recovery probes that record and kills only when the recorded `startInstant` matches
+the live process, then waits for the whole known tree (descendants captured before the kill plus
+recorded children). A missing record, a non-v2 record, corrupted JSON, a `starting` record without
+pid, or a missing/unreadable start time is `UNKNOWN` — it is **not** proof that the child never
+started. Outcomes:
+
+| Outcome | Meaning | GPU slot |
+| --- | --- | --- |
+| `NOT_STARTED` | only when a future versioned protocol positively proves no submission; R2 never returns it | release |
+| `EXITED` | identity matched and tree confirmed gone | release |
+| `REAPED` | matching tree killed and confirmed gone | release |
+| `KILL_FAILED` | tree still alive after kill | quarantine (`blocked_at`) |
+| `UNKNOWN` | missing/legacy/corrupt record, missing start time, unreadable identity, live recorded child | quarantine, never kill |
+
+The executor's `finally` releases the lease only after `ExecutorProcessGuard.ensureGone` confirms
+root, descendants and recorded children are gone; otherwise it calls
+`markBlocked("EXECUTOR_TREE_ALIVE")`. Interrupt, training timeout, cancel and export timeout follow
+the same rule. Startup recovery must finish before new launches: `SchedulingReadinessGate` makes
+`launchTask` return `SCHEDULING_NOT_READY` until `TaskRecoveryRunner` completes; read-only APIs are
+not blocked.
+
+A quarantined slot rejects acquisition even after `expires_at` passed: TTL proves a lost heartbeat,
+not an idle GPU. `GPU_LEASE_BLOCKED` is reported separately from `GPU_BUSY`. `GpuLeaseBlockedProbe`
+re-probes quarantined slots every 60 s and releases only on `NOT_STARTED`/`EXITED`/`REAPED`. The
+executor-status API exposes `gpuSlot` (`blocked/leased/idle/unknown`, reason, blocked time, last
+probe, guidance) without task ids or filesystem paths.
+
+
+
+Concurrency is enforced by the MySQL single-slot lease (`sys_gpu_lease`, see ADR-014). The adapter
+lock at `VAB_ROOT/.security-model-vab.lock` remains as a second line of defence:
+
+- The lock file now records JSON metadata: `pid`, `host`, `task_id`, `run_id`, `token`,
+  `acquired_at` (legacy files containing a bare pid are still readable).
+- Two concurrent LDD runs do not queue; the loser fails with `GPU_LOCK_BUSY`
+  (“another VaB task is using the shared GPU/runtime lock”).
+- A lock whose recorded pid is no longer alive is reclaimed: the file is moved aside, its
+  metadata token is re-checked, and only then is a new lock created. If the token changed
+  between read and move (another process just refreshed it), the file is restored and the new
+  caller gets `GPU_LOCK_BUSY`.
+- Liveness is checked without signalling: Windows uses `OpenProcess` + `GetExitCodeProcess`,
+  POSIX uses `os.kill(pid, 0)`.
+- Release deletes the file only when its `token` still matches the caller, so a slow run cannot
+  delete a successor's lock.
+- Residual risk: pid reuse looks like a live holder (conservative: stays busy); a file with
+  unparsable content and no pid is reclaimed only after
+  `SECURITY_MODEL_VAB_LOCK_STALE_SECONDS` (default 21600). On POSIX, a dead holder's pid may
+  have been reused by an unrelated process, which also stays conservative (busy).
+
+The platform quota does not model the GPU. The database-backed single-slot lease is
+**implemented** in `sys_gpu_lease` (ADR-014) and is exercised by `GpuLeaseMySqlIT`,
+`R3ProductionExecutorChainIT` and the crash/recovery child JVMs; the quota snapshot must not
+be read as a GPU budget.
+
+## Verification evidence (2026-11-15, R3 production-chain closure)
+
+The frozen contract above is unchanged by the 2026-11-15 P1/P2/R3 closure. New evidence:
+
+- `R3ProductionExecutorChainIT` (5/5) uses the full `@SpringBootTest` context, the real
+  `@Async("taskAsync")` proxy, the real `PythonLddTaskExecutor`, real transactions, real
+  `PreDefenseTaskMapper`, real GPU lease and real dispatch coordinator. Only
+  `ResourceQueryService` is a `@MockBean`; Python is a short protocol stub, so no LDD run,
+  no GPU allocation and no experiment-config change occur.
+- Cases: normal completion (success, progress 100, intent submitted, lease released, child
+  exited), cancel (canceled, intent submitted/abandoned, child exited, lease released),
+  timeout (failed `TASK_TIMEOUT`, child exited, lease released), invalid result (failed
+  `RESULT_PROTOCOL_ERROR`, no success row, child exited, lease released).
+- `R3ProductionCrashChildMain` is a test-only child JVM with real MyBatis task/intent/lease,
+  real `PythonLddTaskExecutor`, real `TaskDispatchCoordinator` and real process registration;
+  a test subclass blocks after writing `crash-ready-920` in `markSubmitted`. The parent test
+  kills the child JVM after the real Python stub starts, then `R3RecoveryChildMain` recognizes
+  `submitting`, kills the orphan, releases the lease, marks the task failed and the intent
+  abandoned. `executions.log` contains exactly one line. This child JVM is a minimal test
+  context plus a manual async wrapper, **not** the full Spring `@Async` proxy.
+- Full gate: JDK20 and Temurin 17.0.21 each `232` unit tests + `96` MySQL/Redis integration
+  tests, BUILD SUCCESS (`tmp/round3-full-verify-final.log`, `tmp/round3-full-verify-jdk17-final.log`).
+  Python 11/11, frontend build passes. Remote Ubuntu + Temurin 17 CI on commit `bb4a79f`
+  (run `43726078023`) is green for backend/frontend/python. No LDD 128/5 rerun, no production
+  `eladmin` migration.
+- Cancel evidence waits up to 20 seconds for the recorded Python pid to disappear before
+  asserting lease/child consistency; this removes a test race without weakening the production
+  rule that a slot is only released after a confirmed child exit.
+- Boundary: a short protocol stub proves the Java dispatch/process/lease/recovery chain, not
+  real algorithm or GPU production execution. `KILL_FAILED` and multi-instance network
+  partitions remain uncovered.
+
+## Extension Rule
+
+Future real executors implement `DefenseTaskExecutor` and accept `DefenseTaskRequest`. Controllers
+and task CRUD services must not depend on algorithm implementation code. Only
+`vab://pre-defense/ldd` is allow-listed; every other `implementation_path` is rejected before
+claim.
+<!-- /knowledge:historical -->

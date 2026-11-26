@@ -1,6 +1,7 @@
 package com.securitymodel.infrastructure.cache;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -15,7 +16,9 @@ import java.util.Optional;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyCollection;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
@@ -27,7 +30,9 @@ import static org.mockito.Mockito.when;
 class ResourceCatalogCacheTest {
     private final StringRedisTemplate redis = mock(StringRedisTemplate.class);
     private final ValueOperations<String, String> values = mock(ValueOperations.class);
-    private final ResourceCatalogCache cache = new ResourceCatalogCache(redis, new ObjectMapper());
+    private final SimpleMeterRegistry registry = new SimpleMeterRegistry();
+    private final ResourceCatalogCache cache = new ResourceCatalogCache(
+            redis, new ObjectMapper(), registry);
 
     @AfterEach
     void clearTransactionSynchronization() {
@@ -97,5 +102,40 @@ class ResourceCatalogCacheTest {
         when(values.get("resource")).thenReturn(" ");
 
         assertTrue(cache.get("resource", String.class).isEmpty());
+    }
+
+    @Test
+    void missLoadsFromMySqlAndCountsMiss() {
+        when(redis.opsForValue()).thenReturn(values);
+        when(values.get("resource:generation")).thenReturn("3");
+        when(values.get("resource")).thenReturn(null);
+        when(redis.execute(any(org.springframework.data.redis.core.script.RedisScript.class),
+                anyList(), any(Object[].class))).thenReturn(1L);
+
+        assertEquals("db-value", cache.getOrLoad("resource", String.class, () -> "db-value").orElseThrow());
+        assertEquals(1.0, registry.get("security_model_cache_requests")
+                .tag("result", "miss").counter().count());
+    }
+
+    @Test
+    void changedGenerationRejectsAStaleRefill() {
+        when(redis.opsForValue()).thenReturn(values);
+        when(values.get("resource:generation")).thenReturn("4");
+        when(values.get("resource")).thenReturn(null);
+        when(redis.execute(any(org.springframework.data.redis.core.script.RedisScript.class),
+                anyList(), any(Object[].class))).thenReturn(0L);
+
+        assertEquals("db-value", cache.getOrLoad("resource", String.class, () -> "db-value").orElseThrow());
+        assertEquals(1.0, registry.get("security_model_cache_stale_fill_skipped_total").counter().count());
+    }
+
+    @Test
+    void redisFailureStillReturnsTheMySqlValue() {
+        when(redis.opsForValue()).thenReturn(values);
+        when(values.get("resource:generation")).thenThrow(new RuntimeException("redis unavailable"));
+
+        assertEquals("db-value", cache.getOrLoad("resource", String.class, () -> "db-value").orElseThrow());
+        assertEquals(1.0, registry.get("security_model_cache_requests")
+                .tag("result", "degraded").counter().count());
     }
 }

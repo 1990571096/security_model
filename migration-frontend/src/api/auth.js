@@ -1,9 +1,5 @@
 import http from './http'
 
-export function getCaptcha() {
-  return http.get('/auth/code')
-}
-
 export function login(payload) {
   return http.post('/auth/login', payload)
 }

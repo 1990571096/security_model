@@ -1,5 +1,46 @@
 # 设计决策记录
 
+以下规则以 `a674a04` 的运行代码为准。分阶段的决策背景和原始验收记录保留在本页末尾。[设计思路](../project-design-overview.md) · [可靠性练习](../learning/03-reliability.md)
+
+## ADR-013 任务归属与读取权限
+
+任务归属由 `owner_user_id` 表达，它存放当前登录用户的稳定 ID。创建人名称用于审计展示。`TaskAccessGuard` 核验详情、报告、日志和导出关联任务的读取权限。只有启用 `admin-cross-user-read` 时管理员才有跨用户读取权限。变更还要求本人拥有任务，历史 demo 行禁止变更，未归属记录也无法写入。[TaskAccessGuard](../../migration-backend/src/main/java/com/securitymodel/application/task/TaskAccessGuard.java)
+
+## ADR-014 R2 GPU 单槽租约过期与接管
+
+MySQL GPU 单槽租约在 `db` 模式由启动事务取得，在 `rabbit` 模式由 Worker 领取时取得。租约过期代表心跳失效，旧 Python 或训练子进程仍可能占 GPU。`GpuLeaseService` 将过期但尚未确认退出的槽位置为 `blocked`，等待恢复核验。心跳与正常释放带 `lease_token` 条件，防止旧执行者修改新租约。[GpuLeaseService](../../migration-backend/src/main/java/com/securitymodel/application/task/GpuLeaseService.java)
+
+### 原执行者失联
+
+例如 API 进程意外退出，训练子进程可能仍在运行。此时直接接管 GPU 会让两轮训练争用一个槽位。R2 的恢复路径先按 `taskId` 和 `runId` 找到旧进程记录，再检查退出依据。租约有效期用于识别失联，进程退出依据用于决定槽位能否重新分配。
+
+## ADR-017 进程树退出与恢复
+
+取消或超时进入 Java 进程清理逻辑。执行器检查适配器进程、后代和已登记的 Python 子进程。已确认退出后才能释放相应租约，证据不充分时隔离槽位。恢复扫描先对比意图记录的 `run_id`、`attempt` 与任务当前运行，旧意图退出自身的恢复路径，避免探测或终止新 attempt。[恢复协调器](../../migration-backend/src/main/java/com/securitymodel/application/task/DispatchRecoveryCoordinator.java) · [执行器等待与清理](../project-implementation-guide.md#5-失败重试取消与恢复)
+
+## ADR-018 调度意图与请求幂等
+
+调度意图随启动事务写入 `pending`。派发方用条件更新竞争 `pending → submitting`，完成交接登记后转为 `submitted`。无法继续的旧轮次或失败派发可转为 `abandoned`。恢复协调器结合意图阶段、进程证据与当前运行身份决定后续动作。[TaskDispatchCoordinator](../../migration-backend/src/main/java/com/securitymodel/application/task/TaskDispatchCoordinator.java) · [Rabbit 派发契约](21-r4-outbox-rabbitmq-design.md)
+
+请求幂等的唯一键由 `owner_user_id`、`operation`、`idempotency_key` 组成。`request_hash` 单独比较请求内容。同键同内容可以重放已完成响应，同键不同内容产生冲突。任务启动的行锁、状态条件和当前运行 ID 仍负责执行层并发保护。[幂等表定义](../../sql/security_model_request_idempotency.sql) · [RequestIdempotencyService](../../migration-backend/src/main/java/com/securitymodel/application/task/RequestIdempotencyService.java)
+
+## ADR-019 Redis 资源缓存与可观测性
+
+Redis 资源目录缓存用代际值防止旧值回填。读取方先读代际再回源 MySQL。写事务提交后，缓存组件推进代际并删除条目。回填的 Lua 脚本只在代际仍一致时写入，Redis 失败时资源查询可以回源，已有缓存按 TTL 收敛。[ResourceCatalogCache](../../migration-backend/src/main/java/com/securitymodel/infrastructure/cache/ResourceCatalogCache.java)
+
+Actuator 配置暴露 `health`、`info`、`metrics`。`health/liveness` 反映进程健康，`health/readiness` 纳入调度 readiness。Rabbit 派发健康由管理员接口 `/api/observability/dispatch` 提供。端点暴露范围和访问控制分别由运行配置与 Spring Security 决定。[application.yml](../../migration-backend/src/main/resources/application.yml)
+
+## ADR-020 至 ADR-026 知识、助手与 Rabbit
+
+知识检索从有权访问的材料生成词法候选，本地哈希向量可参与重排。未知问题通过词法门槛回空。助手通过服务端工具与确认记录约束业务动作。Rabbit 使用事务内 Outbox 和消费账本，Worker 从 MySQL 恢复权威执行请求。[Agent / RAG 实操](../agent-rag-demo.md) · [Rabbit 派发契约](21-r4-outbox-rabbitmq-design.md)
+
+## 历史记录
+
+<!-- knowledge:historical -->
+> 本文是 ADR 历史记录。当前测试计数、R4/单机部署状态和正式 5 epochs 边界以
+> [`26-current-delivery-facts.md`](26-current-delivery-facts.md) 为准；ADR 中的
+> “部署验收未执行”等状态按当时决策快照理解。
+
 ## ADR-001：第一阶段不物理删除大批 ELADMIN 模块
 
 日期：2026-07-11
@@ -171,3 +212,361 @@ MySQL 继续作为资源和任务的事实源，任务状态、任务报告和�
 Agent 采用外部大模型 API，本机不部署大模型。生成模型和 embedding 服务均只能接收经过当前用户权限过滤、服务端脱敏、字段白名单限制的 SDD 文档片段、算法参数说明及实验报告摘要；禁止发送原始样本、完整日志、本机绝对路径、凭据与用户个人信息。供应商、费用上限、数据留存条款和密钥注入方式在接入前另行确定。
 
 验收：双用户在 MySQL + HTTP 集成测试中各自创建、管理和查看实验，跨用户列表及 ID 直取/产物下载均无法越权；外部 API 出站请求可测试白名单和脱敏，违规内容不会离开服务端。以上均为后续迭代验收条件，不代表当前代码已经实现。
+
+## ADR-012：R0 事实冻结——文档以运行代码为准，归属契约进入设计阶段
+
+日期：2026-11-13；状态：已生效（仅冻结事实与契约，不含实现）。
+
+决策：
+
+1. 文档与实现冲突时，以 `migration-backend` 源码、`sql/` 脚本和**已实际执行的测试**为事实，先修文档再谈实现。本轮确认并修正的冲突如下，不允许回退到旧表述：
+
+| 编号 | 冲突点 | 修正后的事实 |
+| --- | --- | --- |
+| C1 | `07-executor-contract.md` 称 `result.json` 缺失且退出码为 0 时“补最小成功结果” | `PythonLddTaskExecutor.invoke()` 直接抛 `RESULT_MISSING`，任务判失败。不存在补偿成功路径 |
+| C2 | `07` 与 README 让迁移版用 `--spring.profiles.active=dev,python-executor` 启动 Python 执行器 | `python-executor` profile 只存在于旧 `eladmin`（`@Profile("python-executor")`）。迁移版通过配置键 `security-model.executor.python.*`（环境变量 `SECURITY_MODEL_EXECUTOR_PYTHON_SCRIPT` 等）注入 |
+| C3 | `01` 把数据导入写成“上传 + 解析” | 只有本地路径元信息登记；无上传接口；`parse_status` 被固定写 `pending`，平台无推进入口 |
+| C4 | `03` 列出 `/api/tasks`、`/api/reports/{id}`、`/api/datasets/upload`、`/api/executors/callback` | 均不存在，实际接口以控制器为准（见 03 第 6 节） |
+| C5 | `09`/`11` 称页面“接口失败显示明确错误状态，不使用样例数据” | 工作台、案例页、运行监控页、接口扩展预览为前端硬编码演示数据（含 RTX 3090 节点利用率、攻击成功率 4.7%、累计任务 28、虚构实验配置清单）；仅资源/任务/报告/导出走真实接口 |
+| C6 | `11` 称保留 `GET /api/pre-defense/download-cleaned-dataset/{taskId}` 兼容接口、可登记模型资源 | 两者都不存在 |
+| C7 | `09`/`16` 记录“10 项单元测试” | 2026-11-13 实测 `mvn verify` 为 9 个测试类、30 项单元测试全通过（不含 `mysql-it`） |
+
+2. R0 冻结以下语义，后续迭代不得悄悄改动：任务五态与允许的状态边（见 03 第 5 节）、`request.json`/`result.json`/`progress.json` 的字段集合、`run_id + attempt` 回调校验规则、`(task_id, isolation_ratio)` 导出幂等键、产物路径 containment 规则。需要变更时先加新 ADR。
+
+3. 多用户归属的**实现方案尚未决定**（共享资源写入权限、历史 `create_by` 回填口径、GPU 并发上限、路径验证入口）。推荐方案与风险见 [18-multiuser-ownership-and-resources.md](18-multiuser-ownership-and-resources.md)、[19-local-data-layout-and-retention.md](19-local-data-layout-and-retention.md)。在用户确认前，不得给历史数据赋予任意用户访问权，也不得按推荐方案直接改配置或改代码。
+
+4. 演示内容必须与真实能力可区分：演示页数据不得进入真实指标口径，也不得写在简历或论文中作为实验结果。展示算法（LDD 以外的算法卡片）继续保持“展示占位”。
+
+5. 本轮范围仅限文档与设计契约：不实现 R1 授权、不接入消息队列/RAG/Agent、不修改也不重跑既有 LDD 128 batch / 5 epochs 配置。
+
+原因：R0 的职责是把“文档说什么”和“代码做什么”对齐。旧文档中的三处乐观描述（补偿成功、profile 启动、无样例数据）会直接误导后续授权与可靠性改造，必须先纠正再进入 R1。
+
+影响：
+- 修正后的文档降低了宣称能力，但不降低代码能力；R1 的验收基线因此可测。
+- 04/16 中的“已完成”条目若与上表冲突，以本 ADR 为准，后续统一收敛。
+
+## ADR-013：R1 落地决策——稳定用户 ID 归属、共享资源只读、历史数据隔离
+
+日期：2026-11-13；状态：**已实施，评审结论“有条件通过”；隔离库迁移与双账号端到端验收已实跑通过，生产库迁移未执行**。
+
+用户指示“按 R0 推荐方案开发”，据此把 18 号文档 §6 的待决项 D1、D2、D3、D6 落为决策，D4（GPU 并发上限）、D5（自动重试策略）、D7（部署数据根目录）仍留到 R2，本轮不实现。
+
+决策：
+
+1. **归属键**：`sys_pre_defense` 新增 `owner_user_id BIGINT NULL`，作为唯一授权依据；`create_by` 只保留为用户名快照（展示与审计用），不再参与授权。新增 `data_origin`（`user` / `demo` / `legacy`）与 `owner_backfill_status`（`matched` / `unattributed`）。
+2. **身份**：JWT 增加 `adm` 声明，签发时来自 `sys_user.is_admin`；`JwtAuthenticationFilter` 把 `(userId, username, admin)` 作为 principal 注入 SecurityContext。旧 token 没有 `userId`（升级前签发），视为无归属身份：可登录态访问资源共享目录，但任何任务写操作返回“登录状态无效，请重新登录”。不引入单独的会话表，刷新令牌不在本轮范围。
+3. **共享资源（D1 = 方案 A）**：数据集/算法/超参数模板的写操作仅管理员；普通用户只读。`ResourceCommandService` 在入口校验，越权返回 403 `ADMIN_REQUIRED`。
+4. **历史数据（D2/D3）**：新增决策表 `sys_pre_defense_ownership_decision`，一行一个任务，`decision` 只能取 `demo` / `assign` / `reject`，必须填 `reason` 与 `decided_by`；`assign` 必须指定存在的 `sys_user.user_id`。**脚本不再按用户名自动匹配、也不解析 ID 字符串**：没有决策的历史行一律 `unattributed`。非法决策（未知任务/未知用户/非法取值/字段缺失）会让整批回填在写入前中止。**迁移不修改任何业务字段**，只写三列标记。
+5. **管理员跨用户读（默认关闭）**：配置项 `security-model.ownership.admin-cross-user-read=false`。开启后管理员可读他人任务、报告、日志、产物与导出，并写审计；**任何角色都不能跨用户写**（编辑/启动/重试/取消/删除/导出提交）。
+6. **数据集验证入口（D6）**：新增 `POST /api/dataset/{id}/validate`（仅管理员），校验路径存在、可读、非空后把 `parse_status` 推进为 `success` 并写 `parse_message`/`parse_time`；失败写 `failed` 与原因，不抛 500。这是消除“登记即死路”的最小实现，不做内容级解析。
+7. **配额口径**：单用户运行任务数按 `owner_user_id` 计数；`owner_user_id IS NULL` 的历史任务不占配额，也不会被新逻辑认领。
+8. **R1 不做**：GPU 单槽租约、导出启动恢复、日志/产物限额、消息队列、RAG、Agent。这些仍在 R2/R3/R4+。
+9. **令牌不撤销，但权限每次请求重算（评审后补充）**：JWT 只证明“谁登录过”，`enabled` 与 `is_admin` 以 `sys_user` 当前行为准。`JwtAuthenticationFilter` 每个请求按 `userId` 读取账号状态：账号被禁用或删除则本次请求不认证；管理员降权后 `ROLE_ADMIN` 立即消失，令牌里的 `adm` 声明不参与授权。代价是每个认证请求一次主键读，换取“禁用/降权无需等 8 小时令牌过期”，也不引入令牌黑名单或权限版本表。旧 token（无 `userId`）不查询、不认证为可写身份。
+10. **demo 行任何人不可写（评审后补充）**：迁移会给演示行回填 owner 以便追溯，但 `TaskAccessGuard.requireOwner` 先判 `data_origin='demo'` 并直接拒绝。写规则与读规则（非跨用户管理员不可见）保持一致，避免“能按 ID 改一条自己看不到的行”。
+11. **历史归属只能显式决定，禁止隐式认领（评审第二轮补充）**：删除按 `create_by` 的自动匹配；`matched` 只表示“人工确认”。`create_by='system'` 这类无账号作者不得设永久映射规则，需要归属时写一条 `assign` 决策并说明理由。仓库真实库的裁定：1–4 号 `demo`；12 号 `assign user_id=1`（system 为平台批处理作者）；8–11 号进入审核清单，未确认前保持 `unattributed`。
+
+原因：R0 已证明当前实现是“单库共享语义”，任何多用户验收都会失败；而单机、少量真实用户的场景下，方案 A 能以最小改动把“各自管理和查看实验”变得可测，同时不把历史演示数据误当真实实验。
+
+影响：
+- 数据库需要执行 `sql/security_model_ownership.sql`；代码依赖新列，**未执行迁移则启动后任务相关接口报错**（这是刻意的显式失败，不做静默降级）。
+- 旧 token 在有效期内无法执行任务写操作，需重新登录；这是升级代价，记录在 README。
+- 资源写操作从“任意登录用户”收紧为“管理员”，前端非管理员保存按钮会收到 403；R1 不改前端交互，只在接口层强制。
+- 回滚：`sql/security_model_ownership_rollback.sql` 删除三列即可恢复旧语义；代码回滚需同步回滚 jar，但**不要**删列后再跑旧代码前恢复备份，避免 owner 数据丢失后无法追溯。
+
+实施结果（2026-11-13，R1 阶段）：决策 1–11 已落地；`TaskAccessGuard` 为核心判定点，`owner_user_id` 是唯一授权键；R1 当时单元测试 57 项通过、`verify -Pmysql-it` 的 24 项 MySQL 集成测试通过（持久层 5、迁移脚本 6、双账号端到端 9、跨用户开关 4；R2 第一切片后为 62 + 29，见 ADR-014）。评审后的修正：①令牌权限改为每请求回查 `sys_user`（禁用/降权立即生效）；②demo 行任何人不可写；③迁移改为结构化决策表，删除用户名自动匹配与快照启发式，非法决策整批中止。第三轮按裁定：1–4 号 `demo`、12 号 `assign user_id=1`、8–11 号待审核保持 `unattributed`；`OwnershipMigrationScriptIT` 实跑 6/6（含“system 任务显式归属 admin”“无决策不认领”“非法决策中止”）。**生产库尚未执行迁移**，不得表述为生产已验证。前端未做交互改动，非管理员保存资源会直接收到 403。决策 8 的范围仍未越界（无 MQ/RAG/Agent）；GPU 租约不在 R1 内，已由 R2 单独立项（ADR-014）。
+
+## ADR-014：R2 第一切片——MySQL 单槽 GPU 租约、fencing 与导出重启收敛
+
+日期：2026-11-13；状态：**已实施并通过隔离库测试；未修改/未重跑真实 LDD，未在生产库执行建表**。R2 复核修复后的进程/租约语义以 ADR-017 的 2026-11-14 修订为准。
+
+背景：适配器 `VAB_ROOT/.security-model-vab.lock` 是 `O_CREAT|O_EXCL` 文件锁，`SIGKILL`／断电后残留会让所有后续 LDD 永久失败；`TaskExecutionQuotaPolicy` 的 `synchronized` 只覆盖方法体，锁释放后才 `claimForExecution()`，并发下可越过配额。单机单 GPU 场景不需要 MQ 或分布式调度，需要的是数据库层的唯一活动租约。
+
+决策：
+
+1. **单槽表 `sys_gpu_lease`**：`slot_id` 主键（默认 `default-gpu-0`），记录 `lease_token`、`task_id`、`run_id`、`attempt`、`fencing_token`、`acquired_at`、`heartbeat_at`、`expires_at`、`released_at`。不按用户切分槽位——GPU 是设备级资源。
+2. **获取是单条条件 UPDATE**：`lease_token IS NULL OR expires_at < now` 时才允许覆盖，并 `fencing_token + 1`。获取与 `claimForExecution` 在**同一事务**：抢不到槽位抛 `GPU_BUSY` 并回滚任务领取；领取失败则回滚租约，不出现半占用。
+3. **租期与续租**：`lease-ttl-seconds=300`，`heartbeat-interval-ms=60000`；`GpuLeaseHeartbeat` 续租本 JVM 的活动租约。续租失败（租约已被接管）时取消本地 Python 进程并把任务标记为 `GPU_LEASE_LOST`，不静默继续占用 GPU。
+4. **释放必须带退出证据**：执行器 `finally` 先由 `ExecutorProcessGuard` 确认父进程、`descendants()` 与已记录子进程全部退出，才按 `lease_token` 释放；仍有存活则 `markBlocked("EXECUTOR_TREE_ALIVE")`，不再无条件释放。启动恢复扫描按 `task_id + run_id` 释放，且仅在 ADR-017 的 `EXITED/REAPED`（未来可证明的 `NOT_STARTED`）下执行。
+5. **Fencing**：每次获取令牌单调 +1；续租与释放都以 `lease_token` 为条件，旧 worker 既不能延长也不能释放新租约。任务状态更新继续用 `run_id + attempt` 条件更新，两套条件互不替代。租约 token 用 `@JsonIgnore` 排除在 `request.json` 与执行快照之外，快照只保留 `slotId`/`fencingToken`/`expiresAt` 供审计。
+6. **并发口径**：GPU 准入并发由数据库租约强制为 **1**；`max-running-tasks=4`、`max-running-tasks-per-user=2` 保留为“拒绝/排队”的业务上限，不再被当作 GPU 并发数。多用户不等于多 GPU 并发。
+7. **导出重启收敛**：`ExportRecoveryRunner` 在启动时把 `pending`/`running` 导出显式置为失败（`EXPORT_NOT_STARTED` / `EXPORT_INTERRUPTED`），不自动重派发——可能写到一半的 ZIP 不能标 success；用户通过既有失败详情重新提交。导出超时后由 `ExecutorProcessGuard` 终止并确认整棵进程树，未确认退出则报“导出超时且子进程未确认退出”，不把半成品标为成功。
+8. **第一轮不做**（第二轮已补，见 ADR-015）：适配器锁陈旧接管（pid + 启动时间）、`GPU_LOCK_BUSY/GPU_OOM/CUDA_UNAVAILABLE` 细分、自动重试队列、attempt 级产物限额。
+
+原因：文件锁和 JVM 锁都不能跨进程、不能抗硬杀；把“谁在用 GPU”落到 MySQL 的单一活动行，才能让两个请求、两个实例和重启后的回收都有同一事实源。
+
+影响：
+- 必须先执行 `sql/security_model_gpu_lease.sql`；未建表时任务启动会**显式失败**（`GPU_BUSY` 之外的 SQL 错误），不做静默降级。
+- 回滚 `sql/security_model_gpu_lease_rollback.sql` 会删除租约历史；只可在确认无任务执行后使用。
+- 租期 300 秒小于 Python `timeout-seconds=3600`，因此续租是正确性的一部分：JVM 卡死超过 TTL 时租约会过期，单机单实例下由人工确认进程后再启动新任务。
+- 未跑真实 LDD，因此“6GB 显存下的并发上限”仍无实测依据；本轮只把并发固定为 1。
+
+## ADR-015：适配器陈旧锁接管与失败码细分
+
+日期：2026-11-13；状态：**已实施并通过适配器单元测试；未跑真实 LDD**。
+
+背景：ADR-014 把并发门槛移到 MySQL 租约后，适配器文件锁仍是第二道防线。原锁只写裸 pid、无年龄判断：进程被 `SIGKILL`／断电后残留文件会让所有后续 LDD 永久失败，且失败统一为 `VAB_INTEGRATION_ERROR`，运维无法区分“锁被活进程占用”“显存不足”“CUDA 环境不可用”。
+
+决策：
+
+1. **锁元数据结构化**：锁文件写 JSON（`version/pid/host/task_id/run_id/token/acquired_at`）；旧格式（裸 pid 文本）仍可读，不被误判。
+2. **陈旧判定只看持有者是否还活着**：pid 不存活才允许接管；pid 存活一律 `GPU_LOCK_BUSY`，不用“文件存在太久”直接抢活进程的锁。无 pid 或内容不可解析时，才退化为按 `SECURITY_MODEL_VAB_LOCK_STALE_SECONDS`（默认 21600）年龄阈值接管。
+3. **接管要防误删新锁**：读到陈旧锁后先 `os.replace` 到隔离名，再比对隔离文件里的 `token` 是否仍是读到的那一个；不一致说明其间已有进程换了锁，恢复原文件并返回 `GPU_LOCK_BUSY`，不制造两个持有者。
+4. **释放校验 token**：`release_lock` 只在磁盘锁的 `token` 等于本次运行的 token（或旧格式无 token）时删除，慢进程不能删掉后继者的锁。
+5. **进程存活探测不发信号**：Windows 用 `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` + `GetExitCodeProcess == STILL_ACTIVE`；POSIX 用 `os.kill(pid, 0)`。（Windows 的 `os.kill(pid, 0)` 会真的终止进程，禁止使用。）
+6. **失败码细分**：适配器按子进程输出归类 `GPU_OOM`（`CUDA out of memory` / `CUBLAS_STATUS_ALLOC_FAILED` / `CUDNN_STATUS_ALLOC_FAILED`）、`CUDA_UNAVAILABLE`（无设备／驱动版本不符／未编译 CUDA），其余保持 `VAB_INTEGRATION_ERROR`；锁冲突单独为 `GPU_LOCK_BUSY`。`IntegrationError` 携带 `error_code`，写入 `result.json.error_code`。
+7. **Java 只在没有 result.json 时兜底归类**：子进程非零退出且未写结果时，按 stderr 文本归类为 `GPU_OOM`/`CUDA_UNAVAILABLE`/`GPU_LOCK_BUSY`，否则 `PYTHON_PROCESS_EXITED`；有 result.json 时一律以适配器写入的 `error_code` 为准，Java 不用文本猜测覆盖协议结果。
+8. **不自动重试**：`GPU_OOM`、`CUDA_UNAVAILABLE` 明确不可自动重试；`GPU_LOCK_BUSY` 只提示稍后重试，自动重试队列仍留 R3（D5 未关闭）。
+
+原因：锁的价值是阻止两个进程同时进 CUDA，宁可保守地判“占用中”，也不能为省一次人工操作而误抢活进程的锁；失败码只有作为稳定契约写入结果，才能被前端与后续重试策略使用。
+
+影响／残余风险：
+
+- 接管存在一个很窄的窗口：读陈旧文件与 `os.replace` 之间若被其他进程刷新，靠 token 比对回滚；但仍可能短暂把新锁移走再恢复，期间第三方会看到锁不存在。单机单实例 + 数据库租约为第一门槛，接受该窗口，不宣称“无竞态”。
+- pid 复用会被当作活持有者（保守，需人工确认）；无 pid 的损坏文件最多阻塞 6 小时。
+- 适配器单元测试 11 项（`algorithm-runtime/vab/tests/test_algorithm_lock.py`，`python -m unittest`），Java 归包测试 7 项；**均不涉及真实 CUDA／真实 LDD**。
+- `SECURITY_MODEL_VAB_LOCK_STALE_SECONDS` 只影响“无 pid／不可解析”文件的接管，不改变活进程判定；未把它做成按任务超时自动计算，避免与 3600 秒执行超时隐式耦合。
+
+## ADR-016：attempt 级产物限额、清单与保留期
+
+日期：2026-11-13；状态：**已实施并通过单元测试；默认不删除任何文件；未跑真实 LDD**。
+
+背景：每次执行写 `pre_defense-<taskId>/attempt-<n>/`，里面有多份日志和结果文件；长期运行会无界增长，也没有可用于完整性核对的文件清单。R2 要求定义 attempt 级目录、日志截断、文件上限、保留期与校验，且清理只能作用于“已过期且无运行引用”的目录。
+
+决策：
+
+1. **attempt 目录不变**：`<workspace>/pre_defense-<taskId>/attempt-<n>/`，重试递增 attempt，旧 attempt 不覆盖。目录即产物边界，不再为每次执行新建随机目录。
+2. **归档日志截断**：`stdout.log`/`stderr.log` 超过 `security-model.executor.artifacts.max-log-bytes`（默认 20 MiB）时只保留尾部，并在文件头写入截断标记与原始字节数；截断发生在进程结束后、写清单前，不影响失败分类（分类先读原始 stderr）。**该上限只约束归档文件大小，不限制进程运行期间的磁盘增长**，不能称为运行期硬上限；如需运行期限制必须另做流式限额。
+3. **SHA-256 清单**：每次执行结束在 attempt 目录写 `manifest.json`，列出该目录下每个文件的相对文件名、字节数与 SHA-256；清单本身不纳入列表。写清单或截断失败只记 warn，不改变任务成败。
+4. **保留期默认关闭**：`security-model.executor.artifacts.retention-days` 默认 `0`（不删除）。只有 `> 0` 时定时任务才工作。
+5. **删除条件必须同时满足**：目录名可解析为 `pre_defense-<id>/attempt-<n>`；任务存在且状态为 `success/failed/canceled`；`n != current_attempt`；目录最后修改时间早于保留期；删除前用 `toRealPath()` 解析并与 `workspace.toRealPath()` 比较，同时要求真实路径与 `toAbsolutePath().normalize()` 相等（拒绝符号链接/junction 与 `..` 越界）。任一不满足即 warn 并跳过。`running`/`pending` 任务、当前 attempt、未知任务目录一律不动。
+6. **不做文件大小硬上限以外的清理**：不自动删除单个大文件（如 `*.pth`），只按目录保留期整体清理；避免误删仍在被引用的产物。
+7. **配置缺失即保守**：未配置 workspace 时清理任务直接返回；配置错误不会删除工作目录之外的内容。
+
+原因：删除类操作不可逆，必须让默认行为是“什么都不做”。清单与截断解决“可核对、可限流”，保留期解决“长期增长”，三者分开关闭/开启，便于按机器磁盘实际情况启用。
+
+影响／残余风险：
+
+- 单元测试 6 项（截断保留尾部、短日志不动、终态任务删旧 attempt、运行中任务不删、关闭时不删、未知目录不删）加 1 项 workspace 越界拒绝、1 项 junction 越界不删除（本机以 `mklink /J` 实跑通过）；**未覆盖真实 LDD 产物**。
+- 清单只覆盖顶层文件，不含子目录递归哈希；导出 ZIP 不在该目录内，走既有导出校验。
+- 保留期开启后，历史答辩演示所依赖的旧产物可能被清理，启用前需确认保留天数与备份。
+
+## ADR-017：恢复前必须确认执行子进程已退出
+
+日期：2026-11-13，修订 2026-11-14；状态：**已实施并通过单元测试与真实短进程演练；未跑真实 LDD；2026-11-14 复核修复待复审**。
+
+背景：R2 的启动恢复会把所有 `running` 任务置失败并释放 GPU 租约。但 Windows 上 JVM 被硬杀不会自动终止它的 Python 子进程：遗留进程可能仍在 CUDA 中训练，而租约已被释放，下一个任务会认为自己独占 GPU 并进入同一张卡，导致显存竞争或 OOM。
+
+决策：
+
+1. **先写启动标记，再启动进程，写入原子化**：`PythonLddTaskExecutor` 在 `ProcessBuilder.start()` **之前**把 `process.json` 写成 `{"schema_version":2,"state":"starting"}`；写不成功抛 `PROCESS_RECORD_FAILED` 并拒绝启动。启动成功后改写为 `{"schema_version":2,"state":"running","pid","command","started_at"}`。两次写入都先写临时文件再 `ATOMIC_MOVE`（不支持时降级普通 move），避免半截 JSON。**“没有记录”不再等价于“未启动”**：旧版本、记录被删、启动后写记录失败都可能留下无记录但已运行的进程，因此无记录、`schema_version` 不是 2、JSON 损坏、`starting` 无 pid 一律 `UNKNOWN`。只有未来版本化协议能持久证明“未提交”时才允许 `NOT_STARTED`；R2 不再产生该枚举。
+2. **适配器记录训练子进程**：`algorithm_entry.run` 在 `Popen` 之后写 `python-children.json`（`pids` + `updated_at`），临时文件 + `os.replace` 原子写；写失败立即 `kill/wait` 训练进程并抛 `IntegrationError`，不再吞掉记录失败。训练结束在 `finally` 写回空 `pids` 数组（写失败才删除文件），让运行期守卫能区分“子进程已确认退出”和“记录缺失/损坏”。恢复与执行器回收同时核对父进程、`descendants()` 和已记录子进程；父进程退出但记录子进程仍存活、记录缺失或损坏时不判整树退出。
+3. **恢复探测结果必须五选一**：`NOT_STARTED`（仅未来可证明未提交时；R2 不产生）、`EXITED`（身份正向匹配且进程与已记录子进程均已退出）、`REAPED`（存活且身份匹配，已杀掉整棵树并确认退出）、`KILL_FAILED`（杀掉后仍有存活）、`UNKNOWN`（无记录/旧协议/损坏/身份或子进程无法确认）。`python-children.json` 缺失、损坏或无 `pids` 数组时按 `UNKNOWN`，不得当作空集合。
+4. **身份必须正向匹配**：只有 `startInstant` 与记录相等才允许杀进程；`startInstant` 缺失、不可解析、记录缺失或运行时读不到 → `UNKNOWN`，不杀、不释放。pid 被复用（启动时间不等）且无存活子进程 → `EXITED`；父进程已死但已记录子进程仍存活 → `UNKNOWN` 并保持隔离。记录中的子 PID 只有能证明为已验证根进程的直接子进程时才随树终止；无法证明身份的存活子进程不杀，返回 `UNKNOWN`。
+5. **租约释放只认“已确认退出”**：`NOT_STARTED/EXITED/REAPED` 才 `releaseByRun`；`KILL_FAILED/UNKNOWN` 调 `markBlocked` 把槽位置为隔离（`blocked_at` + `blocked_reason`），**租约 TTL 过期也不能被重新领取**——TTL 只证明心跳失联，不证明 GPU 空闲。执行器 `finally` 不再无条件释放：`ExecutorProcessGuard.ensureGone` 确认整树退出才释放，否则 `markBlocked("EXECUTOR_TREE_ALIVE")`；中断、超时、导出超时同样先杀整树再收敛。
+6. **隔离槽位由探测任务解除，并对管理员可见**：`GpuLeaseBlockedProbe` 每 60 秒重探一次，只有得到 `NOT_STARTED/EXITED/REAPED` 才 `releaseByRun` 并清空 `blocked_at`；仍为 `KILL_FAILED/UNKNOWN` 时继续隔离并告警。`/api/task-progress/executor-status` 返回 `gpuSlot`（`blocked/leased/idle/unknown`、原因、隔离时间、最近探测时间、恢复指引），不包含 taskId、runId 或本机路径；前端任务中心展示该状态。人工解除必须显式执行（`releaseByRun` 或带条件的 SQL），不能靠时间流逝。
+7. **启动恢复完成前不接受新启动**：`SchedulingReadinessGate` 在 `TaskRecoveryRunner` 恢复循环结束后置 ready；`PreDefenseTaskCommandService.launchTask` 未就绪时返回 `SCHEDULING_NOT_READY`，只读接口不拦截。
+
+原因：GPU 独占是设备级事实，不能因为“数据库里任务已失败”就推断进程已退出；必须在释放槽位前取得进程已死的证据。
+
+影响／残余风险：
+
+- 隔离不会自动过期：`KILL_FAILED/UNKNOWN` 的槽位在人工确认前一直拒绝领取，新任务得到 `GPU_LEASE_BLOCKED`（与普通 `GPU_BUSY` 区分）。
+- `process.json` / `python-children.json` 只用于恢复判定，不对外提供下载，不写入 `result.json`。
+- 仍需承认：父进程退出、子进程未记录但实际存活的情形无法枚举，只能靠适配器持续维护 `python-children.json` 与执行器 `descendants()` 降低概率；两者都无法给出证据时保持 `UNKNOWN` 隔离，不自动放行。
+- 测试证据（2026-11-14）：`AttemptProcessRegistryTest` 13 项（无记录/旧协议/`starting` 无 pid/损坏/启动时间缺失/子进程记录缺失或损坏/pid 复用/父死子活/身份匹配才杀/无法证明子 PID 不杀/空 workspace 不回退/workspace 外拒绝准备）、`GpuLeaseBlockedProbeTest` 3 项、`PythonLddTaskExecutorProcessTest` 2 项（真实短 Python 父子进程的超时与取消）、`CleanSubsetExportExecutorTest` 1 项（半成品 ZIP + 超时）、`OrphanProcessCrashDrillTest` 1 项（独立 JVM 启动器被强杀后恢复整树，启动器已记录真实子 PID）。**未跑真实 LDD**。
+
+## ADR-018：调度意图、重启语义与请求幂等（R3，已实施，2026-11-14 修复待复审）
+
+日期：2026-11-13，修订 2026-11-14；状态：**R3-A/R3-B 代码与自动化测试已落地，P1/P2 复核修复已完成，外部评审与生产迁移仍未完成**。生产库未执行迁移前，不得写成“生产级持久调度已上线”。
+
+范围：本 ADR 对应 [20 号任务书](20-stage-execution-and-acceptance.md) 的 R3-A 与 R3-B。两批代码均已写入，验收证据见第 6.4 节矩阵与 `09` 状态文档；扫描只补偿确认未提交的意图，不自动重跑算法失败或派发不确定的任务。
+
+背景：`launchTask` 在事务内完成租约 + 领取，事务提交后才派发执行；若 JVM 在提交成功、派发之前退出，任务停在 `running` 且没有任何执行证据。R2 的统一失败无法区分“从未派发”和“执行到一半”。
+
+决策（已实施）：
+
+1. **调度意图与领取同事务**：新增 `sys_task_dispatch_intent`（`task_id`、`run_id`、`attempt`、`status`（`pending`/`submitting`/`submitted`/`abandoned`）、`schema_version`、`request_json`、`request_hash`、`runtime_hash`、`error_code`、`created_at`、`updated_at`、`submitted_at`），唯一键 `(task_id, run_id, attempt)`，扫描索引 `(status, updated_at)`。`request_json` 由 `DefenseTaskRequest` 序列化，`gpuLeaseToken` 已 `@JsonIgnore` 排除；不保存凭据。重放前校验任务 `run_id/attempt`、归属账号仍启用、资源存在、运行时指纹未变，并重新获取租约。
+2. **派发用条件抢占，不靠唯一键**：`UPDATE ... SET status='submitting' WHERE status='pending' AND task_id=? AND run_id=? AND attempt=?`，只有影响 1 行的调用者提交执行器；执行器接受后才 `markSubmitted`。唯一键只防止重复插入意图，不能证明只派发一次；多调用者读取同一行时，条件更新是唯一门槛。若执行器已接受而 `markSubmitted` 失败，只记录告警，不释放租约、不失败任务；若在标记 `submitting` 后、执行器接收前崩溃，则恢复只能保守收敛为 `DISPATCH_UNCERTAIN`，由用户重试，不能称可靠投递或保证执行。
+3. **单一恢复协调器**：`TaskRecoveryRunner` 只委托 `DispatchRecoveryCoordinator.recoverAtStartup`。顺序为：读取 `running` 任务 → 按意图分类 → `pending` 重放 / `submitting|submitted` 收敛为 `DISPATCH_UNCERTAIN` / 无意图旧任务按 R2 进程证据收敛 → 最后 `markReady`。禁止第二个启动监听器先把任务置失败。扫描和启动收敛都先核对意图与当前 `runId/attempt`；旧意图只 `abandon`，不得探测/终止新 attempt；本 JVM `AttemptProcessRegistry` 已接受的 attempt 跳过探测。
+4. **`pending` 是“未提交”的持久证据**：`pending` 不因缺少 `process.json` 被误判为未知；重放前校验 `schema_version`、`request_hash`、快照 task/run/attempt、非空且启用的 owner、demo 拒绝、资源启用与路径可用，然后释放本 run 的旧租约并重新 acquire 取得新 token。`submitting/submitted` 不自动重放；进程确认退出才释放槽位，否则 `markBlocked("ORPHANED_PROCESS_*")`。GPU TTL 过期只表示心跳失联，不表示空闲；过期旧租约先 `block("LEASE_EXPIRED")`，确认退出后才允许新任务领取。`GPU_BUSY/BLOCKED` 明确失败并 `abandoned`，不无限期 running。
+5. **R3-B 有界扫描**：`@Scheduled` 每 10 秒、初始延迟 30 秒、每批 20 条，只扫 `updated_at` 早于 30 秒的 `pending`；`pending` 创建超过 5 分钟仍无法提交则 `DISPATCH_EXPIRED` + `abandoned`；`submitting` 失联先查进程记录，不确定则隔离后再失败；`submitted` 不参与扫描，正常运行不被超时误杀。配置项为 `security-model.dispatch.*`。
+6. **R3-B 请求幂等**：`sys_request_idempotency` 唯一 `(owner_user_id, operation, idempotency_key)`，保存请求哈希、资源 ID、状态、稳定响应与 24 小时有效期。`create/start/retry` 接受可选 `Idempotency-Key`（1–128）；同键同体返回原响应，同键异体 409 `IDEMPOTENCY_KEY_REUSED`，进行中并发 409 `REQUEST_IN_PROGRESS`，不同用户同键互不影响。成功记录随业务事务提交；业务事务回滚时在 `afterCompletion` 用独立事务清理占位记录；超时的 `processing` 不自动删除，转 `failed` 并返回 `REQUEST_REQUIRES_RECONCILIATION`，由人工核对业务事实。
+
+边界：不承诺 exactly-once。`submitting` 崩溃恢复为 `DISPATCH_UNCERTAIN`，由用户手工重试。`request_json` 的路径复检只能证明文件仍存在且指纹未变，不能证明文件内容未被同尺寸替换；内容指纹复用现有 `fingerprint-content` 机制。生产库 `eladmin` 仍未执行本 ADR 的建表脚本。
+
+验收：单元测试覆盖条件抢占、执行器拒绝、接受后记账失败、GPU_BUSY 重放、pending 重放、submitting 隔离、5 分钟超时、旧意图/新 attempt、本地已接受跳过、幂等同体/异体/并发/失败释放/超时转人工核对；真实 MySQL IT 覆盖意图唯一键、条件抢占、回滚无残留、pending 扫描筛选、幂等键跨用户与过期、TTL 过期隔离。2026-11-14 实跑 137 单测 + 41 MySQL IT（1 Redis IT 因未设置 `REDIS_IT=true` 跳过）+ Python 11 项；完整计数与剩余未跑项见 `09` §5.6.1、§9。
+
+## ADR-019：R5 可观测性、缓存代际与最小暴露
+
+日期：2026-11-13；状态：**代码已实施并通过本机单元测试、真实 Redis 代际测试与前端构建，未在生产环境或 Redis 宕机注入下验收**。
+
+1. **指标来源**：`TaskRuntimeMetrics` 每 30 秒从 MySQL 聚合任务状态和进度陈旧数，从 `ThreadPoolTaskExecutor` 读取执行池，从 `GpuLeaseService` 读取槽位；指标标签只使用 status/state/result/outcome 等低基数枚举，禁止 taskId/runId/userId。数据库短暂不可用时保留上次值并标记刷新失败，不让指标接口反向影响任务。
+2. **耗时与恢复**：执行器按 `success/failed/canceled/interrupted` 记录时长；启动恢复每次运行记录 completed/failed；不把失败码原文作为标签。
+3. **日志关联**：请求过滤器为每个请求生成或校验 `X-Request-Id` 并写入 MDC，执行线程写入 taskId/runId/attempt；logback pattern 统一输出，敏感凭据、密码和完整路径不写入日志。
+4. **缓存代际**：Redis 仍是可重建缓存，MySQL 是唯一真相。读路径先观察 key 代际，再读值；miss 后加载 MySQL，只有代际未变才条件写回。提交后失效先递增代际再删除；TTL 只作兜底。Redis 故障回源 MySQL，并计数 degraded。
+5. **暴露面**：`/actuator/health` 匿名但 `show-details=never`；`/actuator/metrics`、`/actuator/info` 与 `/api/observability/summary` 仅管理员 JWT。管理端汇总不返回 taskId/userId/路径/Token。未认证请求统一返回 401，已认证但权限不足返回 403；真实 Security 链 IT 覆盖 health 匿名 200、metrics 匿名 401、普通用户 summary 403、管理员 summary 200。
+6. **前端口径**：统计页读取真实任务计数，排除 demo；CPU/GPU 利用率、ASR、样本保留率没有真实采集源时显示未采集，不写演示数字。
+
+边界：新增 `ResourceCatalogCacheRedisIT` 已在本机真实 Redis 验证“读取中被 evict 时旧值不回填”，`OwnershipEndToEndIT` 已用真实 Security 链验证 Actuator 与管理汇总鉴权；Redis 宕机、真实 MySQL 长时间观测、CI 远端结果尚未验证；生产库未建表，不能写成“生产可观测体系已完成”。
+
+## ADR-020：R6 本地检索、中文切词与外部模型边界
+
+日期：2026-11-14；状态：**离线检索、引用 API 与模型适配器已实施并通过单元测试、20 题评估集和真实 MySQL ACL 测试；外部模型未获供应商/预算/数据留存授权，保持默认关闭，联调阻塞**。
+
+1. **不新增向量库**：继续使用 MySQL 作为唯一事实库。`sys_knowledge_document` 保存 `source_key/source_type/version/content_hash/visibility/owner_user_id/status`，`sys_knowledge_chunk` 保存 `section_path/content/start_line/end_line`；唯一键为 `(source_key, version)` 与 `(document_id, chunk_index)`。检索 SQL 只连接 `status='active'` 的文档，旧版本保留作审计但不可召回。
+2. **ACL 先于排序**：共享文档对所有已认证稳定用户可读；私有文档仅 `owner_user_id` 可读；管理员跨用户读必须显式打开 `security-model.ownership.admin-cross-user-read`。排序器只接收 SQL 已过滤的候选，不取全库再由前端过滤。
+3. **确定性中文切词**：`KnowledgeTokenizer` 使用 NFKC、小写、Han 连续串展开单字与二元组，英文/数字按词并做复数去尾；不引入外部分词器，保证同样的语料在每台机器得到同样的评估结果。停用词只去掉疑问/助词，技术词不删。
+4. **排序与拒答**：标题权重 3、章节 2、正文 1，按文档频率做 IDF 加权；同时要求 IDF 加权覆盖率和最低分（默认 `min-coverage=0.30`、`min-score=20`），避免仅命中“参数/循环”等常见词就回答未知问题。topK 默认 5，同分按 chunkId 稳定排序；无命中返回 `unknown`，不调用模型。
+5. **版本切换原子化**：管理员显式触发索引，不在启动时自动扫描。内容未变按 SHA-256 跳过；变化时在同一短事务插入新版本和全部 chunk，再 retire 其他 active 版本，读者不会看到半成品。SDD 导入拒绝符号链接、越界路径和非 UTF-8 读取异常；导入前统一脱敏。
+6. **外发字段白名单**：`KnowledgePromptBuilder` 只生成 `model/messages/temperature/max_tokens`，上下文只包含 `[Cn] 标题/章节/脱敏片段`，不包含 sourceKey、文档 ID、owner、绝对路径、日志、样本或凭据；问题是先脱敏再截断。system prompt 明确 `<context>` 是不可信数据，文档内指令不得执行。
+7. **模型适配解耦且失败不阻塞检索**：业务侧只依赖 `KnowledgeAnswerModel` 端口（问题 + 已检索引用），供应商协议、鉴权、超时、重试和响应解析都由适配器负责；`security-model.knowledge.model.provider` 只选择一个适配器，新增供应商时新增实现并切换 provider 即可，不改 `KnowledgeQueryService` 和引用校验。当前默认 `openai-compatible`，支持 baseUrl/model/key/timeout/retries 配置，默认 `enabled=false`；无密钥或配置不完整返回 `model_not_configured` 且不发请求；超时/429/5xx 最多自动重试一次；4xx、空响应、超时和网络异常都降级为 `retrieval_only` 并返回引用片段。模型答案出现候选集外的 `[C99]` 时整段丢弃；R6 不注册工具，文档注入无法扩大工具权限。
+
+边界：没有供应商授权、费用上限与数据留存确认前，不能真实调用付费 API，也不能写“外部模型联调完成”。当前证据来自假 HTTP 服务器捕获请求体、单元测试、20 题固定评估集（10 有效/5 未知/5 越权或注入）和真实 MySQL ACL 测试；生产库 `eladmin` 未执行本 ADR 的建表脚本，真实语料规模与模型质量仍未验证。
+
+
+
+## ADR-021：R7 受控实验助手（工具白名单、预览确认与模型端口）
+
+日期：2026-11-14
+状态：代码已实施；本机 `deepseek` profile 已接真实 DeepSeek 适配器，生产默认仍关闭；最终请求体隐私与工具预算见 ADR-022。
+
+**背景**：R7 需要让助手读取实验上下文并辅助生成参数草稿，但不能让模型直接改任务、启动训练、读任意文件或跨用户取数。R6 已有本地检索和模型端口，R3 已有请求幂等与条件状态写入。
+
+**决策**
+1. **工具是服务端显式 allow-list**：只注册参数说明、本人任务摘要、本人报告摘要、知识检索四个只读工具，以及创建/启动/取消/重试/导出五个写工具。工具名称和 JSON Schema 固定，未知名称直接拒绝；没有 shell、任意 SQL、任意文件或动态类加载工具。模型返回的工具名仍要经过注册表，文档注入不能扩大工具集合。
+2. **只读先授权**：任务和报告工具复用 `TaskAccessGuard.requireOwned`，知识工具复用 ACL-first 的 `KnowledgeRetrievalService`。工具返回值只含白名单字段，不返回路径、原始日志、样本、其他用户私有报告或凭据。
+3. **写工具只生成预览**：创建/启动/取消/重试/导出工具只调用现有校验器，返回脱敏预览、风险说明、目标 task/run、规范请求和上下文哈希；绝不直接调用写服务。预览另发随机 256-bit token，数据库只存 SHA-256，TTL 默认 5 分钟。
+4. **确认是一次性、可重放结果的事务**：确认时重新校验稳定用户、token、过期时间、任务归属、task/run/attempt/update_time 与参数哈希；条件更新 `pending→consuming` 成功后，才在同一个事务里调用原命令服务和 R3 幂等记录。命令失败回滚会恢复 token；已消费 token 再确认返回原结果并标记 `confirmationReplayed=true`，不会二次启动/取消/导出。
+5. **模型端口与业务解耦**：`AssistantModel` 只接收问题、脱敏消息和工具 schema，返回回答或一个工具调用；编排器强制执行最多 6 次模型调用、5 次工具调用、60 秒总时限。默认 `provider=disabled`，页面明确显示未配置；模型不可用/超时/额度用尽不影响任务、报告和知识接口。
+6. **会话与审计最小化**：会话摘要按用户保存 7 天，只记录问题、回答状态、工具名、确认 ID 和引用 ID，不存 token、完整 prompt 或原始工具参数；用户可删除自己的会话。工具审计记录工具名、operator、目标 task/run、结果码和耗时，不记录参数正文或模型上下文。
+7. **配额**：按用户每日请求上限默认 50，数据库条件自增，超出返回 429；配额只限制助手入口，不限制核心 API。
+
+**非目标/边界**
+- 生产默认不接外部模型；本机 `deepseek` profile 仅用于联调，`AssistantModel` 供应商适配器的生产启用仍需费用/数据留存授权。
+- 不把 R7 的预览确认当作生产级审批流；当前没有双人复核、组织级 RBAC 或跨实例分布式锁。
+- 不新增 RabbitMQ/独立 Worker，不改变 R2/R3 的 GPU 单槽和进程隔离语义。
+- 生产库 `eladmin` 未执行 `sql/security_model_assistant.sql`，不能宣称生产级助手已上线。
+
+## ADR-022：R6/R7 审查整改——哈希向量只做词法重排、向量 ACL 前置与工具预算
+
+日期：2026-11-15；状态：**代码与本机定向/全量测试已实施；部分口径由 ADR-023 补充，生产验收未完成**。
+
+**背景**：独立审查确认 222 单测 + 75 IT 全绿，但发现外部模型请求仍可能带绝对路径、向量先全局排名后过滤 ACL、混合检索未复跑原 20 题、Agent 工具未接收总预算、R3“重放一次”只有 Mock 证据。R6/R7 需要在不引入 RabbitMQ 的前提下先关闭这些链路问题。
+
+**决策**
+1. **哈希向量不是语义召回**：`LocalEmbeddingModel` 是本地 256 维字符/词 n-gram 哈希 + L2 归一化，不能介绍为 BGE/神经 embedding。`KnowledgeRetrievalService` 先做 ACL-first 词法候选；词法候选为空时直接返回空（拒答锚），向量只用于对词法候选重排，不允许向量单独回答未知问题。20 题评估按真实服务路径运行，可答 top5 10/10、5 个未知全部拒绝；ADR-023 起补齐另 5 个越权/注入题，并限定向量只能合并进词法候选池。
+2. **ACL 在向量候选阶段生效**：`VADD` 用 `SETATTR` 写 visibility/owner/documentId；`VSIM` 追加 `FILTER (.visibility == "shared" or .owner == <userId>)`，普通用户只在自己的候选窗口内排名，管理员跨用户读不加过滤。`removeDocument` 删除退役版本向量；ADR-023 起业务 `retire()` 成功后也 best-effort 清理向量。Redis 8 不可用或命令失败时本轮 `retrievalMode=lexical`，不按配置虚报 `hybrid`。VADD/VREM 的整数回复使用 `executeIntegerCommand`，只忽略 Spring `ByteArrayOutput` 的已知解码限制；写入真假由 `VCARD/VSIM` 验证。
+3. **外发路径统一脱敏**：`KnowledgeSanitizer` 除 API 路由前缀外，任意绝对多段路径（含中文）替换为 `[已过滤路径]`；ADR-023 起取消 `/api` 等自由文本前缀豁免，并覆盖含空格路径。最终请求体由真实 `AssistantChatService` + 真实 DeepSeek 适配器 + 本地假 HTTP 捕获验证，不能只测脱敏函数；ADR-023 的测试覆盖工具执行后的第二次模型请求。
+4. **工具预算传播但保留边界**：`AssistantTool` 增加带 `timeoutMillis` 的默认方法；读工具在独立有界执行器中按剩余预算执行，超时取消并终止后续工具/模型调用；MyBatis 语句超时 5s。Future 取消不保证底层 JDBC/Redis 已物理停止，写预览事务取消后的提交仍需故障注入验证。
+5. **R3 证据分层**：测试使用真实 `TaskDispatchCoordinator`、真实 MySQL 意图、真实本地接受登记和真实状态写入，执行器仍用测试替身；证明“真实重放分支派发一次、第二次恢复不重跑”，不证明真实 Python 子进程接收或真实 GPU 租约表领取。`CrashWindowChildMain` 必须写真实 request JSON/hash，禁止再用 `{}` 冒充可重放快照。
+6. **监控口径**：`runningTaskCount` 取 MySQL `status=running` 统计；线程池 `activeCount` 只表示活动线程，二者不能混用。
+7. **CI 与运行时一致**：质量工作流 Redis 服务改为 `redis:8.0`，因为代码依赖 Redis 8 `vectorset` 命令；Redis 7 只应作为降级测试环境，不能作为混合检索 CI 基线。
+
+**证据**
+- `KnowledgeSanitizerTest`（未知 Unix/中文路径）、`AssistantOutboundPrivacyTest`（最终 HTTP body）。
+- `KnowledgeVectorStoreRedisIT`（真实 Redis 8：shared/owner 过滤、50 条他人私有片段不挤占、admin 跨用户、删除清理）。
+- `KnowledgeHybridEvaluationTest`（20 题混合路径 + Redis 失败降级；ADR-023 补齐越权/注入 5 题）。
+- `AssistantChatServiceTest`（工具预算传播、慢工具超时、后续模型不调用）。
+- `MySqlTaskPersistenceIT.independentJvmPendingIntentRunsRealReplayCoordinatorOnce`（真实协调器一次派发/二次恢复不重跑；修复 DTO Jackson 构造器）。
+- 全量验证日志 `tmp/review-fix-full-verify5.log`；本 ADR 不代表生产库迁移、真实 Python 重放、Ubuntu CI 或整体 R3/R7 验收完成。ADR-023 的后续证据见 `tmp/review-current-full-verify.log`。
+
+**非目标**：不引入 RabbitMQ/Worker；不接 BGE/ONNX；不重跑 LDD；不把哈希向量或假 HTTP 测试写成生产外发验收。
+
+## ADR-023：`cde3173` 独立审查五项边界修复
+
+日期：2026-11-15；状态：**代码、定向测试与全量回归已实施；R3/R6/R7 整体验收仍未完成**。
+
+**背景**：审查基于 `cde3173` 复跑，现有 227 单元 + 78 IT 全绿，但真实链路仍暴露五个缺口：聊天工具线程丢失 Spring Security 身份、自由文本绝对路径仍进入最终模型请求体、`mybatis.configuration` 对 MyBatis-Plus 不生效且写预览超时承诺过强、业务退役入口未清理 Redis 向量、混合检索从全部 SQL 候选合并向量且 20 题评估缺 5 个越权/注入题。本轮只关闭边界缺陷，不扩大功能，不实现 RabbitMQ/Worker。
+
+**决策**
+1. **工具线程传播身份**：`AssistantChatService.toolExecutor` 用 `DelegatingSecurityContextExecutorService` 包装，保持 4 线程 + 16 队列和 `@PreDestroy` 关闭；工具线程调用真实 `CurrentUserService.requireStableIdentity()` 必须得到请求用户。HTTP 测试用 alice 任务 700、bob 任务 300 连续交替两次，验证线程复用后不串号。
+2. **最终外发体保守脱敏**：`KnowledgeSanitizer` 新增可含空格的 `ABSOLUTE_FILE_PATH`，并在 `UNIX_PATH` 之前替换；`GENERIC_UNIX_PATH` 不再豁免 `/api` 等前缀，自由文本中的所有绝对多段路径统一替换为 `[已过滤路径]`。不能按前缀直接豁免任意文本；可信接口字段与自由文本分开处理，无法安全判定的路径保守过滤。ADR-024 起再补 `ABSOLUTE_DIRECTORY_PATH` 与 `ABSOLUTE_SINGLE_SEGMENT`，覆盖无扩展名、单层、含空格和中文目录；目录段字符集限定为字母/数字/汉字/点/下划线/连字符，避免跨中文标点吞并正文。测试必须覆盖工具执行后的第二次模型请求，不能只测脱敏函数。
+3. **有效 SQL 配置与预览 deadline**：有效配置键为 `mybatis-plus.configuration.default-statement-timeout`，默认 5 秒；`SqlSessionFactory` 读到的有效超时必须有测试断言。`AssistantPreviewService.preview(toolName, arguments, sessionId, timeoutMillis)` 先计算 deadline，工具返回后、插入确认记录前再次检查；超时抛 `ASSISTANT_TOOL_TIMEOUT`，不保存确认记录。用户文案只承诺“后续工具与模型调用不会继续；底层操作可能仍在收尾”，不承诺 JDBC/Redis 已物理终止。ADR-024 起 `preview` 三个重载均加事务，insert 完成后再检查 deadline；若 insert 自身阻塞跨过 deadline，事务回滚并返回 `ASSISTANT_TOOL_TIMEOUT`。
+4. **业务退役清理向量**：`KnowledgeIndexService.retire()` 在 `writer.retire` 成功后调用 `removeVectorsQuietly`；MySQL 仍是事实源，向量清理 best effort，失败只记日志。测试必须走真实 `KnowledgeIndexService.retire()` + 真实 Redis，而不是直接调用 `removeDocument()`。ADR-024 起 `removeDocument` 返回 boolean 并汇总逐 chunk VREM，新增 `findRetired` 有界扫描 + `KnowledgeVectorReconcileJob` 定时对账；仍不是持久化 outbox，重复对账幂等但非增量。
+5. **混合候选限定与完整 20 题**：`KnowledgeRetrievalService` 先以 `candidateLimit` 生成 `lexicalPool`；词法池为空直接返回空；向量只允许合并进 `lexicalPool`，不从全部 SQL 可见候选合并；`vectorHitCount` 只统计 `row != null && score >= 0.28` 的可读命中。`KnowledgeHybridEvaluationTest` 覆盖可答 10 + 未知 5 + 越权/注入 5 共 20 题，并构造共享 corpus + 私有 `task_report:99` 向量，验证向量通道不能注入他人的私有候选。ADR-024 的过宽目录正则曾使 `01-system-scope.md` 分块漂移、未知题误命中；现已用新增回归固定住。
+
+**证据**
+- `AssistantChatServiceTest.toolThreadReceivesAuthenticatedIdentity`、`AssistantConfirmationEndToEndIT.chatToolsKeepCallerIdentityAcrossPoolThreadReuse`。
+- `KnowledgeSanitizerTest`、`AssistantOutboundPrivacyTest`（两次真实模型请求的最终 body）。
+- `AssistantPreviewServiceTest`、`AssistantConfirmationEndToEndIT.myBatisPlusStatementTimeoutIsApplied`。
+- `KnowledgeVectorStoreRedisIT.retireBusinessEntryCleansItsVectors`。
+- `KnowledgeHybridEvaluationTest`（20 题完整范围 + 私有候选注入防护）。
+- 全量 `mvn -B -f migration-backend/pom.xml verify -Pmysql-it`（`MYSQL_IT_PASSWORD`、`REDIS_IT=true`）→ 当时 230 单元 + 81 IT，BUILD SUCCESS，日志 `tmp/review-current-full-verify.log`；ADR-024 收口后为 231 单元 + 89 IT。
+
+**边界**：ADR-023 本轮的写预览 insert 自身在 deadline 后完成是否仍落库、退役向量清理失败的持久化补偿、底层 JDBC/Redis 物理终止、真实 Python 子进程/GPU 租约跨 JVM 竞争均未证明；后续由 ADR-024 补齐服务层回滚、跨 JVM 恢复/竞争、insert 阻塞超时、退役对账和真实 body 回归。本 ADR 不代表生产库迁移、生产部署或 R3/R6/R7 整体验收完成；Ubuntu Java 17 CI 已由 ADR-024 的 run `43707281672` 验证。
+
+**非目标**：不扩展新功能；不实现 RabbitMQ/Worker；不重跑 LDD；不把本机测试写成生产验收。
+
+## ADR-024：`930c934` 后五项收口证据
+
+日期：2026-11-15；状态：**代码、定向/全量本机证据与远端 Java 17 CI 已通过；生产库迁移与 R4 仍未开始**。
+
+**背景**：`930c934` 已修复工具线程身份、最终外发体、SQL 超时、退役向量和混合候选，但仍留下五类可验证缺口：无扩展名单层/空格/中文绝对目录未覆盖，R3 恢复仍依赖替身/同 JVM 内存，R7 insert 阻塞超时与错误 token 未证明，R6 退役清理失败只有日志，文档仍把 `activeCount` 当任务数。本 ADR 只补证据与边界，不新增算法或 Agent 功能。
+
+**决策**
+1. **四层路径脱敏**：`ABSOLUTE_FILE_PATH` 保留带扩展名路径；新增 `ABSOLUTE_DIRECTORY_PATH` 识别无扩展名多段目录，首段以 ASCII 字母/下划线/汉字开头，段内允许空格；新增 `ABSOLUTE_SINGLE_SEGMENT` 识别 `/secrets`、`/数据目录` 等单层目录；`GENERIC_UNIX_PATH` 兜底。替换顺序为 file → directory → single → UNIX → generic，均在 Windows/UNC 之后、邮箱/手机号/身份证之前。目录字符集不包含中文标点、引号、括号，防止把正文当路径吞并；无法可靠区分时保守过滤。
+2. **R3-01 服务层事务回滚**：在真实 `RequestIdempotencyService.execute` 包裹的真实 `TaskCommandService.start` 路径中，于租约领取/task claim 之后、`dispatchIntentService.createPending` 之前注入 `ExecutionFingerprintService.buildRuntimeSnapshot` 异常；断言任务回 `pending`、`current_run_id` 为空、槽位无残留 token、意图 0 条、幂等记录 0 条、执行器零调用。首次发现测试临时表缺 `expires_at`，已补齐。
+3. **R3-02/03/04 新 JVM 闭环**：测试专用 `R3RecoveryChildMain` 用真实 MyBatis + `UnpooledDataSource` 构建 `PreDefenseTaskMapper`/`TaskDispatchIntentMapper`/`GpuLeaseMapper`，真实 `GpuLeaseService`、`TaskDispatchIntentService`、`TaskDispatchCoordinator`、`DispatchRecoveryCoordinator`、真实 MySQL 租约和短 Python 协议桩（`print('R3_STUB_OK')` + PID），证据写入 `sys_r3_execution_evidence`。R3-02 由父进程写旧租约、新 JVM 释放并重新 acquire 后重放 pending；R3-03 两个新 JVM 同时重放同一 pending，条件更新只有一个 `pending→submitting` 成功；R3-04 写入 `submitting` 意图和真实长睡眠 Python，但故意缺 `python-children.json`，新 JVM 启动扫描得到 `UNKNOWN` 后 `markBlocked + failAndAbandon`，不重放，槽位保持隔离且 Python 仍存活。
+4. **R7 确认边界**：`AssistantPreviewService` 三个 `preview` 重载加 `@Transactional(rollbackFor = Exception.class)`；insert 完成后再检查 deadline，若 insert 阻塞跨过 deadline，抛 `ASSISTANT_TOOL_TIMEOUT`（“写预览已超过剩余时限，确认记录未保存”）并回滚，迟到记录不能成为凭据。真实 MySQL `BEFORE INSERT` 触发器 `SLEEP(0.8)` 验证 100ms 预算下 0 行确认、1 条 FAILED 审计、任务仍 running；篡改 token 返回 403 `ASSISTANT_CONFIRMATION_INVALID` 并写 `TOKEN_MISMATCH` 审计；alice/bob 两线程并发 `/api/assistant/chat` 各自任务 700/300 不串号。五类写工具首次/重复/并发矩阵沿用既有 19 项，不再重复造用例。
+5. **R6 退役补偿**：`KnowledgeVectorStore.removeDocument` 改返回 boolean 并逐 VREM 汇总；`KnowledgeIndexService.reconcileRetiredVectors(limit)` 对 `findRetired` 有界扫描重新清理，单条失败继续；`KnowledgeVectorReconcileJob` 默认 300s 周期、60s 首批延迟、批量 50。真实 MySQL + 真实 Redis 8 测试用 `FlakyVectorStore` 首次抛 `simulated-redis-outage`，断言退役立即生效、Redis 残留、恢复后对账清掉、重复对账安全。
+6. **文档与门禁**：`09` 的“运行中任务”改为 MySQL `runningTaskCount`，`activeCount` 仅表示线程池活动线程；`20` 增补验收 ID 五列映射；运行手册记录隔离库演练命令与结果；Java 17 本机构建与远端 CI 分别记录，不把本机 Windows/JDK20 结果当 CI；推送后远端 run `43707281672` 已全绿。
+
+**证据**
+- P1：`KnowledgeSanitizerTest.redactsSingleAndSpacedDirectoriesWithoutExtensions`、`AssistantOutboundPrivacyTest.finalModelRequestBodyContainsNoFilesystemPathsOrKey`；`tmp/round2-p1-final.log`。
+- R3：`TaskCommandServicePipelineIT.launchFailureRollsBackClaimLeaseIntentAndIdempotencyRecord`（全类 7 项）、`MySqlTaskPersistenceIT.newJvmRecoversPendingIntentWithRealLeaseAndPythonStub`、`twoNewJvmsRaceSamePendingIntentOnlyOneDispatches`、`acceptedBeforeBookkeepingCrashKeepsSlotQuarantinedWhileProcessUnconfirmed`；`tmp/round2-r3-01.log`、`tmp/round2-r3-pipeline.log`、`tmp/round2-r3-02.log`、`tmp/round2-r3-03.log`、`tmp/round2-r3-04.log`。
+- R7：`AssistantConfirmationEndToEndIT.confirmationInsertBlockedPastDeadlineLeavesNoUsableToken`、`tamperedTokenCannotConfirmAndIsAudited`、`concurrentAliceAndBobChatsKeepIdentityIsolated`；`tmp/round2-r7-a.log`、`tmp/round2-r7-b.log`。
+- R6：`KnowledgeRetrievalMySqlIT.retireSurvivesRedisFailureThenReconcilesResidualVectors`；`tmp/round2-r6.log`。
+- 全量：`tmp/round2-full-verify-final.log`（231 单测 + 89 IT）；前端构建日志 `tmp/round2-frontend.log`。
+- CI：远端 `930c934` 的 `Migration Quality`（run `43686578054`）曾因既有 Windows-only `cmd`/`ping -n` 测试与 `PythonProcessWaiter` 未等待销毁退出而失败；跨平台 helper 与等待已修复。推送提交 `106e4d3` 后，run `43707281672` 的 backend/frontend/python **全部 success**，对应 tree `a294463`；本机 JDK20 `tmp/round2-cross-platform.log`、JDK17 全量 `tmp/round2-full-verify-jdk17.log`（Temurin 17.0.21，231 单测 + 89 IT）均已通过。远端 CI 通过仍不等于生产部署验收。
+
+**边界**：R3 子 JVM 的用户/数据集/算法 Mapper 与 runtime 指纹仍是测试代理/子类，不是完整 Spring 上下文；真实执行器是短 Python 桩，不启动 LDD、不使用 GPU。R7 insert 阻塞用 MySQL 触发器 `SLEEP` 模拟，不是真实行锁/表锁等待；迟到记录失效依赖事务回滚。R6 故障是测试替身抛异常，不是实际停 Redis 进程；补偿是有界扫描，不是持久化 outbox，重复扫描会重复尝试但幂等。以上证据不外推为生产级多实例调度或整体阶段验收。
+
+**非目标**：不新增算法、Agent 功能或 MQ/Worker；不重跑 LDD 128/5；不写生产库；不把本机结果替代远端 CI。
+
+## ADR-025：R3/R6/R7 最新评审收口（P1 路径、P2 清理饥饿、真实执行器链路）
+
+日期：2026-11-15；状态：**代码、测试、SQL 与文档已提交并推送；本机 JDK20/JDK17 全量门禁通过；远端提交 `bb4a79f` 的 run `43726078023` 全绿；不构成 R3/R6/R7 整体验收**。
+
+**背景**：基于 `08f11c0` 的最新评审确认三项缺口：`KnowledgeSanitizer.forModel()` 仍保留 `/x`、`/123` 等合法绝对目录；退役向量对账固定取最早 N 条，清理成功后不推进状态，存在扫描饥饿；R3 虽有新 JVM 与崩溃窗口测试，但执行器仍是测试替身，未证明真实生产派发链经过“接受执行后、提交记账前”窗口。本轮只修这三类问题并同步文档，不扩展 RabbitMQ、模型供应商或新展示功能，R4 不在本轮。
+
+**决策**
+1. **单段目录过滤补齐**：`KnowledgeSanitizer` 保留四层路径规则并收紧量词。`ABSOLUTE_DIRECTORY_PATH` 中间段空格改为 `{0,1}`，防止把 `/single 字 目录 以及普通 and/or` 跨 token 吞并；`ABSOLUTE_SINGLE_SEGMENT` 首字符允许 ASCII 字母、数字、下划线、点和汉字，后续允许字母/数字/点/横线，最多两个空格 token，覆盖 `/z`、`/123`、`/.git`、`/custom dir`，同时保留 `and/or`、`1/x`、`3/4`。所有外发渠道（问题、历史消息、工具结果、检索证据、prompt builder）继续只调用同一 `forModel()`，不新增白名单分流。
+2. **持久清理状态 + 退避 + 公平排序**：`KnowledgeDocument` 增加 `vectorCleanupStatus/Attempts/NextAt/UpdatedAt`；退役时置 `pending` 并立即到期。`findRetiredForVectorCleanup(now, limit)` 只取 `retired` 且 `pending/failed` 且已到期的行，按 `COALESCE(next_at, updated_at), document_id` 排序，成功行不再占据首批窗口。成功写 `clean`，失败写 `failed`、`attempts+1` 和 `next_at`；退避 `60s << min(6, attempts)`，上限 3600s，单条失败不阻塞其他行。MySQL ACL 仍是唯一权威，清理失败期间退役内容不进入 `findSearchableForUser`。
+3. **迁移脚本可重复/可回滚**：基础表 `sql/security_model_knowledge.sql` 增加四列与索引；新增 `security_model_knowledge_vector_reconcile.sql` 与 `_rollback.sql`，均用 `information_schema` 动态判断，回填 retired 行 `next_at`，脚本可重复执行。索引存在性判断按列计数 `>0`，不是假设单列索引只产生一行。
+4. **生产执行器最小真实链路**：新增 `R3ProductionExecutorChainIT`，使用完整 `@SpringBootTest`、真实 `@Async("taskAsync")` 代理、真实 `PythonLddTaskExecutor`、真实事务/Mapper/租约/协调器/意图与幂等表；仅 `ResourceQueryService` 用 `@MockBean`，Python 使用短协议桩，不运行 LDD、不占 GPU、不改实验配置。覆盖正常完成、取消、超时、非法结果四类终态，断言任务状态、意图状态、Python 子进程退出和租约释放一致。
+5. **真实崩溃窗口证据**：新增 `R3ProductionCrashChildMain` 测试子 JVM，使用真实 MyBatis 任务/意图/租约、真实 `PythonLddTaskExecutor`、真实 `TaskDispatchCoordinator` 和进程登记；测试子类在 `markSubmitted` 写 `crash-ready-920` 后阻塞。父测试在子 JVM 接受执行并启动 Python 后 `destroyForcibly` 终止子 JVM，再启动 `R3RecoveryChildMain`；恢复识别 `submitting`，杀孤儿 Python、释放租约、任务 failed、意图 abandoned，`executions.log` 只有 1 行，证明不重复执行且未确认退出前不重新分配槽位。该子 JVM 的执行器是测试专用异步包装，不是 Spring `@Async` 代理；不能把崩溃用例写成“完整 Spring 容器恢复”。
+6. **文档统一**：`20` §6.7 保留原构造状态证据，另列真实派发崩溃证据；§10 第 12/13 条改为已补事实，未做列表移除“真实 Python 子进程重放”和“退役向量清理失败持久化补偿”。`09` 更新计数与最新证据，`05/06/07/17/20` 与 README/运行手册统一为 232 单测 + 96 IT。
+7. **R6 拒答阈值同步收紧到 0.30**：ADR-025 新增文档进入评估语料后，文档频率与 IDF 改变，一条未知题的 IDF 加权覆盖率由阈值下方升到 `0.25044`，恰好越过旧的 `0.25`。将 `min-coverage` 默认值同步为 `0.30`（`application.yml`、`KnowledgeRetrievalService`、两份评估测试、`05/06/09` 文档一致），固定评估仍为可答 10/10、未知 0 命中；这是精度保护阈值，不是为单题写特例。
+
+**证据**
+- P1：`KnowledgeSanitizerTest` 9/9、`AssistantOutboundPrivacyTest` 1/1，`tmp/round3-p1.log`；新增 `redactsSingleCharNumericHiddenAndSpacedDirectories`，两轮最终 body 均不含 `/z`、`/123`、`/.git`、`/custom dir`。
+- P2：`KnowledgeRetrievalMySqlIT` 6/6（含 `retiredVectorCleanupAdvancesPastFailuresAndSurvivesRestart` 真实 MySQL + Redis、5 条退役/批量 2/失败不阻塞尾批/重启继续/重复幂等），`tmp/round3-p2.log`；`KnowledgeVectorCleanupMigrationIT` 1/1（升级两次、回滚两次、再升级），`tmp/round3-p2-migration.log`。
+- R3：`R3ProductionExecutorChainIT` 5/5（正常、取消、超时、非法结果、真实崩溃窗口），`tmp/round3-r3-prod.log`；崩溃子 JVM `R3ProductionCrashChildMain`、恢复子 JVM `R3RecoveryChildMain`。
+- 全量：JDK20 `mvn verify -Pmysql-it`（`REDIS_IT=true`）**232 单测 + 96 IT**，`tmp/round3-full-verify-final.log`；Temurin 17.0.21 同计数，`tmp/round3-full-verify-jdk17-final.log`；Python 11/11 `tmp/round3-python-tests-final.log`；前端构建通过 `tmp/round3-frontend-final.log`（仍有 >500 kB chunk 警告）。
+- 远端：`106e4d3` 的 run `43707281672` 全部 success；`5e4efd4` 的 run `43712479071` 暴露 2 项知识评估误命中（backend failure，frontend/python success），已由阈值 `0.30` 和测试竞态修复；收口提交 `bb4a79f` 的 run `43726078023` backend/frontend/python 全绿，`tmp/ci-bb4a79f-backend.log`。
+
+**边界**：单段路径仍是正则形态过滤，不能穷举所有自由文本隐私形态；清理退避是进程内定时任务 + 数据库状态，不是 outbox；崩溃子 JVM 用测试最小上下文与手动异步包装，真实链路四类用例才用完整 Spring 代理；生产库 `eladmin` 未迁移；R4 已实现主体代码（见 ADR-026），真实 RabbitMQ 双 JVM 已完成 R4-01..08 实现验收，含 7s 延迟 confirm、双向停机切换、旧 dead 与新 attempt 竞争；单机 db/rabbit 启停演练通过，生产多机部署未验收，长期 DB 故障/多任务退避为压力边界。`R3/R6/R7` 按 `06`/`20` 的实现验收记录分开写，不再使用无法定位到具体 ID 的“整体验收”表述。
+
+**非目标**：不扩展 RabbitMQ/独立 Worker、模型供应商或展示功能；不重跑 LDD 128/5；不写生产库；不把本机门禁替代远端 CI，也不把隔离测试写成生产部署验收。
+
+## ADR-026：R4 单机 API + 独立 Worker + Transactional Outbox + RabbitMQ（实现验收通过（隔离）；单机启停演练通过，生产多机未验收）
+
+日期：2026-11-16；状态：**R4 实现验收通过（隔离）；单机 db/rabbit 启停演练通过，生产多机部署未验收，不得写成生产部署通过**。四项阻断整改已完成：恢复返回 `RecoveryResult` 且 unsafe 不开消费、accepted 在进程/槽位处置后清零、历史-only 知识退役并保留源行号、重复投递只 ACK 不提前终结原账本。真实 RabbitMQ 4.1.8 + Erlang 27.3.4.18、隔离 schema/vhost、双 JVM 已实测 R4-01（含回滚）、R4-02（幂等/不可路由/旧 claim token/真实 confirm-return/7s 延迟 confirm）、R4-03、R4-04（GPU_BUSY/毒消息/DB 中断/无重启自动恢复消费）、R4-05（运行中+完成后取消）、R4-06（启动/drain/v2 旧队列隔离/db→rabbit→db 完整双向停机切换）、R4-07、R4-08（自然 dead+重放+权限+replay/cancel 并发+旧 dead 与新 attempt 竞争）；剩余边界仅长期 DB 故障/多任务退避与跨主机；默认 db 模式保持 R3，不迁移业务库，不重跑 LDD。本轮功能/测试提交 `ee10704`、文档提交 `cd5a6ae`；run `43846823071` backend/python/frontend 全绿**。2026-11-18 单机部署演练已通过；正式 5 epochs 工程验收已完成，论文效果未评估。
+
+**背景**：R3 已在 API 进程内完成真实执行器链路、意图状态机、GPU 单槽租约和崩溃恢复，但跨进程派发仍依赖 API 进程内 `@Async`。R4 的目标是把“事务提交”和“执行派发”解耦，同时不引入第二个任务事实源。
+
+**决策**
+1. **事实源不变**：MySQL 仍是任务、意图、租约、终态和权限的唯一权威；RabbitMQ 只承载“已提交意图可处理”的通知。事件 v1 只含 `schemaVersion/messageId/eventType/taskId/runId/attempt/ownerUserId/intentId/requestHash/occurredAt`，不含路径、命令、凭据或参数快照。
+2. **事务内写 Outbox，租约归 Worker**：rabbit 模式 API 在同一事务写任务冻结快照、调度意图和 `sys_dispatch_outbox`，**不领取物理 GPU**；业务回滚不留 Outbox。Worker 消费时用独立短事务完成身份检查、`pending→submitting` 和槽位领取，事务提交后才启动 Python；`GPU_BUSY` 回滚 `submitting→pending`，数据库异常不得误判为 BUSY。Outbox 行以 `(task_id, run_id, attempt, event_type)` 唯一约束防止重复建行；db 模式仍保持 R3 的“任务/租约/意图”同事务。
+3. **发布与确认**：Relay 条件领取 `new/failed` 行并写 `claim_owner/claim_token/claim_until`；每次发布生成独立 `publishId` 并写入 `correlationId`，发布使用同一 Channel 的 `ReturnListener` 与 `confirmSelect/waitForConfirms`，return 按该次 `publishId` 配对，不建立业务 `messageId` 共享 return map，也不依赖固定 sleep；confirm 且该次发布未被 return 后带 `claim_token` 条件置 `published`；nack/confirm 超时/连接断开按 5/30/120 秒退避，最多 3 次后 `dead`，但**普通发布耗尽只标 dead、保留 task running/intent pending 供同 attempt 重放**；`mandatory` 下的不可路由消息**立即 dead 并收敛 task/intent**，不得记成 `published`；`publishing` 超时按领取期限回收，旧确认不能覆盖新一轮发布。
+4. **消费幂等与真实完成信号**：Worker 以 `message_id` 唯一消费记录 + 数据库当前 `runId/attempt` 做幂等；重复终态/过期消息只 ACK 不执行；`processing` 不是完成证据，未过期且未完成时必须发布同业务 `messageId` 的 120 秒延迟副本，确认后才 ACK 旧消息。`PythonLddTaskExecutor` 增加阻塞式 `executeAndWait`，只有 Python 结束、终态落库、消费记录终态后才 ACK；`runPreDefense` 的 `void @Async` 返回不作为完成信号。
+5. **ACK 时机**：只在终态已持久化、消息已受控转入重试/DLQ、或消息被判定重复/过期/非法并写审计后 ACK；DB 故障先转 120 秒延迟队列再 ACK，禁止 `basicNack(requeue=true)` 热循环；禁止 autoAck，禁止启动 Python 前 ACK，禁止把 `IN_PROGRESS` 当作 DUPLICATE 直接 ACK。
+6. **取消与孤儿进程**：取消以 MySQL 条件更新为准；执行中由独立取消巡检杀进程树，未确认退出不释放槽位；取消先成功则拒绝迟到结果，完成先成功则取消返回冲突并保留原终态；Worker 崩溃后的孤儿进程由 `AttemptProcessRegistry`/恢复协调器隔离，心跳超时不能证明进程退出。
+7. **角色化恢复与单机归属**：`dispatch.mode=db|rabbit`，`dispatch.role=api|worker|all`；db 仅允许 api/all，rabbit 的 API 不扫描 running、不直接派发、只写 Outbox 并标记就绪，Worker 才执行和恢复；Worker 先用专用 MySQL 连接 `GET_LOCK` 取得单机归属锁，再恢复、恢复完成后才启动消费容器；第二个 Worker 取锁失败时不恢复、不消费。rabbit 下 pending 扫描只补写/重发 Outbox。切换必须停机 drain，活跃任务/未清空队列/未发布 Outbox 未处理时拒绝热切换，旧队列消息隔离。
+8. **DLQ 重放与权限**：只有确认未接受执行的 `pending` 意图允许保留原 attempt 续传；重放事务按任务→意图→Outbox 顺序加行锁，校验 `runId/attempt` 与任务当前值一致，重算 `payload_hash`，审计记录旧/新 `messageId`；仅任务 owner 或现有管理员可触发。failed/uncertain 必须走既有授权重试创建新 attempt，不默认扩大管理员写权限。
+9. **验收计划**：真实 MySQL + RabbitMQ + 短 Python 协议桩，覆盖 R4-01 事务回滚/停 MQ 恢复、R4-02 confirm 丢失/迟到确认、R4-03 Worker 崩溃、R4-04 GPU_BUSY/DB 故障/毒消息、R4-05 取消与迟到结果（完成后取消保留原终态）、R4-06 模式切换与旧消息隔离、R4-07 API 重启不误杀 Worker 任务、R4-08 权限与人工重试；记录 DB 状态、消息计数、Python 执行次数。单元 Mock 不作阶段完成证据；缺少 RabbitMQ 时明确登记阻塞。
+
+**结果**：详细设计、故障矩阵、实施顺序与未决问题写入 `21-r4-outbox-rabbitmq-design.md`。2026-11-16 本机已用真实 RabbitMQ + MySQL + 双 JVM + 短 Python 桩执行：R4-01 正常/停 Broker 恢复/事务回滚零残留；R4-02 重复消息幂等、不可路由、旧 claim token、真实 Broker confirm/return、7s 延迟 confirm 3 次失败后 dead 且不误判 success；R4-03 Worker 强杀后孤儿 PID 4736 被杀、任务 uncertain 收敛、无新 attempt；R4-04 GPU_BUSY 三次退避耗尽、毒消息 DLQ、DB 中断不误 ACK、恢复代理后不重启 Worker 自动重取归属并延迟开消费；R4-05 执行中取消、完成后取消返回冲突且终态保持；R4-06 `db/worker` 启动拒绝、drain 拒绝、v2 旧队列隔离、db→rabbit→db 双向切换；R4-07 API 重启；R4-08 failed 重放拒绝、非 owner 403、Broker 故障自然 dead 后成功重放、replay/cancel 并发、旧 dead 与新 attempt 竞争返回 `DLQ_REPLAY_IDENTITY_MISMATCH`。当时全量 287 单测 + 106 IT 全绿（`tmp/stage2-full-verify-new.log`，历史快照）；提交 `ee10704`/`cd5a6ae`，远端 run `43846823071` backend/python/frontend 全绿（历史 CI）。剩余边界仅 R4-04 长期 DB 故障/多任务退避压力与跨主机；详见 `20` §6.8 与 `21` §16。**实现验收通过（隔离）+ 单机启停演练通过，生产多机未验收，不得写成生产部署通过**。
+
+**边界**：单机单 GPU 槽、单 API、单 Worker；不做多机/Kubernetes/对象存储/Kafka，不承诺 exactly-once；生产库 `eladmin` 未迁移；正式 5 epochs 仅完成工程验收，论文效果与生产多机未验收。
+<!-- /knowledge:historical -->

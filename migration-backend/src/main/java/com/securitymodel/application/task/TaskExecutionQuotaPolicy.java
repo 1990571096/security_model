@@ -42,9 +42,7 @@ public class TaskExecutionQuotaPolicy {
     public synchronized ObjectNode validateAndBuildSnapshot(PreDefenseTask task) {
         List<PreDefenseTask> running = taskMapper.selectList(
                 Wrappers.<PreDefenseTask>lambdaQuery().eq(PreDefenseTask::getStatus, "running"));
-        int userCount = (int) running.stream()
-                .filter(item -> task.getCreateBy() != null && task.getCreateBy().equals(item.getCreateBy()))
-                .count();
+        int userCount = (int) running.stream().filter(item -> sameOwner(task, item)).count();
         ThreadPoolExecutor pool = executor.getThreadPoolExecutor();
         if (pool.isShutdown() || pool.isTerminated()) {
             throw new TaskCommandException("TASK_QUEUE_UNAVAILABLE: 当前执行池不再接收新任务");
@@ -63,6 +61,14 @@ public class TaskExecutionQuotaPolicy {
         snapshot.put("userRunningTasksBeforeClaim", userCount);
         snapshot.put("executorAcceptingTasks", true);
         return snapshot;
+    }
+
+    /** Per-user quota is keyed by the stable owner id; legacy rows without an owner fall back to the username snapshot. */
+    private boolean sameOwner(PreDefenseTask candidate, PreDefenseTask running) {
+        if (candidate.getOwnerUserId() != null && running.getOwnerUserId() != null) {
+            return candidate.getOwnerUserId().equals(running.getOwnerUserId());
+        }
+        return candidate.getCreateBy() != null && candidate.getCreateBy().equals(running.getCreateBy());
     }
 
     public Map<String, Object> status() {

@@ -1,5 +1,10 @@
 # VaB Training-Pre-Defense Integration
 
+Java 按 `vab://pre-defense/ldd` 识别真实 LDD，启动仓库内的 `algorithm_entry.py`。适配器将任务参数转换成 VaB 运行所需配置，在 attempt 中生成脚本，启动训练子进程并归档结果。[文件和进程协议](07-executor-contract.md) · [适配器](../../algorithm-runtime/vab/algorithm_entry.py)
+
+## 历史记录
+
+<!-- knowledge:historical -->
 Date: 2026-08-24
 
 ## Goal
@@ -20,7 +25,7 @@ experiment.
 ```text
 Pre-defense task
   -> DefenseTaskRequest snapshot
-  -> PythonDefenseTaskExecutor
+  -> PythonLddTaskExecutor
   -> algorithm-runtime/vab/algorithm_entry.py
   -> generated single-task VaB script
   -> VaB data loader / model / training code
@@ -110,9 +115,30 @@ must be described as “the raw CIFAR-10 subset reconstructed from LDD retained 
 - The Java executor timeout must match the selected dataset and epoch count.
 - `progress.json` is written beside `request.json` and `result.json` in the Java attempt
   directory; it is a live diagnostic snapshot, not a completion result.
-- `security_model_vab_seed.sql` registers the developer-machine dataset root
-  `VaB CIFAR-10 Runtime Root`. Production deployments must create an equivalent
-  resource with their own local VaB dataset path.
+- `security_model_vab_seed.sql` registers the deployment dataset root
+  `VaB CIFAR-10 Runtime Root` only when the caller supplies `@vab_dataset_root`
+  (the initializer reads `-VabDatasetRoot` / `SECURITY_MODEL_VAB_DATASET_ROOT`, checks
+  the directory exists, is readable/non-empty, and contains `cifar-10-batches-py` plus
+  `batches.meta`, `data_batch_1..5` and `test_batch`). A directory check is not a sample
+  parse: the row is always inserted as `pending` with NULL sample/feature/class counts.
+  An administrator promotes it with `POST /api/dataset/{id}/validate`; until then it is
+  not in the available-dataset list. Without the variable the seed registers the LDD
+  algorithm and its default hyper-parameter template but no dataset, so a deployment
+  never gets a guessed or fake-parsed path.
+- The seed is additive only: existing dataset, algorithm and hyper-template rows are
+  never updated by a rerun. A changed path, default config, enabled flag or template
+  requires the resource API or an explicit versioned migration, not initialization.
+- Full-initialization idempotency is proved separately from the VaB seed: the isolated
+  MySQL test runs `InitializeSecurityModelDatabase.ps1` twice and compares all business
+  rows including `update_time`; it then edits path/parameters/enabled flags (and inserts
+  an unknown no-context running task) and proves the third run preserves those values and
+  only prints the unknown row in the review list. Legacy running convergence is limited to
+  the exact `sql/eladmin.sql` rows `task_id=3/4`, names `MNIST数据预处理`/`文本数据清洗任务`,
+  and `create_by=test`.
+- The normal MVP seed is additive as well. Historical builtin-algorithm disable, model
+  deprecation and menu visibility changes moved to the non-automatic
+  `sql/security_model_mvp_legacy_convergence.sql`; builtin rows may stay visible, but the
+  LDD-only command allowlist prevents creating or starting a task for them.
 
 ## Acceptance Criteria
 
@@ -136,3 +162,4 @@ path only and is not a paper experiment conclusion.
 
 See [Current platform implementation](11-platform-implementation.md) for the current
 business flow, frontend result presentation, and future expansion boundary.
+<!-- /knowledge:historical -->

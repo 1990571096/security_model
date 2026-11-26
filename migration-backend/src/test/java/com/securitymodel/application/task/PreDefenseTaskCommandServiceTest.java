@@ -13,18 +13,23 @@ import com.securitymodel.infrastructure.persistence.mapper.PreDefenseTaskMapper;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 
+import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.concurrent.RejectedExecutionException;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import org.mockito.ArgumentCaptor;
@@ -36,8 +41,13 @@ class PreDefenseTaskCommandServiceTest {
     private final DefenseTaskExecutor defenseTaskExecutor = mock(DefenseTaskExecutor.class);
     private final OperationAuditService operationAuditService = mock(OperationAuditService.class);
     private final CurrentUserService currentUserService = mock(CurrentUserService.class);
+    private final TaskAccessGuard taskAccessGuard = mock(TaskAccessGuard.class);
+    private final GpuLeaseService gpuLeaseService = mock(GpuLeaseService.class);
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final ThreadPoolTaskExecutor taskExecutor = new ThreadPoolTaskExecutor();
+    private final SchedulingReadinessGate readinessGate = new SchedulingReadinessGate();
+    private final TaskDispatchIntentService intentService = mock(TaskDispatchIntentService.class);
+    private final TaskDispatchCoordinator dispatchCoordinator = mock(TaskDispatchCoordinator.class);
     private PreDefenseTaskCommandService commandService;
 
     @BeforeEach
@@ -57,16 +67,26 @@ class PreDefenseTaskCommandServiceTest {
                 defenseTaskExecutor,
                 new LddConfigurationPolicy(objectMapper),
                 quotaPolicy,
+                gpuLeaseService,
                 fingerprintService,
                 new AfterCommitTaskDispatcher(),
                 objectMapper,
                 operationAuditService,
-                currentUserService);
+                currentUserService,
+                taskAccessGuard,
+                readinessGate,
+                intentService,
+                dispatchCoordinator);
+        readinessGate.markReady();
 
         when(taskMapper.selectList(any())).thenReturn(List.of());
         when(resourceQueryService.findDataset(1L)).thenReturn(dataset());
         when(resourceQueryService.findAlgorithm(2L)).thenReturn(algorithm());
+        when(resourceQueryService.findDatasetAuthoritative(1L)).thenReturn(dataset());
+        when(resourceQueryService.findAlgorithmAuthoritative(2L)).thenReturn(algorithm());
         when(currentUserService.username()).thenReturn("tester");
+        when(defenseTaskExecutor.isConfigured()).thenReturn(true);
+        when(gpuLeaseService.acquire(any(), any(), any())).thenReturn(gpuLease());
     }
 
     @AfterEach
@@ -88,7 +108,8 @@ class PreDefenseTaskCommandServiceTest {
         PreDefenseTask failed = task(31L, "failed", existingSnapshot);
         PreDefenseTask pending = task(31L, "pending", existingSnapshot);
 
-        when(taskMapper.selectById(31L)).thenReturn(failed, pending);
+        when(taskAccessGuard.requireOwned(31L)).thenReturn(failed, pending);
+        when(taskMapper.selectByIdForUpdate(31L)).thenReturn(failed);
         when(taskMapper.resetForRetry(31L)).thenReturn(1);
         when(taskMapper.claimForExecution(eq(31L), any(), eq(2), any(), any())).thenReturn(1);
 
@@ -107,29 +128,119 @@ class PreDefenseTaskCommandServiceTest {
                 : -1);
         assertEquals(2, attempts.get(1).path("attempt").asInt());
         assertNotEquals("previous-run", attempts.get(1).path("runId").asText());
-        verify(defenseTaskExecutor).runPreDefense(any(DefenseTaskRequest.class));
+        verify(dispatchCoordinator).dispatchAfterCommit(any(DefenseTaskRequest.class));
     }
 
     @Test
-    void rejectedExecutorDispatchMarksOnlyTheCurrentAttemptFailed() throws Exception {
+    void approvedPlanKeepsCompleteSnapshotWhenCatalogRowsMutateAfterPlanning() throws Exception {
+        Dataset dataset = dataset();
+        Algorithm algorithm = algorithm();
+        when(resourceQueryService.findDatasetAuthoritative(1L)).thenReturn(dataset);
+        when(resourceQueryService.findAlgorithmAuthoritative(2L)).thenReturn(algorithm);
+
+        TaskExecutionPlan plan = commandService.plan(task(35L, "pending", null));
+        dataset.setFilePath("/uploads/datasets/replaced.zip");
+        algorithm.setDefaultConfig("{\"batch_size\":16}");
+        algorithm.setImplementationPath("vab://pre-defense/replaced");
+
+        assertEquals("dataset://cifar10", plan.dataset().getPath());
+        assertEquals(128, objectMapper.readTree(plan.algorithm().getConfigJson())
+                .path("batch_size").asInt());
+        assertEquals("vab://pre-defense/ldd", plan.algorithm().getPath());
+        assertEquals(128, objectMapper.readTree(plan.finalParameters().toString())
+                .path("batch_size").asInt());
+    }
+
+    @Test
+    void startBuildsRequestOnlyFromOneAuthoritativePlan() throws Exception {
         PreDefenseTask pending = task(32L, "pending", null);
-        when(taskMapper.selectById(32L)).thenReturn(pending);
+        when(taskAccessGuard.requireOwned(32L)).thenReturn(pending);
+        when(taskMapper.selectByIdForUpdate(32L)).thenReturn(pending);
         when(taskMapper.claimForExecution(eq(32L), any(), eq(1), any(), any())).thenReturn(1);
-        doThrow(new RejectedExecutionException("queue full"))
-                .when(defenseTaskExecutor).runPreDefense(any(DefenseTaskRequest.class));
-        when(taskMapper.failBeforeExecution(eq(32L), any(), eq(1), any(), any())).thenReturn(1);
 
         commandService.start(32L);
 
-        ArgumentCaptor<String> runIdCaptor = ArgumentCaptor.forClass(String.class);
-        ArgumentCaptor<String> failureCaptor = ArgumentCaptor.forClass(String.class);
-        verify(taskMapper).failBeforeExecution(
-                eq(32L), runIdCaptor.capture(), eq(1), failureCaptor.capture(), any());
-        JsonNode failure = objectMapper.readTree(failureCaptor.getValue());
-        assertEquals("failed", failure.path("status").asText());
-        assertEquals("TASK_QUEUE_FULL", failure.path("error_code").asText());
-        assertEquals(runIdCaptor.getValue(), failure.path("run_id").asText());
-        assertEquals(1, failure.path("attempt").asInt());
+        ArgumentCaptor<DefenseTaskRequest> captor = ArgumentCaptor.forClass(DefenseTaskRequest.class);
+        verify(dispatchCoordinator).dispatchAfterCommit(captor.capture());
+        assertEquals("dataset://cifar10", captor.getValue().getDataset().getPath());
+        assertEquals("vab://pre-defense/ldd", captor.getValue().getAlgorithm().getPath());
+        assertEquals(11, objectMapper.readTree(captor.getValue().getCustomParams()).path("seed").asInt());
+        verify(resourceQueryService, times(1)).findDatasetAuthoritative(1L);
+        verify(resourceQueryService, times(1)).findAlgorithmAuthoritative(2L);
+        verify(resourceQueryService, never()).findDataset(any());
+        verify(resourceQueryService, never()).findAlgorithm(any());
+    }
+
+    @Test
+    void extractedCifar100OverridesTheAlgorithmDefaultAndUsesItsParentAsRuntimeRoot(@TempDir Path root) {
+        Dataset dataset = dataset();
+        dataset.setFilePath(root.resolve("cifar-100-python").toString());
+        when(resourceQueryService.findDatasetAuthoritative(1L)).thenReturn(dataset);
+        PreDefenseTask task = task(35L, "pending", null);
+
+        TaskExecutionPlan plan = commandService.plan(task);
+
+        assertEquals("cifar100", plan.finalParameters().path("dataset").asText());
+        assertEquals(root.toAbsolutePath().normalize().toString(), plan.dataset().getPath());
+
+        task.setCustomParams("{\"dataset\":\"cifar10\"}");
+        assertEquals("DATASET_PARAMETER_MISMATCH",
+                assertThrows(TaskCommandException.class, () -> commandService.plan(task)).getCode());
+        task.setCustomParams("{\"data_path\":\"another-root\"}");
+        assertEquals("DATASET_PATH_MISMATCH",
+                assertThrows(TaskCommandException.class, () -> commandService.plan(task)).getCode());
+    }
+
+    @Test
+    void refusesToStartUntilStartupRecoveryIsReady() {
+        PreDefenseTask pending = task(33L, "pending", null);
+        when(taskAccessGuard.requireOwned(33L)).thenReturn(pending);
+        when(taskMapper.selectByIdForUpdate(33L)).thenReturn(pending);
+        readinessGate.markNotReady();
+
+        var exception = org.junit.jupiter.api.Assertions.assertThrows(TaskCommandException.class,
+                () -> commandService.start(33L));
+
+        org.junit.jupiter.api.Assertions.assertTrue(
+                exception.getMessage().contains("SCHEDULING_NOT_READY"));
+        verify(gpuLeaseService, org.mockito.Mockito.never()).acquire(any(), any(), any());
+        verify(taskMapper, org.mockito.Mockito.never()).claimForExecution(any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void startRefusesUnconfiguredExecutorBeforeLeaseAttemptSnapshotOrIntent() {
+        PreDefenseTask pending = task(34L, "pending", null);
+        when(taskAccessGuard.requireOwned(34L)).thenReturn(pending);
+        when(taskMapper.selectByIdForUpdate(34L)).thenReturn(pending);
+        when(defenseTaskExecutor.isConfigured()).thenReturn(false);
+
+        var exception = org.junit.jupiter.api.Assertions.assertThrows(TaskCommandException.class,
+                () -> commandService.start(34L));
+
+        assertEquals("EXECUTOR_NOT_CONFIGURED", exception.getCode());
+        org.junit.jupiter.api.Assertions.assertTrue(
+                exception.getMessage().contains("SECURITY_MODEL_EXECUTOR_PYTHON_SCRIPT"));
+        verify(gpuLeaseService, never()).acquire(any(), any(), any());
+        verify(taskMapper, never()).claimForExecution(any(), any(), any(), any(), any());
+        verify(intentService, never()).createPending(any(), any(), any());
+        verify(dispatchCoordinator, never()).dispatchAfterCommit(any());
+    }
+
+    @Test
+    void retryRefusesUnconfiguredExecutorBeforeResettingTheFailedTask() {
+        PreDefenseTask failed = task(36L, "failed", null);
+        when(taskAccessGuard.requireOwned(36L)).thenReturn(failed);
+        when(taskMapper.selectByIdForUpdate(36L)).thenReturn(failed);
+        when(defenseTaskExecutor.isConfigured()).thenReturn(false);
+
+        var exception = org.junit.jupiter.api.Assertions.assertThrows(TaskCommandException.class,
+                () -> commandService.retry(36L));
+
+        assertEquals("EXECUTOR_NOT_CONFIGURED", exception.getCode());
+        verify(taskMapper, never()).resetForRetry(36L);
+        verify(gpuLeaseService, never()).acquire(any(), any(), any());
+        verify(taskMapper, never()).claimForExecution(any(), any(), any(), any(), any());
+        verify(dispatchCoordinator, never()).dispatchAfterCommit(any());
     }
 
     private PreDefenseTask task(Long taskId, String status, String executionSnapshot) {
@@ -146,8 +257,19 @@ class PreDefenseTaskCommandServiceTest {
         return task;
     }
 
-    private Dataset dataset() {
-        Dataset dataset = new Dataset();
+    private com.securitymodel.domain.lease.GpuLease gpuLease() {
+        com.securitymodel.domain.lease.GpuLease lease = new com.securitymodel.domain.lease.GpuLease();
+        lease.setSlotId("default-gpu-0");
+        lease.setLeaseToken("lease-token");
+        lease.setTaskId(31L);
+        lease.setRunId("run");
+        lease.setAttempt(1);
+        lease.setFencingToken(1L);
+        lease.setExpiresAt(LocalDateTime.now().plusSeconds(300));
+        return lease;
+    }
+
+    private Dataset dataset() {        Dataset dataset = new Dataset();
         dataset.setDatasetId(1L);
         dataset.setDatasetName("CIFAR-10 test");
         dataset.setDatasetType("image");

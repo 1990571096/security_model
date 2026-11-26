@@ -1,319 +1,288 @@
-# 安全模型训练平台：面试准备手册
+# 面试准备与追问题
+
+先看完 [一次正常实验](learning/00-one-experiment.md) 和 [业务流程详解](project-business-flows.md)，再练 [90 秒口述](project-introduction-and-interview-guide.md)。回答统一用“场景 → 代码 → 结果 → 边界”，不要只背名词。
+
+## 一、业务与接口
+
+| 问题 | 建议回答 | 代码锚点 |
+| --- | --- | --- |
+| 1. 用户是谁，做哪件事？ | 实验者登记数据、选择 LDD、创建并确认启动任务，查看报告和导出子集。平台管理每轮实验的输入和输出。 | `TaskCenterView` |
+| 2. 哪些算法真的能跑？ | 训练前、启用、`implementationPath=vab://pre-defense/ldd` 的算法。其它阶段只展示，不进入执行。 | `resolveCommand` |
+| 3. 创建和启动分别做什么？ | 创建只写 `pending` 和参数；启动锁任务行、分配 `runId/attempt`、写快照/意图并置 `running`。 | `create`、`launchTask` |
+| 4. 数据集为什么选不到？ | 必须启用且 `parseStatus=success`。新登记是 `pending`，要管理员验证。列表整体打不开则是后端/登录问题，不是某条路径。 | `loadDatasets`、`verifyDataset` |
+| 5. 参数谁说了算？ | 算法默认配置是唯一来源；历史模板只兼容旧任务；本次自定义参数最后覆盖。后端统一校验。 | `LddConfigurationPolicy` |
+| 6. 管理员能改别人的任务吗？ | 读有管理员跨用户规则；写仍检查 owner。 | `TaskAccessGuard`、`lockOwned` |
+| 7. MyBatis-Plus 和手写 SQL 怎么配合？ | 普通查询用 Mapper/Wrapper；任务领取、终态、租约需要明确状态谓词的手写 SQL。 | `PreDefenseTaskMapper` |
+| 8. 为什么任务列表有“超参模板”消失？ | 模板与算法绑定会产生两份事实。现在算法详情页参数配置中心维护 `default_config`，新任务不选模板。 | `AlgorithmConfigCommandService` |
+| 9. Tiny ImageNet 为什么能登记不能跑？ | 目录可验证，但当前 VaB LDD 没有对应数据加载器。创建时返回 `DATASET_RUNTIME_UNSUPPORTED`，避免跑到一半才失败。 | `VabTinyImageNetDataset` |
+
+## 二、Java 与 Python
+
+| 问题 | 建议回答 | 代码锚点 |
+| --- | --- | --- |
+| 10. Java 如何把对象发给 Python？ | Jackson 写 UTF-8 `request.json`，`ProcessBuilder` 参数列表传绝对路径。 | `PythonLddTaskExecutor.invoke` |
+| 11. Python 如何拿参数？ | `argparse` 取路径，`json.loads` 外层请求，再解析 `configJson/customParams` 内层 JSON。 | `algorithm_entry.py` |
+| 12. 训练进程是谁启动的？ | Java 启动适配器；适配器生成 attempt 级脚本，再由 `subprocess.Popen` 启动 VaB。 | `make_task_script` |
+| 13. Python 怎么回调？ | 写 `progress.json` 和 `result.json`；Java 等待期读进度，退出后校验结果。 | `PythonProcessWaiter` |
+| 14. 为什么不用 stdout 当结果？ | stdout 是日志流，格式不稳定；结构化文件可校验、留档、按轮追溯。 | `redirectOutput` |
+| 15. 退出码 0 就能成功吗？ | 还要有 `result.json`，字段完整、阶段/轮次匹配。缺失是 `RESULT_MISSING`。 | `invoke`、`validateResult` |
+| 16. 为什么用子进程而不是 JNI？ | Python/PyTorch 环境独立，崩溃隔离，进程身份可跟踪；代价是文件、超时、进程树管理。 | `DefenseTaskExecutor` |
+| 17. GTSRB 为什么要特殊处理路径？ | VaB 对 `gtsrb` 用相对路径 `dataset/gtsrb_dataset.h5`，忽略通用 `--data_path`。Java 因此把 HDF5 父目录作为运行根，并把 dataset 参数推断为 `gtsrb`。 | `VabGtsrbDataset`、`dataloader_data.py` |
+
+## 三、事务、并发与状态
+
+| 问题 | 建议回答 | 代码锚点 |
+| --- | --- | --- |
+| 18. 为什么 `running` 还没启动进程？ | 事务先领取，派发在提交后。查意图、accepted、attempt 目录。 | `launchTask`、`dispatchAfterCommit` |
+| 19. 为什么事务提交后才执行？ | 回滚后不能收回已启动进程；执行侧也要看到已提交的请求和租约。 | `AfterCommitTaskDispatcher` |
+| 20. 点两次启动会怎样？ | 同键复用；不同键争同一行，`FOR UPDATE` + `WHERE status='pending'` 只有一个成功。 | `RequestIdempotencyService`、`claimForExecution` |
+| 21. 旧 Python 结果晚到？ | 校验 `run_id/attempt`，SQL 带 `current_run_id` 和 `status='running'`，影响 0 行。 | `updateResultForRun` |
+| 22. 重试会换 taskId 吗？ | 不换。新 `runId/attempt`，旧快照保留。 | `retry` |
+| 23. 提交后 JVM 挂了？ | 意图与任务同事务；恢复扫描按意图、accepted、进程证据决定补派发或收敛。 | `DispatchRecoveryCoordinator` |
+| 24. GPU 怎么管理？ | 单槽租约 + fencing token；确认进程树退出后释放，否则隔离。 | `GpuLeaseService` |
+| 25. 取消能立即回收 GPU 吗？ | 不能。先改业务状态并通知，等进程退出证据。 | `cancel`、`TaskCancellationDispatcher` |
+| 26. 为什么不用 Java `synchronized`？ | 多 JVM/重启后锁丢失；任务事实在 MySQL，必须用持久条件。 | 设计取舍 |
+| 27. `@Transactional` 在这里怎么生效？ | Controller 通过 Spring 注入的 Service 调用事务入口。默认代理模式下，同类直接调用无法触发被调用方法自己的事务拦截；如果外层已有事务，内层代码仍可参与它。异常是否回滚取决于规则与调用结果。异步线程有自己的执行上下文。 | `PreDefenseTaskCommandService.create` 的两个重载、`AfterCommitTaskDispatcher` |
+| 28. 线程池满了？ | 有界队列 + `AbortPolicy`，拒绝后释放租约、意图 abandoned、任务失败。 | `TaskExecutorConfig` |
+
+## 四、RabbitMQ 深挖
+
+| 问题 | 建议回答 | 代码锚点 |
+| --- | --- | --- |
+| 29. 单机可以不用 MQ 吗？ | 默认 `db` 可以。`rabbit` 是可选模式，单机也能跑真实 Broker，不是假队列。 | `DispatchRuntimePolicy` |
+| 30. 为什么要 Outbox？ | 任务状态和待发消息同事务，避免“库成功、消息丢”或“消息先到、事务回滚”。 | `TaskOutboxService` |
+| 31. Relay 怎么防并发？ | 短事务 claim 成 `publishing`，带 `claimToken/claimUntil`；发布在事务外；确认写回匹配 token。 | `TaskOutboxRelay` |
+| 32. 发布确认和消费 ACK 区别？ | Confirm 是 Broker 对 Relay 的接收确认；ACK 是 Worker 对消息处理的归结。 | `RabbitDispatchTransport`、`DispatchMessageListener` |
+| 33. 消息重复怎么办？ | `sys_dispatch_consumption` 以 `messageId` 唯一；重复/处理中/过期 claim 分别 ACK、延迟重投、条件抢占。 | `TaskDispatchConsumptionService` |
+| 34. Worker 已写终态但 ACK 丢了？ | Broker 重投；账本已 terminal → duplicate → ACK，不重复启动 Python。 | `DispatchMessageHandler` |
+| 35. 处理中 Worker 崩了？ | 账本 claim 过期后可抢占；若本地 accepted 仍存活则不开第二条执行路径。 | `WorkerConsumerLifecycle` |
+| 36. 重试队列怎么实现？ | TTL 队列 5s/30s/120s + DLX 回主队列；消息等待不占消费者线程。 | `RabbitDispatchConfiguration` |
+| 37. 重试耗尽怎么收敛？ | 先失败任务/abandon 意图/终态账本，再发 DLQ；DLQ 只是索引，不是事实源。 | `DispatchMessageHandler.retry` |
+| 38. 不可路由消息？ | `mandatory=true` + ReturnListener，识别 `RABBIT_UNROUTABLE` 并收敛，避免任务永久 running。 | `RabbitDispatchTransport` |
+| 39. 能保证恰好执行一次吗？ | 不能承诺。系统保证“最多一个有效执行 + 重复消息收敛”，不是 Broker 的 exactly-once。 | 设计边界 |
 
-更新时间：2026-10-26
+## 五、Redis 缓存深挖
 
-本文基于当前仓库实现，帮助把项目讲清楚、讲可信。建议先读[设计思路](project-design-overview.md)理解业务，再用[实现说明](project-implementation-guide.md)复习代码。
+| 问题 | 建议回答 | 代码锚点 |
+| --- | --- | --- |
+| 40. 缓存哪些数据？ | 数据集/算法列表和单条资源；执行契约不用缓存。 | `ResourceQueryService` |
+| 41. 为什么缓存列表？ | 页面频繁读、变更少；减少 MySQL 重复查询。 | `ResourceCatalogCache` |
+| 42. 更新后怎么失效？ | 事务提交后 `afterCommit` 删除 key 并递增 generation。 | `evict` |
+| 43. 为什么需要 generation？ | 防止慢读者在删除后把旧值写回。Lua 比较 generation 后才 SET。 | `PUT_IF_GENERATION` |
+| 44. Redis 挂了会怎样？ | 读路径回源 MySQL，写路径不受阻；指标记 degraded。 | `loadThrough` |
+| 45. 缓存和任务状态的关系？ | 任务状态、参数、权限、租约从不放缓存；缓存只加速目录读。 | 设计原则 |
+| 46. 知识向量也用 Redis 吗？ | 可选 Redis 8 vector set 做候选；ACL 过滤仍在 MySQL/Java，失败回退词法。 | `KnowledgeVectorStore` |
 
-## 1. 面试定位
+## 六、数据、报告、助手与验证
 
-一句话定位：
+| 问题 | 建议回答 | 代码锚点 |
+| --- | --- | --- |
+| 47. 快照记录什么？ | 本轮请求、资源指纹、配额、租约；每 attempt 追加。 | `appendExecutionSnapshot` |
+| 48. 日志如何增量读？ | 浏览器按文件记字节 offset，后端返回片段和新 offset，`reset` 时替换。 | `PreDefenseLogQueryService` |
+| 49. 报告成功但 ZIP 下载失败？ | 导出还依赖索引、数据根、边界和独立导出状态；ZIP 丢失返回 410，可重建。 | `CleanSubsetExportService` |
+| 50. 导出时服务重启？ | 启动扫描遗留 `pending/running`，标为可重试失败。 | `ExportRecoveryRunner` |
+| 51. 助手能直接启动任务吗？ | 不能。先预览，服务器生成一次性确认；确认时重新校验权限/资源/版本，再调用同一业务服务。 | `AssistantPreviewService` |
+| 52. 私人报告会被 RAG 读到吗？ | 候选按身份/可见性过滤，报告以私有脱敏摘要索引。 | `indexTaskReport` |
+| 53. 如何证明设计有效？ | 单测覆盖协议/边界，MySQL 集成覆盖事务，隔离环境验收覆盖真实链路，真实 GPU 证据覆盖运行范围。 | `docs/sdd/26-current-delivery-facts.md` |
+| 54. 项目最大工程难点？ | 用“触发场景 → 原行为 → 改动 → 测试 → 边界”回答，不要泛泛说“高并发”。 | 自己的改动记录 |
 
-> 我把网络安全竞赛中的研究型 LDD 后门防御代码接入一个可追踪的实验任务平台，重点完成了任务编排、Java/Python 执行边界、并发状态保护、运行追溯和 CIFAR-10 清洗子集导出。
+## 七、前端、监控与统计
 
-更完整的事实口径：
+| 问题 | 建议回答 | 代码锚点 |
+| --- | --- | --- |
+| 55. 为什么把执行池和接入范围从任务页移走？ | 任务页回答“怎样完成一条实验”，运行监控回答“系统现在能不能接单、后台是否接手”。两者混在一起会让业务操作和资源状态互相干扰。执行池、GPU、平台接入和 Outbox 现在按“执行资源/平台接入/消息派发”展示。 | `TaskCenterView.vue`、`RuntimeMonitorView.vue` |
+| 56. 数据集类型为什么显示 `image`？ | 后端仍保存 `image_classification`，页面用 `displayDatasetType()` 映射成短名，只是为了列宽和可读性，不改变领域模型和接口。 | `DatasetView.vue` |
+| 57. 状态为什么只留“已核验/待验证”？ | 用户需要快速判断文件是否通过内容校验，不需要看到 pending/failed/仅路径可用等内部差异。失败原因仍在 tooltip 的 `parseMessage`；停用移出状态列，放名称旁标签。 | `hasVerifiedStats(row)` |
+| 58. “已核验”到底代表什么？ | `parseStatus=success` 且 `sampleCount/classCount` 是整数。它只说明文件和统计已验证，不代表当前算法可执行。Tiny ImageNet 可以已核验，但创建 LDD 时仍会 `DATASET_RUNTIME_UNSUPPORTED`。 | `VabTinyImageNetDataset`、`PreDefenseTaskCommandService` |
+| 59. 工作台和数据统计有什么区别？ | 工作台是行动导向：任务/资源概览、固定 7 日趋势、最近任务、执行池和入口。统计页是分析导向：7/14/30 日趋势、五状态环、完成质量、防御阶段、明细和口径。 | `DashboardView.vue`、`StatisticsView.vue` |
+| 60. 统计页的数据从哪里来？ | 没有新增专用后端接口，任务计数和状态来自 `/api/task-progress/statistics`，趋势、资源、报告就绪和最近任务来自 `/api/dashboard/overview?days=`。 | `getTaskStatistics`、`getDashboardOverview` |
+| 61. 统计指标怎么算？ | 成功率=成功/总数；待处理=等待+运行；报告就绪率=有清洗结果的成功任务/成功任务；资源启用率=数据集启用率与算法启用率的平均。 | `StatisticsView.vue` 的 computed |
+| 62. 为什么只提供 7/14/30 天？ | 后端允许 1–30 天，页面只暴露三个常用窗口，兼顾可读性和请求量。30 天以上标签会过密，且当前没有大数据降采样。 | `DashboardOverviewService.overview` |
+| 63. 为什么不用 ECharts？ | 当前数据量小，CSS `conic-gradient` 和堆叠柱足够，能减少依赖和包体。代价是没有缩放、刷选、导出；数据量增大或多图联动时再引入图表库。 | `StatisticsView.vue` |
+| 64. 为什么统计页没有 ASR、GPU 利用率？ | 没有真实采集源。平台只展示任务、资源、报告和状态聚合；未知指标明确写“未采集”，不用 0 或常量冒充实验结论。 | 统计口径卡片 |
+| 65. 怎么判断当前有没有启用消息队列？ | 查 `/api/observability/dispatch` 的 `mode/role/workerConsumerExpected/workerConsumerStarted/workerOwned`，再按配置确认 Broker 端口和进程。仓库默认 `db/api`。 | `DispatchOperationsService` |
+| 66. `dispatchReady=true` 等于 MQ 已就绪吗？ | 不等于。它只说明当前派发模式完成启动恢复、可以接单；可能是 `db` 线程池，也可能是 `rabbit` Worker。必须结合 `mode` 和消费者字段。 | `DispatchRecoveryCoordinator` |
+| 67. `db` 和 `rabbit` 的核心区别？ | `db` 是事务提交后 API 进程内直接派发；`rabbit` 是同事务写 Outbox，Relay 发 Broker，Worker 消费。两者都以 MySQL 为事实源，`db` 不是假队列，`rabbit` 也不替代数据库。 | `DispatchRuntimePolicy`、`AfterCommitTaskDispatcher`、`TaskOutboxRelay` |
+| 68. Rabbit 模式数据库故障时会不会一直重投？ | 不热循环 `nack requeue`。消费层把数据库故障转延迟队列，保留未确认消息；恢复后重新 claim，先用消费账本和任务身份判断能否执行。 | `DispatchMessageHandler` |
+| 69. 前端窄屏布局踩过什么坑？ | Element Plus `el-card` 包了 `.el-card__body`，直接子选择器会失效；7/14/30 单选在 855px 下竖排压标题。改为显式 `kpi-value` 类名和窄 `el-select`，并按窄屏复验。 | `StatisticsView.vue`、`styles.css` |
+| 70. 页面显示短类型会改变后端数据吗？ | 不会。类型和状态映射都在 Vue 展示层，后端继续保存 `image_classification`、`parse_status` 和统计字段；改 UI 不等于改数据模型。 | `DatasetView.vue` |
 
-> 平台按训练前、训练中、训练后三阶段组织算法展示和扩展入口；当前真实接入并可通过平台运行的是训练前 LDD。其他算法和阶段页面属于展示或规划，不应描述为已实际运行。
+## 模拟一：从项目介绍问到跨语言
 
-面试可信度来自把范围讲准确，再深入解释自己真正实现的可靠性与集成细节，而不是把页面上的方案卡片说成算法接入。
+**面试官**：你说 Java 和 Python 用 JSON，具体是哪一层？
 
-## 2. 一分钟项目介绍
+**回答**：浏览器到 Java 是 HTTP JSON；Java 到 Python 是本地文件协议。`buildExecutionRequest` 生成 DTO，执行器用 Jackson 写 `request.json`，`ProcessBuilder` 把路径放进 `--request`；Python `argparse` 取路径，`json.loads` 解析，再解析 `configJson/customParams` 两层 JSON。
 
-> 我做的是一个面向深度神经网络后门防御的实验平台，项目来源于网络安全创新竞赛。当前真实闭环是训练前 LDD 数据清洗：用户配置数据集和参数后，Spring Boot 后端校验资源，生成执行快照，再通过有界线程池启动 Python 适配器调用外部 VaB 工程中的 LDD。浏览器到 Java 使用 HTTP/JSON，Java 与 Python 通过请求、结果 JSON 文件协作；训练中的阶段、epoch 和心跳另写入原子替换的 `progress.json`，Java 等待器据此更新数值进度，前端通过日志接口轮询展示详情。针对并发启动、重试和迟到写入，我用数据库条件更新、`run_id` 和 `attempt` 保护状态；任务支持取消和失败重试，应用重启后遗留的 running 任务会被标记成可重试失败。结果页会展示配置快照、Python/PyTorch/CUDA/GPU 环境和 LDD 指标，并能按保留索引异步重建 CIFAR-10 原始训练子集。平台界面按三阶段扩展，但目前只有 LDD 是真实执行算法。
+**追问**：为什么不让 Python 回调 HTTP？
 
-建议实际面试时再加一句个人贡献，例如“我主要负责任务后端和 Python 适配链路”，但只说自己确实承担的模块。
+**回答**：训练进程和 API 生命周期解耦，文件结果可留档、可按 attempt 定位；HTTP 回调会引入端口、鉴权和网络重试问题。Java 等进程退出后读结果更确定。
 
-## 3. 三分钟展开顺序
+**再追问**：退出码 0 但结果丢了？
 
-### 3.1 业务问题
+**回答**：`invoke` 要求 `result.json` 存在并通过 `validateResult`，缺失是 `RESULT_MISSING`，不会因为退出码 0 就成功。
 
-研究脚本适合单次实验，不天然具备 Web 平台需要的状态机、并发保护、取消重试、运行日志、环境记录和安全产物下载。我把核心对象从“直接执行脚本”抽象成“有生命周期的一次实验任务”。
+## 模拟二：从“点两次”问到事务和恢复
 
-### 3.2 架构与数据流
+**面试官**：两个启动请求同时到达，会启动两个训练吗？
 
-```text
-Vue 3 页面
-  → Spring Boot Controller / Application Service
-  → MySQL 任务状态、运行快照、审计
-  → after-commit + 有界线程池
-  → PythonLddTaskExecutor
-  → algorithm_entry.py
-  → VaB 的 LDD.py
-  → result.json、日志、索引和模型产物
-  → 报告与 CIFAR-10 子集导出
-```
+**回答**：同键同内容复用响应；不同键仍争同一任务行。A 先 `FOR UPDATE` 看到 `pending`，写 `running/r1` 和意图；B 拿到锁时已是 `running`，检查失败。`claimForExecution` 还带 `WHERE status='pending'`，只有一个更新成功。
 
-数据库保存任务元数据和结构化 JSON；文件系统保存体积较大的日志和训练产物，避免把模型或图片二进制塞进任务记录。浏览器到后端是 HTTP/JSON，Java 到 Python 才是文件 JSON 协议。
+**追问**：事务提交后应用退出？
 
-### 3.3 自己解决的工程问题
+**回答**：任务、快照、意图已持久化。恢复扫描看意图阶段、accepted、进程证据和指纹；能证明没启动才补派发，否则收敛。
 
-重点讲清三个设计：
+**再追问**：取消和成功同时到？
 
-1. **任务原子领取**：`UPDATE ... WHERE status='pending'`，更新一行才算拿到任务，避免先查后改的竞态。
-2. **重试与迟到回调隔离**：每次执行创建新的 `run_id` 和 `attempt`；所有结果更新都必须匹配当前 `run_id` 和 `running` 状态。
-3. **外部副作用与数据库事务一致**：先提交任务状态和执行快照，再由事务提交回调派发 Python 进程。
+**回答**：两条路径都匹配 `current_run_id` 且 `status='running'`，先成功更新的把状态带离 running，另一条影响 0 行。GPU 仍要等进程退出证据。
 
-再补充实验追溯：每次尝试保存冻结请求和资源指纹；Python 结果记录实际运行环境。SHA-256 只覆盖符合开关和文件大小上限的普通文件。
+## 模拟三：从 GTSRB 问到数据路径
 
-### 3.4 结果闭环和边界
+**面试官**：GTSRB 为什么不能直接把 h5 路径传给 Python？
 
-LDD 输出保留样本索引，平台按索引从原始 CIFAR-10 训练数据重建图片、标签、索引和元数据，再压成 ZIP。它不是把运行中用于实验的触发器修改张量直接打包。
+**回答**：VaB 的 GTSRB 分支把 `dataset_path` 写死成 `dataset/gtsrb_dataset.h5`，不使用通用 `data_path`。适配器 cwd 是 VaB 根，所以 Java 必须把 h5 父目录作为运行根，并保证文件在 `VaB-main/dataset/gtsrb_dataset.h5`。参数预览会把 `dataset` 推断成 `gtsrb`；如果用户自定义成 `cifar10`，会报 `DATASET_PARAMETER_MISMATCH`。
 
-当前使用单机 JVM 线程池和本地 Python 进程，没有分布式 worker、Redis 队列或容器级 GPU 隔离。界面上的训练中/训练后和其他算法不属于当前真实运行范围。
+**追问**：Tiny ImageNet 为什么拒绝？
 
-## 4. 可直接复述的五分钟版本
+**回答**：目录结构可以验证，但当前 VaB LDD 没有 Tiny 加载器。让它在创建阶段失败，比跑一半再报错更可控。
 
-> 这个项目是一个面向深度神经网络后门防御研究的实验任务平台，来源于网络安全创新竞赛。研究代码原本是独立运行的 Python 脚本，不方便管理任务状态、并发启动、失败重试、运行记录和结果下载。我负责把真实的训练前 LDD 数据清洗流程接入平台，并围绕它补齐任务生命周期和实验追溯。  
->
-> 系统前端是 Vue 3，后端是 Java 17 和 Spring Boot，MySQL 保存资源、任务、执行快照、结构化结果、审计和导出状态。Redis 只缓存部分可重建的资源目录，任务状态不放 Redis，任务执行也不是通过 Redis 队列调度。  
->
-> 用户先创建一个 pending 任务。前端通过 HTTP 把数据集、算法、超参数模板和自定义参数交给 Spring Controller，应用服务检查数据集解析状态、算法启用状态和实现路径，并合并默认配置、模板配置和任务参数。当前后端只放行实现路径 `vab://pre-defense/ldd`，所以三阶段页面是扩展目录，不能等同于三阶段算法都已真实接入。  
->
-> 用户点击启动后，Java 再做一次校验，生成本次运行的 UUID `run_id` 和递增的 `attempt`，把请求、环境和配额信息追加到执行快照。数据库用一条带 `status = pending` 条件的 UPDATE 把任务原子领取为 running。事务提交以后，才由本机有界线程池派发执行器，避免数据库回滚了但 Python 已经启动。  
->
-> Java 执行器先把 `DefenseTaskRequest` 用 Jackson 序列化成 UTF-8 的 `request.json`，再用 `ProcessBuilder` 的参数列表启动 Python 适配器，并传 `--stage`、`--request`、`--result` 和 `--progress-file` 参数。这里不是 HTTP、不是标准输入传 JSON，也没有 Python 主动回调 Java。Python 入口用 argparse 解析文件路径，用 `json.loads` 读请求，根据 `algorithm.path` 做白名单检查，再合并并校验参数。  
->
-> 适配器用 AST 为这次任务生成独立的 LDD 脚本，并在训练循环中注入 epoch 进度上报，再启动 VaB 算法子进程。也就是说有两层 Python 进程：Java 启动适配器，适配器再启动算法脚本。适配器和生成脚本把阶段、epoch、百分比、消息及心跳写到原子替换的 `progress.json`；Java 等待器看到文件变化后校验运行标识并条件更新数据库中的数值进度。任务详情每 3 秒请求日志接口取得日志增量和完整进度快照，心跳超过 60 秒只显示提醒。LDD 完成后，适配器把状态、指标、运行环境和产物引用写入 `result.json`，然后退出。Java 等待适配器退出，读取并校验结果里的阶段、`run_id`、`attempt` 和状态，再通过带当前运行令牌的条件 SQL 更新结果和终态；因此进度文件不是完成回调，最终成败以结果协议和数据库状态为准。  
->
-> 并发与重试方面，`taskId` 表示业务任务，`attempt` 表示第几次尝试，`run_id` 是具体一次运行的唯一令牌；每次尝试有独立目录，旧尝试的迟到更新无法覆盖新尝试。取消会先把数据库任务改为 canceled，再通知执行器强制终止它登记的适配器进程；这不等于已实现跨平台的整棵子进程树清理。应用重启时，遗留的 running 训练任务会被标记成 `EXECUTOR_RESTARTED` 失败，交给用户显式重试，而不是自动续跑。  
->
-> 成功后报告会呈现请求快照、指标、环境和日志。LDD 保存的保留索引还可以触发异步 CIFAR-10 子集导出：导出器按索引从原始训练 batch 重建图像和标签，再生成 ZIP。它不是把算法运行时内存里的触发器修改数据直接打包。当前系统完成的是 LDD 的真实工程闭环；其他算法和阶段仍需独立完成适配、结果协议和测试后才能称为真实接入。
+## 模拟四：从 MQ 问到重复消费
 
-## 5. Java 与 Python 通信：白板顺序
+**面试官**：单机为什么还要 MQ？
 
-把通信拆成三条边，面试时就不会把 HTTP、子进程和数据库混成一件事：
+**回答**：为了验证生产级派发边界：API 和 Worker 分离、消息持久化、发布确认、消费重投。单机 Broker 也能真实经历这些故障；不是用内存队列假装。
 
-| 边界 | 谁与谁通信 | 实际方式 | 传递内容 |
-| --- | --- | --- | --- |
-| 页面到后端 | 浏览器与 Spring Boot | HTTP/JSON + JWT | 创建、启动、查询任务等业务请求 |
-| Java 到适配器 | Java 执行器与 `algorithm_entry.py` | 本机进程 + 共享文件系统 | Java 写 `request.json`，命令行传请求、结果和进度文件路径；Python 写 `result.json` 与 `progress.json` |
-| 适配器到算法 | Python 适配器与 VaB LDD | Python 子进程 | 启动 AST 生成的单次任务脚本；日志和算法产物写文件 |
-| 执行器到数据库 | Java 与 MySQL | MyBatis-Plus / SQL | 进度、结构化结果和终态的条件更新 |
-| 训练进度展示 | 适配器、Java 等待器、日志接口和浏览器 | `progress.json` 文件旁路 + HTTP 轮询 | Java 观察变化并条件更新百分比；日志接口返回阶段、epoch、消息和心跳快照 |
+**追问**：Broker 确认成功，Relay 崩了？
 
-**请求是怎样发出去的：**
+**回答**：Outbox 可能重复发布，`messageId` 稳定；消费账本先插入 processing，重复投递不会启动第二个 Python。
 
-1. `PreDefenseTaskCommandService` 根据数据库资源记录组装 `DefenseTaskRequest`，其中包括 `taskId`、`attempt`、`runId`、`stage`、`dataset`、`algorithm`、`hyperParameter` 和 `customParams`。
-2. `PythonLddTaskExecutor` 创建 `pre_defense-{taskId}/attempt-{attempt}` 目录，并将 Java 对象编码为 UTF-8 JSON 写入 `request.json`。
-3. Java 用 `ProcessBuilder(List<String>)` 启动解释器和适配器，参数包括 `--stage pre_defense --request <request.json> --result <result.json> --progress-file <progress.json>`。JSON 本体留在文件中，命令行只传路径；`ProcessBuilder` 不经过 shell 字符串拼接。
-4. Python 的 `argparse` 解析三个参数，`Path(...).read_text(encoding="utf-8")` 读取请求文件，`json.loads()` 把文本解析为字典。适配器按 `request["algorithm"]["path"]` 找白名单实现，并再次检查配置。
+**再追问**：Worker 写终态后 ACK 丢了？
 
-一个常见追问是“为什么请求 JSON 里的参数看起来还有引号和转义符”。`DefenseTaskRequest.customParams` 以及资源对象里的 `configJson` 类型是 Java `String`，因此外层 JSON 会把内层配置 JSON 编码成字符串。Python 解析外层文件后，`request["customParams"]` 仍是字符串；适配器再调用 `load_json_object()` 对它执行第二次 `json.loads()`，才得到可以合并的配置字典。可以把它画成“外层协议对象 -> 字段内配置文本 -> 配置字典”三步。
+**回答**：Broker 重投，账本 terminal → duplicate → ACK。任务事实已经终态，不需要再执行。
 
-**结果是怎样回来的：**
+## 模拟五：从 Redis 问到缓存一致性
 
-1. 适配器取得 VaB 根目录的独占文件锁后，以 `subprocess.Popen()` 启动 AST 生成的 LDD 脚本。LDD 子进程的 stdout 和 stderr 合并到管道，适配器逐行读取，每行同时写入 `execution.log` 并打印到自身 stdout；训练脚本在 epoch 边界写入 `progress.json`，适配器同时负责准备、启动、整理和结束阶段的快照。
-2. 每次写快照时先写同目录临时文件，再以 `os.replace()` 原子替换。训练快照包含 `run_id`、`attempt`、`phase`、`phase_label`、`progress`、`epoch`、`total_epochs`、`message` 和 `heartbeat_at`。适配器最后仍把结构化结果写入 Java 预先指定的 `result.json`，以进程退出码表示适配器整体成功或失败。
-3. Java 的 `PythonProcessWaiter` 等待的是 Java 启动的外层适配器进程，在等待期间约每 200 毫秒检查一次进程，并在进度文件修改时间或大小变化时通知执行器读取快照。执行器检查存在的运行标识字段、校验数值进度，将运行期间的数据库进度限制在 `0..99`，再通过 `task_id + current_run_id + status='running'` 条件更新；损坏或不匹配的快照会被忽略。
-4. `GET /api/pre-defense/logs/{taskId}` 由 `PreDefenseLogQueryService` 返回日志增量和当前进度快照。前端任务详情每 3 秒轮询；超过 60 秒没有心跳时显示“较久未更新”，但不改变任务状态，也不认定任务失败。
-5. Java 等待适配器进程退出后读取结果文件，并校验 `stage`、`run_id`、`attempt`、`status` 和 `artifacts` 等字段，再条件写入结果和终态。若进程没有生成合法结果，Java 生成平台级失败原因；若运行令牌已过期，条件更新影响行数为 0，旧结果被忽略。`progress.json` 只提供观测信息，不能替代结果协议。
+**面试官**：资源更新后直接删缓存不就行了吗？
 
-不要把 Python 的退出码单独等同于任务最终状态：适配器捕获到算法错误时，会尽量先写入 `status: failed`、`error_code` 和 `failure_reason`，再以非零退出码退出。Java 在确认结果文件存在后仍会校验 JSON 协议；合法的失败结果会被保存为任务失败，缺失或不合法的结果则由 Java 转成平台级失败信息。
+**回答**：普通删除有竞态：慢读者在删除前读到旧值，删除后把旧值写回。这里用 generation，每次失效递增；回填用 Lua 比较 generation，只有没变才 SET。执行契约还直接查 MySQL 权威行，缓存旧值不会影响启动。
 
-**运行目录和日志：**
+**追问**：Redis 挂了业务会怎样？
 
-```text
-<workspace>/pre_defense-81/attempt-1/
-  request.json       Java -> Python 的结构化请求
-  result.json        Python -> Java 的结构化响应
-  progress.json      Python -> Java/前端的训练进度观测快照
-  stdout.log         适配器标准输出，包含逐行转发的 LDD 子进程输出
-  stderr.log         适配器自身标准错误
-  artifacts/
-    execution.log    LDD 子进程 stdout/stderr 合并后的逐行日志
-    selected_indices_*.npy
-    图片、模型和其他算法产物
-```
+**回答**：资源目录读回源 MySQL，写不阻塞；只有性能下降，任务正确性不变。知识向量也回退词法检索。
 
-适配器对算法日志采用“双写”路径：每行先写到产物目录的 `execution.log`，再 `print(..., flush=True)` 到自身 stdout，Java 的 `ProcessBuilder.redirectOutput()` 将后者写入 `stdout.log`。算法子进程 stderr 已通过 `stderr=subprocess.STDOUT` 合并，所以正常 LDD 错误输出也会进入这两份日志；`stderr.log` 主要用于适配器进程自身的错误。任务运行中日志接口读 attempt 目录的 stdout/stderr；任务完成后按结果中的 `artifacts.logs` 读取。成功结果通常登记 `execution.log` 和解析出的文本日志，Java 生成的平台级失败结果登记 stdout/stderr。当前适配器自行生成的失败结果 `artifacts` 默认为空，结束后的日志接口可能因此没有可读日志；文件仍在 attempt 目录时，需要直接从工作目录排障。这是当前日志登记的边界，不能承诺所有失败日志都会显示在页面。
+## 模拟六：从“统计页和工作台重复”问到指标口径
 
-可以用这句话收束：**Java 写请求文件并启动 Python 适配器；适配器读请求、取得 VaB 文件锁、启动 LDD 子进程并流式双写日志，随后写结果文件并退出；Java 等适配器进程结束，读结果、校验运行令牌并更新 MySQL。**
+**面试官**：你的数据统计页是不是把工作台又做了一遍？
 
-## 6. 白板讲解图
+**回答**：不是同一层。工作台是行动视角，固定 7 日趋势、最近任务、执行池和快捷入口，回答“现在做什么”；统计页是分析视角，支持 7/14/30 日窗口、五状态环、完成质量、防御阶段、最近明细和统计口径，回答“这段时间结果结构怎样”。两边共享真实接口，但统计页多了窗口、分布和定义。
 
-```text
-                    ┌───────────────┐
-                    │ Vue 任务中心   │
-                    └───────┬───────┘
-                            │ create/start/status/report
-                    ┌───────▼───────┐
-                    │ Task Service   │
-                    │ 校验/状态/审计  │
-                    └───┬────────┬──┘
-                        │        │
-       MySQL 条件领取/快照│        │ afterCommit
-                        ▼        ▼
-                 ┌──────────┐  ┌──────────────────┐
-                 │ MySQL    │  │ 有界线程池         │
-                 └──────────┘  └────────┬─────────┘
-                                        ▼
-                            ┌──────────────────────┐
-                            │ Java Python Executor │
-                            └──────────┬───────────┘
-                            │ request.json / result.json
-                                       ▼
-                            ┌──────────────────────┐
-                            │ Python VaB Adapter   │
-                            └──────────┬───────────┘
-                                       ▼
-                                  LDD.py
-                                       │
-                                       ▼
-                            指标 / 索引 / 日志 / 模型
-                                       │
-                              报告与 CIFAR-10 导出
+**追问**：为什么没有 ASR 或 GPU 利用率？
 
-Python 适配器/训练脚本 ──原子写 progress.json──> Java PythonProcessWaiter
-Java 等待器 ──按 run_id 条件更新百分比──> MySQL
-浏览器 ──每 3 秒请求日志接口──> Java 返回日志增量 + progress 快照
-```
+**回答**：当前没有对应的真实采集源。页面只展示从 MySQL 聚合得出的任务、资源和报告指标；没有采样链路就不展示估算值，避免用户把界面数字当成实验结论。
 
-讲图时先从上到下说主流程，再讲 MySQL 条件更新和文件产物两个横切面。
+**再追问**：那你怎么证明图表不是假数据？
 
-## 7. 高频问题与建议回答
+**回答**：每个块都能追到接口：任务计数来自 statistics，趋势和资源来自 dashboard overview；页面还显示采样时间和统计范围。当前样例是 7 个任务、成功 4 个、失败 1 个、等待 2 个，能和数据表逐项核对。
 
-### 为什么不用 HTTP 请求线程直接跑 LDD？
+## 模拟七：从“消息队列启用了吗”问到 db/rabbit
 
-算法耗时和资源占用不可预测。同步执行会长期占用 Web 请求线程，增加请求超时风险，也难以管理取消、重试和执行现场。平台把一次运行变成任务，在提交后由有界线程池启动 Python 进程，HTTP 层只负责接受命令和查询状态。
+**面试官**：你说支持 RabbitMQ，现在到底启用了吗？
 
-### Java 是怎么把 JSON 发送给 Python 的？Python 又怎么回调 Java？
+**回答**：当前实例没有启用。`GET /api/observability/dispatch` 返回 `mode=db`、`role=api`，`workerConsumerExpected=false`、`workerConsumerStarted=false`、`workerOwned=false`；5672/5673/15672 也没监听，没有 Rabbit/Erlang 进程。代码支持和当前运行状态是两件事。
 
-Java 不是把 JSON 放进 HTTP body，也不是写到 Python 标准输入。`PythonLddTaskExecutor` 先用 Jackson 序列化 `DefenseTaskRequest`，写到本次 attempt 目录中的 `request.json`；然后用 `ProcessBuilder` 启动适配器，并通过 `--request`、`--result` 和 `--progress-file` 参数把文件路径交给它。Python 的 `argparse` 读取命令行参数，`json.loads(Path(request).read_text(...))` 解析请求。适配器用 `subprocess.Popen()` 启动 AST 生成的 LDD 子进程，把子进程 stderr 合并到 stdout，逐行读取并双写到 `execution.log` 与适配器 stdout；Java 已将适配器 stdout/stderr 分别重定向到 `stdout.log` 和 `stderr.log`。算法完成后，适配器把结果 JSON 写到 `result.json` 并退出。Java 等待的是外层适配器进程，结束后读取结果文件、校验运行令牌和协议字段，最后自己更新 MySQL。**没有 Python 到 Java 的 HTTP 回调。**
+**追问**：`dispatchReady=true` 不是说明已经 ready 吗？
 
-### 为什么任务目录里有两份算法日志？`stderr.log` 为什么可能为空？
+**回答**：它只说明当前派发链路完成启动恢复、可以接单。`db` 模式下 ready 指的是本地线程池，不代表 Broker 已连接。要看 `mode` 和消费者字段才能判断 RabbitMQ。
 
-`execution.log` 是适配器从 LDD 子进程的 stdout 管道逐行读到的内容，同时包含已合并的子进程 stderr。为了让 Java 执行目录也能直接看到实时输出，适配器把相同行再打印到自己的 stdout，所以它也会出现在 `stdout.log`。`stderr.log` 接收的是适配器自身 stderr，正常训练时可以为空；不能把它解释成 LDD 子进程的独立错误日志。运行中接口读取 stdout/stderr，结束后则依据 `result.json` 的日志产物列表读取。注意，适配器自己写出的失败结果目前没有登记日志路径，结束后的接口可能读不到该次日志；Java 兜底生成的失败结果会登记 stdout/stderr 路径。
+**再追问**：那 db 和 rabbit 的本质区别是什么？
 
-### VaB 文件锁如何工作？强制取消后有什么边界？
+**回答**：`db` 是事务提交后由 API 的 `taskAsync` 直接执行；`rabbit` 是同事务写 Outbox，Relay 发到 Broker，Worker 消费并手动 ACK。两者都复用同一套任务、意图、Python 协议和 MySQL 事实源；`db` 不是“假 MQ”，`rabbit` 也不是“把任务状态搬到 MQ”。
 
-适配器通过 `os.open(path, O_CREAT | O_EXCL | O_WRONLY)` 原子尝试创建 `VAB_ROOT/.security-model-vab.lock`，并写入适配器 PID；已存在就快速失败，不排队。正常执行会在 `finally` 删除锁。但 Java 超时或取消时若强制终止适配器，Python 清理逻辑可能没有运行机会，留下残余锁。它只是共享 VaB 路径上的文件系统互斥标记，不是 Redis/数据库分布式锁。遇到锁冲突时先确认没有任务仍在使用 VaB，再人工核查和清理残留文件；不能仅凭 PID 或文件年龄自动删除。
+## 七组深挖题
 
-### 为什么 Java 与 Python 用文件 JSON，而不是直接把算法改写成 Java？
+每组先读提问，关掉答案讲 45 秒。答完后用最后一段的代码来核对。面试官继续追问时，用具体时序和状态解释。
 
-核心算法依赖 PyTorch 和现有 VaB 代码，重写会改变研究代码、增加验证成本。文件 JSON 是简单且可检查的进程边界：请求、结果和日志都能留档，Python 环境也可独立管理。代价是本地路径共享、文件清理和协议版本需要治理；若未来多机部署，接口应演进为对象存储或 RPC/任务服务，而不是继续依赖共享磁盘。
+### 71. 两个人同时从不同浏览器点启动，幂等键和行锁各管什么？
 
-### `run_id` 和 `attempt` 有什么区别？
+**第一问：** 假设任务 `42` 是 `pending`，两个启动请求使用不同的键，结果怎样？
 
-`attempt` 是业务上的第几次尝试，便于报告展示重试历史；`run_id` 是一次运行的唯一令牌，用于识别回调属于哪次具体执行。任务 ID 不够，因为同一任务重试后 ID 不变。Mapper 要求回调的 `run_id` 等于当前运行标识，因此旧运行的迟到写入更新不到新尝试。
+**答法：** 请求幂等表以用户、操作和键定位记录，因此两个键可以分别进入业务服务。两个请求试图取得同一任务行的 `FOR UPDATE` 锁。第一个写入 `r1/1`、`running` 并提交，第二个取得锁后读到 `running`，启动校验失败。最终 SQL 的 `WHERE status='pending'` 再约束允许的迁移。
 
-### 为什么要在事务提交后启动进程？
+**追问：** 换成同一个键，第一次已经成功但响应在网络上丢了呢？
 
-启动 Python 是不可回滚的外部副作用。如果在事务提交前启动，数据库随后回滚时就会出现“进程在跑、任务记录不存在或状态仍是 pending”。`AfterCommitTaskDispatcher` 将派发延迟到事务成功提交后。
+**答法：** 同键同载荷且已完成时重放原响应。处理中返回 `REQUEST_IN_PROGRESS`；同键不同载荷返回 `IDEMPOTENCY_KEY_REUSED`。区分两个保护对象：请求重发与同一业务行的状态竞争。
 
-### 条件更新如何避免两个请求重复启动？
+**源码练习。** 搜 `RequestIdempotencyService.execute`、`lockOwned`、`claimForExecution`。把成功后的行状态代入 SQL，解释为何第二次更新不能命中。
 
-两个请求可能同时读到 `pending`，所以应用层读状态并不足够。最终由数据库执行 `UPDATE ... WHERE task_id=? AND status='pending'`；只有一个请求能把状态从 pending 改成 running，另一个请求更新行数为 0 并返回状态冲突。
+### 72. Spring 已提交，JVM 在提交后回调之前退出，会不会永远 running？
 
-### 失败重试如何避免覆盖原始运行？
+**答法：** 启动事务同时提交任务、执行快照和 `pending` 派发意图。进程重启后，恢复协调器检查当前轮和派发意图，结合租约与进程证据决定后续动作。能证明未提交执行的 `pending` 允许补派发。已经进入 `submitting` 但证据不足时，系统按不确定情形收敛，保留人工重试入口。
 
-失败任务先通过条件更新回到 pending，再生成新 `run_id` 和递增 `attempt`。新尝试使用新的目录；历史快照保存在 `execution_snapshot.attempts`，旧目录也不会被新执行路径复用。任务结果列记录当前结果，不能把它说成每一次完整结果都永久存放在单一 JSON 字段中。
+**追问：** 为什么不能把线程池提交放在数据库事务里？
 
-### 应用重启后怎么处理？
+**答法：** 数据库回滚时，已交给线程池的任务仍可能起 Python。工作线程也无法继承请求线程里的事务。先提交可恢复的业务记录，提交后再交接外部工作。长时间持有任务行锁也会拖住后续命令。
 
-Python 进程不能随 Java 应用状态一起恢复。迁移版启动时扫描仍为 running 的训练任务，用条件更新把它们写成 `EXECUTOR_RESTARTED` 失败，让用户明确重试；不是自动续跑。当前迁移版没有导出任务启动恢复 Runner，遗留导出任务不会自动重新派发或收敛。
+**源码练习。** 顺着 `launchTask`、`AfterCommitTaskDispatcher`、`dispatchAfterCommit`、`DispatchRecoveryCoordinator` 分别标注「已写库、线程池已接收、进程确认启动」。
 
-### 任务取消是否一定杀掉整棵 Python 子进程树？
+### 73. Python 正常退出、日志说完成，但数据库为什么是失败？
 
-当前 Java 执行器记住运行标识对应的 Python `Process`，取消或超时时会枚举当时可见的后代进程并尝试 `destroyForcibly()`，再终止适配器。应说明这是对已发现进程的尽力回收；进程派生竞态、操作系统差异仍可能导致遗留进程，当前也没有容器级隔离或资源配额。生产化可引入进程组/Job Object、容器或独立 worker，并做故障演练。
+**答法：** Java 先等适配器进程退出，再读取 `result.json`。退出码为 0 且文件缺失时是 `RESULT_MISSING`。有文件则要检查 JSON 结构、`stage`、`run_id`、`attempt` 和结果字段。非零退出若附带结构化失败结果，Java 可以保存具体失败信息。日志留给排查，`result.json` 保存执行结果协议。
 
-### 训练期间的进度是如何从 Python 显示到页面的？
+**追问：** `r1` 文件合法，数据库已进入 `r2` 呢？
 
-它不是 Python 主动回调 Java，而是一条基于共享工作目录的旁路。适配器收到 `--progress-file` 后，准备阶段调用 `write_progress()`；AST 注入到 LDD 训练脚本的 `platform_report_epoch()` 在每个 epoch 生成阶段、轮次和百分比。两个写入点都会更新 `heartbeat_at`，先写同目录临时文件，再原子替换 `progress.json`。
+**答法：** 对照 `r1` 的请求，结果可能通过协议校验。持久化还要检查任务行当前是 `r1` 且 `running`，所以 `r2` 不会被覆盖。两道校验分别约束「文件属于哪次调用」和「这次调用还有没有资格写当前任务」。
 
-Java 的 `PythonProcessWaiter` 等待外层适配器进程时关注该文件的修改时间和大小，发现变化就调用 `PythonLddTaskExecutor.updateProgressFromSnapshot()`。执行器解析 JSON，对存在的 `run_id`、`attempt` 做本次运行匹配，验证百分比后夹到 `0..99`，再由 Mapper 通过任务 ID、当前运行令牌及 `running` 状态更新 MySQL。进度文件暂时不可读或 JSON 无效时跳过该次进度，不中断算法。
+**源码练习。** 对照 `invoke`、`validateResult`、`updateResultForRun` 和 `finishForRun`，口述每个判断读的证据来自哪里。
 
-浏览器侧由任务详情每 3 秒调用 `/api/pre-defense/logs/{taskId}`。`PreDefenseLogQueryService` 在同一响应中返回带 byte offset 的日志增量和 `progress` 对象，前端据此展示阶段标签、epoch、百分比、提示消息和心跳。心跳超过 60 秒只触发页面提示；任务最终状态仍以 Java 读取并校验 `result.json` 后写入数据库为准。进度相关代码可从 `algorithm_entry.py`、`PythonProcessWaiter.java`、`PythonLddTaskExecutor.java`、`PreDefenseLogQueryService.java` 和 `TaskCenterView.vue` 顺序阅读。
+### 74. 取消后立刻启动另一个任务，为什么可能仍拿不到 GPU？
 
-### 配额是全局并发控制吗？
+**答法：** 取消条件更新成功后，任务可以已经显示 `canceled`。操作系统中的原进程及子进程仍需终止。分配 GPU 需要租约控制，执行器确认进程树退出后才释放，无法确认时按隔离处理。取消和成功竞争时，条件 SQL 保证先取得有效终态的一方能够决定业务状态。
 
-不是。默认总运行数和单用户运行数是在单个 JVM 实例中按数据库当前 running 记录检查，并将检查结果写入快照；策略的同步也只是 JVM 内同步。数据库条件更新保护单任务只能被一个请求领取，但多实例间的全局配额需要分布式租约、数据库原子配额或集中 worker 调度。
+**追问：** 线程池设成单线程能替代租约吗？
 
-### 保存了哪些可复现信息？SHA-256 是否覆盖整个数据集？
+**答法：** 一个 JVM 的单线程池只能限制本进程内进入的工作。重启后残留进程、不同进程发起执行等情况还需要持久租约与进程证据。用线程池解决执行容量，用租约协调物理资源归属。
 
-快照记录请求配置、资源 ID/路径/真实路径/修改时间等元数据、Java 运行环境和配额。SHA-256 只在内容指纹开启且目标是大小未超限的普通文件时计算；目录不做递归全量哈希。Python 结果额外记录实际 Python、PyTorch、CUDA 和 GPU 设备等。它提升运行可解释性，但还不是完整的可复现容器镜像。
+**源码练习。** 查 `cancelForRun`、`TaskCancellationDispatcher`、`PythonLddTaskExecutor.executeAndWait` 的清理路径。
 
-### 为什么导出清洗子集，而不是只给用户索引文件？
+### 75. 报告成功、导出成功、文件可下载，分别由什么证明？
 
-索引需要和原始数据集对应才能用于后续流程。导出器校验索引后读取 CIFAR-10 原始训练 batch，按索引重建样本图片和标签，并把索引、CSV 和元数据打包。导出语义是“由 LDD 保留索引选择的原始 CIFAR-10 训练子集”，不是 VaB 内部的中毒修改张量。
+**答法：** 任务成功表明本轮写入了成功终态。报告还需判断是否有可用数据和筛选索引；导出记录的 `success` 表明打包曾经完成；下载时还要确认 ZIP 仍是产物目录内可读的非空文件。成功记录对应文件失效时会返回 `410`。
 
-### `clean_purity` 能代表生产环境检测准确率吗？
+**追问：** 再点生成，会不会重新训练或产生一堆记录？
 
-不能。该指标依赖实验中已知的中毒样本标签/索引，用于受控实验评估。未知生产数据没有这些 oracle 标签时，不能直接计算相同定义的 purity；应和攻击成功率、干净准确率等正式实验指标分开设计。
+**答法：** `submit` 锁父任务后用任务和比例查导出。已有进行中的工作或有效 ZIP 时复用；已有失败记录或 ZIP 失效时，在输入仍有效的条件下重置原导出记录。执行器调用单独的 `--export-clean-subset` 按索引打包。父任务状态保持成功。
 
-### 为什么使用 AST 转换 LDD 脚本？
+**源码练习。** 在 `CleanSubsetExportService` 对照 `submit`、`availability` 和 `resolveDownloadFile`，画出「数据库状态」和「磁盘文件状态」两列。
 
-原始研究脚本有固定循环、共享输出目录和交互式绘图，直接导入会触发不适合平台任务的执行流程。适配器生成一个任务级脚本副本，将数据集、触发器和参数替换为当前配置，并重定向输出，同时保留原始 `LDD.py`。这是针对当前脚本结构的适配，不是任意算法的一键接入能力。
+### 76. RabbitMQ 显示发布确认了，为什么 Worker 仍可能收到两次？
 
-### Redis 在项目中承担什么任务？
+**答法：** 发布确认是 Broker 对发布者的响应。Relay 收到确认后如果还来不及写 `published` 就退出，Outbox 超时可被重新领取并发布相同 `messageId`。消费 ACK 发给 Broker，表示当前投递已经处理到可确认的结果。Worker 写完终态后还未 ACK 就退出，也可能触发重投。消费账本以及任务运行身份决定重投能否继续执行。
 
-迁移版接入了 Redis，但范围很窄：`ResourceCatalogCache` 用 5 分钟 TTL 缓存部分数据集、算法、超参数目录查询，以及数据集和算法按 ID 查询。缓存值是 JSON 字符串，MySQL 仍是事实源。缓存未命中、空值、反序列化失败或 Redis 异常会作为 miss 处理，由查询服务回源 MySQL；写缓存或删缓存失败也不会阻断资源业务。数据集和算法变更会在事务提交后失效相关列表键和 ID 键。Redis 不存任务状态，不是任务队列，也没有承担分布式锁或 GPU 调度。
+**追问：** Broker Confirm 成功就一定有队列收到了吗？
 
-### 如何证明项目经过测试？
+**答法：** 还要检查路由。在本项目，发布者开 `mandatory` 并处理 return。发布和消费两个方向各有明确的确认点，数据库仍记录任务和消费事实。
 
-截至 2026-10-26，仓库现有 Surefire 报告记录迁移版 30 项单元测试通过，Failsafe 报告记录 3 项 MySQL 集成测试通过，失败、错误和跳过均为 0。单测覆盖资源命令/查询、缓存 TTL 与故障降级、事务提交后派发、任务重试快照、进度等待与查询、启动恢复和 YAML 配置解析；MySQL 集成测试验证并发领取原子性、成功完成与恢复之间的条件更新竞争、孤儿任务恢复边界。报告对应的运行命令为 `mvn -B -f migration-backend/pom.xml test` 和 `mvn -B -f migration-backend/pom.xml verify -Pmysql-it`。本次文档同步没有重跑测试，上述数字是现有报告记录，不是本轮测试结果。GitHub Actions 配置了 MySQL 8.4 service，远端结果仍以 Actions 页面为准。旧 ELADMIN 的测试不计入迁移版覆盖；LDD 工程链路验证也不等于论文正式实验。
+**源码练习。** 对照 `TaskOutboxRelay`、`RabbitDispatchTransport.publish`、`DispatchMessageListener`、`TaskDispatchConsumptionService`，画出 Relay 和 Worker 各一次崩溃窗口。
 
-## 8. 代码追问导航
+### 77. 用户让助手启动任务，谁决定最终使用的参数？
 
-| 追问主题 | 建议现场打开 |
-| --- | --- |
-| 如何验证任务、配置和算法路径 | [`PreDefenseTaskCommandService.java`](../migration-backend/src/main/java/com/securitymodel/application/task/PreDefenseTaskCommandService.java)、[`LddConfigurationPolicy.java`](../migration-backend/src/main/java/com/securitymodel/application/task/LddConfigurationPolicy.java) |
-| 如何实现原子领取和迟到回调隔离 | [`PreDefenseTaskMapper.java`](../migration-backend/src/main/java/com/securitymodel/infrastructure/persistence/mapper/PreDefenseTaskMapper.java) |
-| 如何做异步调度、队列拒绝和超时 | [`TaskExecutorConfig.java`](../migration-backend/src/main/java/com/securitymodel/infrastructure/executor/TaskExecutorConfig.java)、[`AfterCommitTaskDispatcher.java`](../migration-backend/src/main/java/com/securitymodel/application/task/AfterCommitTaskDispatcher.java)、[`PythonProcessWaiter.java`](../migration-backend/src/main/java/com/securitymodel/application/task/PythonProcessWaiter.java) |
-| Java/Python 如何解耦 | [`DefenseTaskRequest.java`](../migration-backend/src/main/java/com/securitymodel/application/task/DefenseTaskRequest.java)、[`PythonLddTaskExecutor.java`](../migration-backend/src/main/java/com/securitymodel/infrastructure/executor/PythonLddTaskExecutor.java)、[`algorithm_entry.py`](../algorithm-runtime/vab/algorithm_entry.py) |
-| 如何看重启恢复与边界 | [`TaskRecoveryRunner.java`](../migration-backend/src/main/java/com/securitymodel/application/task/TaskRecoveryRunner.java) |
-| 如何导出清洗子集 | [`CleanSubsetExportService.java`](../migration-backend/src/main/java/com/securitymodel/application/export/CleanSubsetExportService.java)、[`CleanSubsetExportExecutor.java`](../migration-backend/src/main/java/com/securitymodel/application/export/CleanSubsetExportExecutor.java) |
-| 如何验证前端数据是真实还是演示 | [`TaskCenterView.vue`](../migration-frontend/src/views/TaskCenterView.vue)、[`demoData.js`](../migration-frontend/src/data/demoData.js) |
+**答法：** 聊天链路可以生成写操作预览。服务端基于任务和当前参数计划产生确认凭据并保存预览上下文。用户确认时，Java 验证身份、token 和有效状态，针对任务操作锁行并比较上下文。配置指纹不一致时要求重新预览。通过后 `AssistantWriteExecutor` 调同一个任务命令服务，服务层继续负责权限、状态和参数规则。
 
-## 9. 面试前建议准备的现场证据
+**追问：** 公共知识检索能代替查用户任务吗？重复点确认呢？
 
-1. 一条真实 LDD 成功任务的 task ID、执行时间、配置和报告页面。
-2. 对应 attempt 目录的 `request.json`、`result.json`、stdout/stderr 日志和 `selected_indices_*.npy`。
-3. 按某个隔离比例导出的 ZIP，能解释其中的索引、标签和图片文件。
-4. 当前本机 VaB 路径、Python 环境、PyTorch/CUDA 和 GPU 信息。
-5. 一个失败或取消/重试案例，说明状态如何变化、`run_id` 如何变化、旧回调如何被隔离。
-6. 构建和测试命令输出，以及 Surefire/Failsafe 报告。明确迁移版现有报告的 30 项单元测试、3 项 MySQL 集成测试与旧模块历史定向测试的区别。
+**答法：** 知识检索用于概念说明和可见知识引用，实时任务事实来自授权的业务工具。已消费的有效凭据可以回放保存的结果。待确认请求要经过条件消费，写动作和确认结果受业务事务约束。
 
-不要把 `migration-frontend/src/data/demoData.js` 中的任务数字、统计百分比、模拟案例或演示模式页面作为真实实验数据。也不要把页面出现“已接入运行”的静态标签当作后端算法接入证据。
+**源码练习。** 跟 `AssistantChatService` 的工具调用分支，找到 `AssistantPreviewService` 产生确认的地方，再从 `AssistantConfirmationService.confirm` 跟到 `AssistantWriteExecutor.execute`。
 
-## 10. 能力边界与后续演进回答
+## 快速自检
 
-如果被问“为什么还没有三阶段真实算法”，可以这样回答：
+合上文档，能连续说出这七句即可：
 
-> 当前优先把真实 LDD 执行闭环做扎实，先验证统一任务协议、参数校验、异步生命周期、进程隔离和实验追溯。三阶段页面是能力目录和展示层，不等于对应算法已经接入。新增算法还要落实输入输出契约、参数 schema、结果指标映射、产物安全策略和运行测试。我会按相同执行器边界扩展，避免为了页面完整而把未验证方案标成真实能力。
+1. 创建是 `pending`，启动才产生 `runId/attempt`。
+2. 事务内写任务、快照、意图；提交后才执行/发消息。
+3. Java 和 Python 用请求/结果 JSON 文件，不用 stdout 当结果。
+4. 旧轮结果被 `current_run_id + running` 条件挡住。
+5. Redis 只加速目录，Rabbit 只负责派发，MySQL 才是任务事实。
+6. `dispatchReady=true` 不等于 MQ 启用；当前实例是 `db/api`。
+7. 页面展示短类型和二态状态不改后端模型，统计页没有真实采集源的指标不编造。
 
-如果被问下一步工程化，可以按优先级回答：
-
-1. 在现有迁移版测试套件上补充端到端执行协议、结果协议、取消/超时进程回收竞态和故障注入覆盖。
-2. 为导出任务增加明确的启动恢复扫描与故障注入演练。
-3. 将线程池和本地进程演进为持久化队列/独立 worker，增加多实例配额、进程树或容器资源隔离。
-4. 固定 Python 依赖锁文件和算法/数据版本摘要，强化实验复现。
-5. 在完成算法适配和正式实验后，再接入训练中或训练后算法，并区分工程指标和论文指标。
-
-这些是后续路线，不要在面试中说成已经落地。
-
-## 11. 高频术语卡片
-
-| 术语 | 面试时的准确解释 |
-| --- | --- |
-| `taskId` | 业务任务标识，可包含多次运行尝试 |
-| `attempt` | 同一个业务任务的第几次执行 |
-| `run_id` | 某一次具体执行的唯一令牌，用于隔离旧回调 |
-| `execution_snapshot` | 每次启动输入、配置、资源和运行时计划信息的追加记录 |
-| `cleaning_result` | 当前任务结果的结构化 JSON，包含状态、指标、运行环境和产物引用 |
-| `retained_clean_subset` | LDD 产出的保留样本索引语义 |
-| `afterCommit` | 数据库事务提交成功后才执行 Python 派发 |
-| 原子领取 | 用带状态条件的单条 UPDATE 决定哪个请求取得执行权 |
-| 工程验证 | 验证代码集成与执行链路，不等价于正式论文实验 |
-
-## 12. 最后检查清单
-
-- 能在 60 秒内说清项目定位、我的工作和真实接入范围。
-- 能不看文档连续复述“前端 HTTP -> Java 写 request.json -> ProcessBuilder 启动适配器 -> Python 解析并运行 LDD -> Python 写 result.json -> Java 校验并条件更新 MySQL”。
-- 能说明 `progress.json` 如何由 Python 原子写出、由 Java 等待器观察、由日志接口返回给前端，并讲清它不是最终结果协议。
-- 能画出从前端到数据库、线程池、Python 适配器、LDD 和导出的数据流。
-- 能解释 `run_id`、`attempt`、条件更新和事务提交后派发的必要性。
-- 能明确说明任务重启处理是“标记失败后人工重试”，而不是自动恢复运行。
-- 能说明 SHA-256 的文件大小条件和目录不做全量摘要。
-- 能区分 LDD 保留索引、清洗子集 ZIP 与算法内部中间张量。
-- 能把演示数据、工程验证和正式实验分开陈述。
-- 能准确说出仓库现有报告记录迁移版 30 项单测、3 项 MySQL 集成测试及其覆盖边界，并说明面试时以最新报告为准。
-- 能指出三阶段展示不代表多算法真实执行，也能给出合理扩展路径。
+再准备一个自己真正改过的文件、一个测试、一个失败场景。面试时沿这条证据链往下讲，比背架构图更可信。

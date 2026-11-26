@@ -7,3 +7,11 @@ export function getAvailableHyper() {
 export function getDefaultTemplateByAlgorithm(algorithmId) {
   return http.get(`/api/hyper/algorithm/${algorithmId}/default`)
 }
+
+export function getTemplatesByAlgorithm(algorithmId) {
+  return http.get(`/api/hyper/algorithm/${algorithmId}`)
+}
+
+export function updateHyper(templateId, data) {
+  return http.put(`/api/hyper/${templateId}`, data)
+}

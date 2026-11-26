@@ -81,7 +81,12 @@ public class ExecutionFingerprintService {
         result.put("name", resource.getName());
         result.put("type", resource.getType());
         result.put("path", resource.getPath());
-        if (!StringUtils.hasText(resource.getPath()) || resource.getPath().matches("^[a-zA-Z][a-zA-Z0-9+.-]*://.*")) {
+        if (!StringUtils.hasText(resource.getPath())) {
+            result.put("available", false);
+            result.put("kind", "missing_path");
+            return result;
+        }
+        if (resource.getPath().matches("^[a-zA-Z][a-zA-Z0-9+.-]*://.*")) {
             result.put("kind", "logical_uri");
             result.put("available", true);
             return result;

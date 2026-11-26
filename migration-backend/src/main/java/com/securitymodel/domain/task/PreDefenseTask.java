@@ -40,6 +40,15 @@ public class PreDefenseTask {
     private String currentRunId;
     @TableField("current_attempt")
     private Integer currentAttempt;
+    /** Stable owner ({@code sys_user.user_id}). The only authorization key; {@code createBy} is display only. */
+    @TableField("owner_user_id")
+    private Long ownerUserId;
+    /** {@code user} (created by the platform), {@code legacy} (historical real run), {@code demo}. */
+    @TableField("data_origin")
+    private String dataOrigin;
+    /** {@code matched} / {@code unattributed}; written by the ownership backfill only. */
+    @TableField("owner_backfill_status")
+    private String ownerBackfillStatus;
     @TableField("create_by")
     private String createBy;
     @TableField("update_by")

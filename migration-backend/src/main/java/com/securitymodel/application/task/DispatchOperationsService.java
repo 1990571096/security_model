@@ -1,0 +1,246 @@
+package com.securitymodel.application.task;
+
+import com.securitymodel.application.audit.CurrentUserService;
+import com.securitymodel.application.audit.OperationAuditService;
+import com.securitymodel.domain.lease.GpuLease;
+import com.securitymodel.domain.task.DispatchOutbox;
+import com.securitymodel.domain.task.PreDefenseTask;
+import com.securitymodel.domain.task.TaskDispatchIntent;
+import com.securitymodel.infrastructure.executor.AttemptProcessRegistry;
+import com.securitymodel.infrastructure.persistence.mapper.PreDefenseTaskMapper;
+import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.dao.DataAccessException;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.time.Duration;
+import java.time.LocalDateTime;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
+/** Admin-only R4 operational view; no payload, command line, path or credential is returned. */
+@Service
+public class DispatchOperationsService {
+
+    private final CurrentUserService currentUserService;
+    private final DispatchRuntimePolicy runtimePolicy;
+    private final TaskOutboxService outboxService;
+    private final TaskDispatchConsumptionService consumptionService;
+    private final AttemptProcessRegistry processRegistry;
+    private final PreDefenseTaskMapper taskMapper;
+    private final TaskDispatchIntentService intentService;
+    private final OperationAuditService auditService;
+    private final WorkerOwnershipProbe ownershipProbe;
+    private final GpuLeaseService gpuLeaseService;
+    private final SchedulingReadinessGate readinessGate;
+    private final ObjectProvider<WorkerConsumerLifecycle> consumerLifecycleProvider;
+
+    public DispatchOperationsService(
+            CurrentUserService currentUserService,
+            DispatchRuntimePolicy runtimePolicy,
+            TaskOutboxService outboxService,
+            TaskDispatchConsumptionService consumptionService,
+            AttemptProcessRegistry processRegistry,
+            PreDefenseTaskMapper taskMapper,
+            TaskDispatchIntentService intentService,
+            OperationAuditService auditService,
+            WorkerOwnershipProbe ownershipProbe,
+            GpuLeaseService gpuLeaseService,
+            SchedulingReadinessGate readinessGate,
+            ObjectProvider<WorkerConsumerLifecycle> consumerLifecycleProvider) {
+        this.currentUserService = currentUserService;
+        this.runtimePolicy = runtimePolicy;
+        this.outboxService = outboxService;
+        this.consumptionService = consumptionService;
+        this.processRegistry = processRegistry;
+        this.taskMapper = taskMapper;
+        this.intentService = intentService;
+        this.auditService = auditService;
+        this.ownershipProbe = ownershipProbe;
+        this.gpuLeaseService = gpuLeaseService;
+        this.readinessGate = readinessGate;
+        this.consumerLifecycleProvider = consumerLifecycleProvider;
+    }
+
+    public Map<String, Object> summary() {
+        currentUserService.requireAdmin();
+        LocalDateTime now = LocalDateTime.now();
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("mode", runtimePolicy.mode().name().toLowerCase());
+        result.put("role", runtimePolicy.role().name().toLowerCase());
+        result.put("sampledAt", now.toString());
+        try {
+            result.put("outboxNew", outboxService.countByStatus(DispatchOutbox.NEW));
+            result.put("outboxPublishing", outboxService.countByStatus(DispatchOutbox.PUBLISHING));
+            result.put("outboxFailed", outboxService.countByStatus(DispatchOutbox.FAILED));
+            result.put("outboxPublished", outboxService.countByStatus(DispatchOutbox.PUBLISHED));
+            result.put("outboxDead", outboxService.countByStatus(DispatchOutbox.DEAD));
+            result.put("outboxBacklog", outboxService.countBacklog(now));
+            LocalDateTime oldest = outboxService.oldestUnpublishedAt();
+            result.put("oldestUnpublishedAt", oldest == null ? null : oldest.toString());
+            result.put("oldestWaitSeconds", oldest == null ? 0
+                    : Math.max(0, Duration.between(oldest, now).getSeconds()));
+            result.put("expiredConsumptionClaims", consumptionService.countExpiredProcessing(now));
+            result.put("consumptionProcessing", consumptionService.countByStatus("processing"));
+            result.put("consumptionRetry", consumptionService.countByStatus("retry"));
+            result.put("consumptionTerminal", consumptionService.countByStatus("terminal"));
+            LocalDateTime oldestProcessing = consumptionService.oldestProcessingAt();
+            result.put("oldestProcessingAt", oldestProcessing == null ? null : oldestProcessing.toString());
+            result.put("oldestProcessingSeconds", oldestProcessing == null ? 0
+                    : Math.max(0, Duration.between(oldestProcessing, now).getSeconds()));
+            result.put("outboxAvailable", true);
+        } catch (DataAccessException exception) {
+            // The default db profile may not have migrated the R4 tables yet. Report the
+            // unavailable capability instead of failing the whole admin observability page.
+            result.put("outboxAvailable", false);
+            result.put("outboxError", "OUTBOX_TABLE_UNAVAILABLE");
+        }
+        result.put("workerLocalAccepted", processRegistry.localAcceptedCount());
+        result.put("dispatchReady", readinessGate.isReady());
+        result.put("workerConsumerExpected", runtimePolicy.runsConsumer());
+        try {
+            result.put("runningTasks", taskMapper.selectCount(
+                    Wrappers.<PreDefenseTask>lambdaQuery().eq(PreDefenseTask::getStatus, "running")));
+            result.put("runningTasksAvailable", true);
+        } catch (DataAccessException exception) {
+            result.put("runningTasks", 0);
+            result.put("runningTasksAvailable", false);
+        }
+        WorkerConsumerLifecycle lifecycle = consumerLifecycleProvider.getIfAvailable();
+        result.put("workerConsumerStarted", lifecycle != null && lifecycle.isConsumerStarted());
+        result.put("workerRecovering", lifecycle != null && lifecycle.isRecovering());
+        Long ownerConnectionId = ownershipProbe.ownerConnectionId();
+        result.put("workerOwned", ownerConnectionId != null);
+        result.put("workerOwnerConnectionId", ownerConnectionId);
+        result.put("gpuSlot", gpuSlot());
+        return result;
+    }
+
+    /** Admin-only slot detail; the /summary endpoint keeps aggregate-only fields. */
+    private Map<String, Object> gpuSlot() {
+        Map<String, Object> slot = new LinkedHashMap<>();
+        slot.put("available", true);
+        slot.put("slotId", gpuLeaseService.getSlotId());
+        try {
+            List<GpuLease> blocked = gpuLeaseService.findBlocked();
+            if (!blocked.isEmpty()) {
+                GpuLease lease = blocked.get(0);
+                slot.put("state", "blocked");
+                slot.put("taskId", lease.getTaskId());
+                slot.put("runId", lease.getRunId());
+                slot.put("attempt", lease.getAttempt());
+                slot.put("blockedAt", stringOrNull(lease.getBlockedAt()));
+                slot.put("blockedReason", lease.getBlockedReason());
+                slot.put("fencingToken", lease.getFencingToken());
+            } else {
+                List<GpuLease> active = gpuLeaseService.findActive();
+                if (!active.isEmpty()) {
+                    GpuLease lease = active.get(0);
+                    slot.put("state", "leased");
+                    slot.put("taskId", lease.getTaskId());
+                    slot.put("runId", lease.getRunId());
+                    slot.put("attempt", lease.getAttempt());
+                    slot.put("acquiredAt", stringOrNull(lease.getAcquiredAt()));
+                    slot.put("heartbeatAt", stringOrNull(lease.getHeartbeatAt()));
+                    slot.put("expiresAt", stringOrNull(lease.getExpiresAt()));
+                    slot.put("fencingToken", lease.getFencingToken());
+                } else {
+                    slot.put("state", "idle");
+                }
+            }
+        } catch (DataAccessException exception) {
+            slot.put("available", false);
+            slot.put("state", "unknown");
+            slot.put("error", "GPU_LEASE_TABLE_UNAVAILABLE");
+        }
+        return slot;
+    }
+
+    private String stringOrNull(LocalDateTime value) {
+        return value == null ? null : value.toString();
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public Map<String, Object> replayDead(String messageId) {
+        var identity = currentUserService.requireStableIdentity();
+        DispatchOutbox outbox;
+        try {
+            outbox = outboxService.findByMessageId(messageId);
+        } catch (DataAccessException exception) {
+            throw new TaskCommandException("OUTBOX_TABLE_UNAVAILABLE: R4 Outbox 表尚未迁移");
+        }
+        if (outbox == null) {
+            throw new TaskCommandException("DISPATCH_DEAD_NOT_FOUND: 死信不存在");
+        }
+        if (!DispatchOutbox.DEAD.equals(outbox.getStatus())) {
+            throw new TaskCommandException("DISPATCH_DEAD_NOT_DEAD: 当前 Outbox 不是 dead 状态");
+        }
+        // Row locks order all replay checks before the conditional dead -> new update.
+        PreDefenseTask task = taskMapper.selectByIdForUpdate(outbox.getTaskId());
+        if (task == null) {
+            throw new TaskCommandException("DLQ_REPLAY_TASK_MISSING: 任务不存在");
+        }
+        boolean owner = identity.userId() != null
+                && identity.userId().equals(task.getOwnerUserId());
+        if (!identity.admin() && !owner) {
+            throw new org.springframework.security.access.AccessDeniedException(
+                    "仅任务所有者或管理员可重放死信");
+        }
+        if (!"running".equals(task.getStatus())) {
+            throw new TaskCommandException(
+                    "DLQ_REPLAY_REQUIRES_NEW_ATTEMPT: 任务已不在 running，失败/不确定执行必须走任务重试创建新 attempt");
+        }
+        if (!java.util.Objects.equals(outbox.getRunId(), task.getCurrentRunId())
+                || !java.util.Objects.equals(outbox.getAttempt(), task.getCurrentAttempt())) {
+            throw new TaskCommandException(
+                    "DLQ_REPLAY_IDENTITY_MISMATCH: 死信的 runId/attempt 已不是任务当前尝试");
+        }
+        TaskDispatchIntent intent = intentService.findByRunForUpdate(outbox.getTaskId(),
+                outbox.getRunId(), outbox.getAttempt());
+        if (intent == null || !TaskDispatchIntent.PENDING.equals(intent.getStatus())) {
+            throw new TaskCommandException(
+                    "DLQ_REPLAY_REQUIRES_NEW_ATTEMPT: 意图不是 pending，不能复用旧 attempt");
+        }
+        LocalDateTime now = LocalDateTime.now();
+        DispatchOutbox replayed = outboxService.replayDead(messageId, now);
+        if (replayed == null) {
+            throw new TaskCommandException("DLQ_REPLAY_CONFLICT: 死信状态已变化，请刷新后重试");
+        }
+        auditService.recordTask(outbox.getTaskId(), "REPLAY_DEAD", "dead", "new",
+                Map.of("previousMessageId", messageId,
+                        "messageId", replayed.getMessageId(),
+                        "attempt", outbox.getAttempt()),
+                "任务所有者或管理员重放未执行的 Outbox 死信");
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("messageId", replayed.getMessageId());
+        result.put("previousMessageId", messageId);
+        result.put("taskId", outbox.getTaskId());
+        result.put("runId", outbox.getRunId());
+        result.put("attempt", outbox.getAttempt());
+        result.put("status", DispatchOutbox.NEW);
+        return result;
+    }
+
+    public List<Map<String, Object>> dead(int limit) {
+        currentUserService.requireAdmin();
+        try {
+            return outboxService.findDead(Math.max(1, Math.min(limit, 100))).stream()
+                    .map(item -> {
+                        Map<String, Object> row = new LinkedHashMap<>();
+                        row.put("messageId", item.getMessageId());
+                        row.put("taskId", item.getTaskId());
+                        row.put("runId", item.getRunId());
+                        row.put("attempt", item.getAttempt());
+                        row.put("status", item.getStatus());
+                        row.put("lastError", item.getLastError());
+                        row.put("updatedAt", item.getUpdatedAt() == null
+                                ? null : item.getUpdatedAt().toString());
+                        return row;
+                    }).toList();
+        } catch (DataAccessException exception) {
+            return List.of();
+        }
+    }
+}

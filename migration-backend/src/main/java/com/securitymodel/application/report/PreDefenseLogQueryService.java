@@ -3,8 +3,8 @@ package com.securitymodel.application.report;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.securitymodel.application.task.ExecutionFingerprintService;
+import com.securitymodel.application.task.TaskAccessGuard;
 import com.securitymodel.domain.task.PreDefenseTask;
-import com.securitymodel.infrastructure.persistence.mapper.PreDefenseTaskMapper;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
@@ -18,24 +18,21 @@ import java.util.*;
 public class PreDefenseLogQueryService {
 
     private static final int MAX_READ_BYTES = 256 * 1024;
-    private final PreDefenseTaskMapper taskMapper;
     private final ObjectMapper objectMapper;
     private final ExecutionFingerprintService fingerprintService;
+    private final TaskAccessGuard taskAccessGuard;
 
     public PreDefenseLogQueryService(
-            PreDefenseTaskMapper taskMapper,
             ObjectMapper objectMapper,
-            ExecutionFingerprintService fingerprintService) {
-        this.taskMapper = taskMapper;
+            ExecutionFingerprintService fingerprintService,
+            TaskAccessGuard taskAccessGuard) {
         this.objectMapper = objectMapper;
         this.fingerprintService = fingerprintService;
+        this.taskAccessGuard = taskAccessGuard;
     }
 
     public Map<String, Object> getLogs(Long taskId, Map<String, Long> offsets) {
-        PreDefenseTask task = taskMapper.selectById(taskId);
-        if (task == null) {
-            throw new IllegalArgumentException("任务不存在");
-        }
+        PreDefenseTask task = taskAccessGuard.requireReadable(taskId);
         Map<String, Object> result = new LinkedHashMap<>();
         List<Map<String, Object>> logs = new ArrayList<>();
         result.put("taskId", taskId);

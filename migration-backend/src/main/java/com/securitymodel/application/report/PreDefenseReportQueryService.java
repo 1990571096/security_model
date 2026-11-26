@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.securitymodel.application.export.CleanSubsetExportService;
 import com.securitymodel.application.resource.ResourceQueryService;
+import com.securitymodel.application.task.TaskAccessGuard;
 import com.securitymodel.domain.algorithm.Algorithm;
 import com.securitymodel.domain.dataset.Dataset;
 import com.securitymodel.domain.export.CleanSubsetExportTask;
@@ -24,23 +25,23 @@ public class PreDefenseReportQueryService {
     private final ResourceQueryService resourceQueryService;
     private final CleanSubsetExportService exportService;
     private final ObjectMapper objectMapper;
+    private final TaskAccessGuard taskAccessGuard;
 
     public PreDefenseReportQueryService(
             PreDefenseTaskMapper taskMapper,
             ResourceQueryService resourceQueryService,
             CleanSubsetExportService exportService,
-            ObjectMapper objectMapper) {
+            ObjectMapper objectMapper,
+            TaskAccessGuard taskAccessGuard) {
         this.taskMapper = taskMapper;
         this.resourceQueryService = resourceQueryService;
         this.exportService = exportService;
         this.objectMapper = objectMapper;
+        this.taskAccessGuard = taskAccessGuard;
     }
 
     public Map<String, Object> getReport(Long taskId) {
-        PreDefenseTask task = taskMapper.selectById(taskId);
-        if (task == null) {
-            throw new IllegalArgumentException("任务不存在");
-        }
+        PreDefenseTask task = taskAccessGuard.requireReadable(taskId);
         Dataset dataset = resourceQueryService.findDataset(task.getDatasetId());
         Algorithm algorithm = resourceQueryService.findAlgorithm(task.getAlgorithmId());
         Hyper hyper = task.getHyperId() == null ? null : resourceQueryService.findHyper(task.getHyperId());

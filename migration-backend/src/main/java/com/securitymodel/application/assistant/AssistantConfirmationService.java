@@ -1,0 +1,220 @@
+package com.securitymodel.application.assistant;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.securitymodel.application.audit.CurrentUserService;
+import com.securitymodel.application.task.IdempotencyResult;
+import com.securitymodel.application.task.PreDefenseTaskCommand;
+import com.securitymodel.application.task.PreDefenseTaskCommandService;
+import com.securitymodel.application.task.TaskAccessGuard;
+import com.securitymodel.application.task.TaskCommandException;
+import com.securitymodel.domain.assistant.AssistantConfirmation;
+import com.securitymodel.domain.task.PreDefenseTask;
+import com.securitymodel.infrastructure.persistence.mapper.AssistantConfirmationMapper;
+import org.springframework.http.HttpStatus;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.time.LocalDateTime;
+
+/**
+ * One-time confirmation. ACL, task/run state and canonical parameter hash are re-checked
+ * at confirmation time; the token is consumed atomically before the business command.
+ * If the command fails, the surrounding transaction rolls the consumption back.
+ */
+@Service
+public class AssistantConfirmationService {
+
+    private final AssistantConfirmationMapper confirmationMapper;
+    private final AssistantWriteExecutor writeExecutor;
+    private final TaskAccessGuard taskAccessGuard;
+    private final PreDefenseTaskCommandService commandService;
+    private final AssistantAuditService auditService;
+    private final CurrentUserService currentUserService;
+    private final ObjectMapper objectMapper;
+
+    public AssistantConfirmationService(
+            AssistantConfirmationMapper confirmationMapper,
+            AssistantWriteExecutor writeExecutor,
+            TaskAccessGuard taskAccessGuard,
+            PreDefenseTaskCommandService commandService,
+            AssistantAuditService auditService,
+            CurrentUserService currentUserService,
+            ObjectMapper objectMapper) {
+        this.confirmationMapper = confirmationMapper;
+        this.writeExecutor = writeExecutor;
+        this.taskAccessGuard = taskAccessGuard;
+        this.commandService = commandService;
+        this.auditService = auditService;
+        this.currentUserService = currentUserService;
+        this.objectMapper = objectMapper;
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public AssistantConfirmationResult confirm(Long confirmationId, String token) {
+        Long userId = currentUserService.requireStableIdentity().userId();
+        AssistantConfirmation confirmation = confirmationMapper.findById(confirmationId);
+        if (confirmation == null) {
+            throw new AssistantException("ASSISTANT_CONFIRMATION_NOT_FOUND", HttpStatus.NOT_FOUND,
+                    "确认凭据不存在");
+        }
+        if (!userId.equals(confirmation.getUserId())) {
+            audit(confirmation, "DENIED", 0);
+            throw new AssistantException("ASSISTANT_CONFIRMATION_FORBIDDEN", HttpStatus.FORBIDDEN,
+                    "确认凭据不属于当前用户");
+        }
+        if (!AssistantContextHasher.sha256(token == null ? "" : token).equals(confirmation.getTokenHash())) {
+            audit(confirmation, "TOKEN_MISMATCH", 0);
+            throw new AssistantException("ASSISTANT_CONFIRMATION_INVALID", HttpStatus.FORBIDDEN,
+                    "确认凭据无效");
+        }
+        if (AssistantConfirmation.CONSUMED.equals(confirmation.getStatus())) {
+            audit(confirmation, "REPLAYED", 0);
+            return replay(confirmation);
+        }
+        if (confirmation.getExpiresAt() == null
+                || !confirmation.getExpiresAt().isAfter(LocalDateTime.now())) {
+            audit(confirmation, "EXPIRED", 0);
+            throw new AssistantException("ASSISTANT_CONFIRMATION_EXPIRED", HttpStatus.GONE,
+                    "确认凭据已过期，请重新预览");
+        }
+        if (!AssistantConfirmation.PENDING.equals(confirmation.getStatus())) {
+            throw new AssistantException("ASSISTANT_CONFIRMATION_BUSY", HttpStatus.CONFLICT,
+                    "确认凭据正在处理或状态未知");
+        }
+
+        long started = System.nanoTime();
+        // Lock the task row before hashing and keep it until the business command commits.
+        // Token consumption alone protects the credential, not the task version the user
+        // actually previewed.
+        PreDefenseTask lockedTask = lockTargetTask(confirmation);
+        AssistantConfirmation latest = confirmationMapper.findById(confirmationId);
+        if (latest != null && AssistantConfirmation.CONSUMED.equals(latest.getStatus())) {
+            audit(latest, "REPLAYED", elapsedMs(started));
+            return replay(latest);
+        }
+        String currentContext = currentContextHash(confirmation, lockedTask);
+        if (!currentContext.equals(confirmation.getContextHash())) {
+            audit(confirmation, "STALE", elapsedMs(started));
+            throw new AssistantException("ASSISTANT_CONFIRMATION_STALE", HttpStatus.CONFLICT,
+                    "任务、run 或参数已变化，请重新预览后再确认");
+        }
+
+        LocalDateTime now = LocalDateTime.now();
+        int claimed = confirmationMapper.consume(confirmationId, confirmation.getTokenHash(), userId, now);
+        if (claimed != 1) {
+            AssistantConfirmation latestAfterClaim = confirmationMapper.findById(confirmationId);
+            if (latestAfterClaim != null && AssistantConfirmation.CONSUMED.equals(latestAfterClaim.getStatus())) {
+                return replay(latestAfterClaim);
+            }
+            throw new AssistantException("ASSISTANT_CONFIRMATION_BUSY", HttpStatus.CONFLICT,
+                    "确认凭据已被处理，不能重复执行");
+        }
+
+        JsonNode request = parseRequest(confirmation.getRequestJson());
+        IdempotencyResult result = writeExecutor.execute(confirmation.getOperation(), confirmationId, request);
+        confirmationMapper.markConsumed(confirmationId, result.status(), result.body().toString(),
+                LocalDateTime.now());
+        audit(confirmation, "CONFIRMED", elapsedMs(started));
+        return new AssistantConfirmationResult(result.status(), result.body(), false);
+    }
+
+    private PreDefenseTask lockTargetTask(AssistantConfirmation confirmation) {
+        if ("create".equals(confirmation.getOperation())) {
+            return null;
+        }
+        if (confirmation.getTargetTaskId() == null) {
+            throw new AssistantException("ASSISTANT_CONFIRMATION_CORRUPT", HttpStatus.INTERNAL_SERVER_ERROR,
+                    "确认记录缺少目标任务");
+        }
+        return taskAccessGuard.requireOwnedForUpdate(confirmation.getTargetTaskId());
+    }
+
+    private String currentContextHash(AssistantConfirmation confirmation, PreDefenseTask task) {
+        String operation = confirmation.getOperation();
+        JsonNode request = parseRequest(confirmation.getRequestJson());
+        if ("create".equals(operation)) {
+            if (!approvedConfigStillMatches(request)) {
+                return "stale-config";
+            }
+            return AssistantContextHasher.createState(confirmation.getRequestJson());
+        }
+        String extra = switch (operation) {
+            case "cancel" -> confirmation.getTargetRunId();
+            case "export" -> request.path("isolationRatio").asText();
+            case "start", "retry" -> currentConfigFingerprint(task);
+            default -> "";
+        };
+        if (("cancel".equals(operation) || "export".equals(operation))
+                && confirmation.getTargetRunId() != null
+                && !confirmation.getTargetRunId().equals(task.getCurrentRunId())) {
+            return "stale-run";
+        }
+        return AssistantContextHasher.taskState(operation, task, extra);
+    }
+
+    private boolean approvedConfigStillMatches(JsonNode request) {
+        String expected = request.path("expectedConfigFingerprint").asText("");
+        if (expected.isBlank()) {
+            return false;
+        }
+        PreDefenseTaskCommand command = new PreDefenseTaskCommand();
+        try {
+            command.setTaskName(request.path("taskName").asText());
+            command.setDescription(request.has("description") ? request.path("description").asText() : null);
+            command.setDatasetId(AssistantArgs.requireLong(request, "datasetId"));
+            command.setAlgorithmId(AssistantArgs.requireLong(request, "algorithmId"));
+            command.setHyperId(AssistantArgs.optionalLong(request, "hyperId"));
+            command.setCustomParams(request.path("customParams").isObject()
+                    ? request.path("customParams").toString() : "{}");
+            return expected.equals(commandService.plan(command).fingerprint());
+        } catch (TaskCommandException | AssistantException exception) {
+            return false;
+        }
+    }
+
+    private String currentConfigFingerprint(PreDefenseTask task) {
+        try {
+            return commandService.plan(task).fingerprint();
+        } catch (TaskCommandException exception) {
+            return "stale-config";
+        }
+    }
+
+    private JsonNode parseRequest(String raw) {
+        try {
+            JsonNode node = objectMapper.readTree(raw);
+            if (node == null || !node.isObject()) {
+                throw new IllegalArgumentException("not object");
+            }
+            return node;
+        } catch (Exception exception) {
+            throw new AssistantException("ASSISTANT_CONFIRMATION_CORRUPT", HttpStatus.INTERNAL_SERVER_ERROR,
+                    "确认请求记录无法读取");
+        }
+    }
+
+    private AssistantConfirmationResult replay(AssistantConfirmation confirmation) {
+        if (confirmation.getResultJson() == null) {
+            throw new AssistantException("ASSISTANT_CONFIRMATION_CORRUPT", HttpStatus.INTERNAL_SERVER_ERROR,
+                    "确认结果记录缺失");
+        }
+        try {
+            return new AssistantConfirmationResult(
+                    confirmation.getResultCode() == null ? 200 : confirmation.getResultCode(),
+                    objectMapper.readTree(confirmation.getResultJson()), true);
+        } catch (Exception exception) {
+            throw new AssistantException("ASSISTANT_CONFIRMATION_CORRUPT", HttpStatus.INTERNAL_SERVER_ERROR,
+                    "确认结果无法读取");
+        }
+    }
+
+    private void audit(AssistantConfirmation confirmation, String resultCode, long elapsedMs) {
+        auditService.record(null, "confirm_" + confirmation.getOperation(), confirmation.getOperation(),
+                confirmation.getTargetTaskId(), confirmation.getTargetRunId(), resultCode, elapsedMs);
+    }
+
+    private long elapsedMs(long started) {
+        return (System.nanoTime() - started) / 1_000_000;
+    }
+}

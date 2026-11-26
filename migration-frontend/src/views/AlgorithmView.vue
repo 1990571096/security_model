@@ -2,7 +2,7 @@
   <div class="page resource-page">
     <div class="section-heading">
       <div><span class="eyebrow">ALGORITHM REGISTRY</span><h2>算法资源</h2><p class="page-subtitle">统一维护三大防御阶段的算法元数据、适用场景和接入状态。</p></div>
-      <div class="heading-actions"><el-button :icon="Refresh" :loading="loading" @click="loadAlgorithms">刷新</el-button><el-button type="primary" :icon="Plus" @click="openCreate">新增算法</el-button></div>
+      <div class="heading-actions"><el-button :icon="Refresh" :loading="loading" @click="loadAlgorithms">刷新</el-button><el-button v-if="isAdmin" type="primary" :icon="Plus" @click="openCreate">新增算法</el-button></div>
     </div>
     <el-alert v-if="errorMessage" :title="errorMessage" type="warning" :closable="false" show-icon class="page-alert" />
     <div class="algorithm-filter"><el-radio-group v-model="stageFilter"><el-radio-button label="all">全部阶段</el-radio-button><el-radio-button label="pre">训练前防御</el-radio-button><el-radio-button label="during">训练中防御</el-radio-button><el-radio-button label="post">训练后防御</el-radio-button></el-radio-group><span class="muted">{{ algorithmItems.length }} 个算法方案</span></div>
@@ -10,11 +10,11 @@
       <el-card v-for="item in algorithmItems" :key="item.key" shadow="never" class="algorithm-card">
         <div class="algorithm-card-head"><div class="algorithm-icon">{{ item.shortName }}</div><el-tag :type="item.enabled ? 'success' : 'info'">{{ item.enabled ? '已登记' : '已停用' }}</el-tag></div>
         <h3>{{ item.name }}</h3><p>{{ item.description }}</p><div class="algorithm-meta"><span>{{ item.stage }}</span><span>{{ item.type }}</span></div><div class="algorithm-detail-row"><span>算法分类</span><strong>{{ item.category }}</strong></div>
-        <div class="card-actions"><el-button type="primary" text @click="$router.push(`/algorithms/${item.key}`)">查看详情</el-button><el-button v-if="item.implementationPath === 'vab://pre-defense/ldd' && item.enabled" text @click="$router.push('/tasks')">进入任务中心</el-button><el-button text @click="openEdit(item)">编辑</el-button><el-button v-if="item.enabled" type="danger" text @click="removeAlgorithm(item)">停用</el-button></div>
+        <div class="card-actions"><el-button type="primary" text @click="$router.push(`/algorithms/${item.key}`)">查看详情</el-button><el-button v-if="item.implementationPath === 'vab://pre-defense/ldd' && item.enabled" text @click="$router.push('/tasks')">进入任务中心</el-button><el-button v-if="isAdmin" text @click="openEdit(item)">编辑</el-button><el-button v-if="isAdmin && item.enabled" type="danger" text @click="removeAlgorithm(item)">停用</el-button></div>
       </el-card>
     </div>
     <el-empty v-if="!loading && !algorithmItems.length" description="暂无已登记算法" />
-    <el-dialog v-model="dialogVisible" :title="editing ? '编辑算法' : '新增算法'" width="640px" destroy-on-close>
+    <el-dialog v-model="dialogVisible" :title="editing ? '编辑算法' : '新增算法'" width="min(640px, 94vw)" destroy-on-close>
       <el-form ref="formRef" :model="form" :rules="rules" label-position="top"><div class="form-grid">
         <el-form-item label="算法名称" prop="algorithmName"><el-input v-model="form.algorithmName" placeholder="例如：Spectral Signature" /></el-form-item>
         <el-form-item label="防御阶段" prop="defenseStage"><el-select v-model="form.defenseStage" class="full-width"><el-option label="训练前防御" value="pre" /><el-option label="训练中防御" value="during" /><el-option label="训练后防御" value="post" /></el-select></el-form-item>
@@ -31,6 +31,8 @@ import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Refresh } from '@element-plus/icons-vue'
 import { getAlgorithms, createAlgorithm, updateAlgorithm, disableAlgorithm } from '../api/algorithm'
+import { getUserInfo } from '../api/auth'
+const isAdmin = ref(false)
 const loading = ref(false); const saving = ref(false); const errorMessage = ref(''); const algorithms = ref([]); const stageFilter = ref('all'); const dialogVisible = ref(false); const editing = ref(false); const formRef = ref()
 const form = ref({ algorithmId: null, algorithmName: '', defenseStage: 'pre', algorithmType: 'data_cleaning', algorithmCategory: '经典基线', description: '', implementationPath: '', enabled: true })
 const rules = { algorithmName: [{ required: true, message: '请输入算法名称', trigger: 'blur' }], defenseStage: [{ required: true, message: '请选择防御阶段', trigger: 'change' }], algorithmType: [{ required: true, message: '请选择算法类型', trigger: 'change' }], description: [{ required: true, message: '请输入算法描述', trigger: 'blur' }] }
@@ -40,5 +42,9 @@ function openCreate() { editing.value = false; form.value = { algorithmId: null,
 function openEdit(item) { editing.value = true; form.value = { algorithmId: item.algorithmId, algorithmName: item.algorithmName, defenseStage: item.defenseStage, algorithmType: item.algorithmType, algorithmCategory: item.algorithmCategory, description: item.description, implementationPath: item.implementationPath, enabled: item.enabled }; dialogVisible.value = true }
 async function submitForm() { const valid = await formRef.value?.validate().catch(() => false); if (!valid) return; saving.value = true; try { const { algorithmId, ...payload } = form.value; if (editing.value) await updateAlgorithm(algorithmId, payload); else await createAlgorithm(payload); dialogVisible.value = false; ElMessage.success(editing.value ? '算法已更新' : '算法已登记'); await loadAlgorithms() } catch (error) { ElMessage.error(error.response?.data?.message || '保存失败') } finally { saving.value = false } }
 async function removeAlgorithm(item) { try { await ElMessageBox.confirm(`确认停用“${item.name}”吗？`, '停用算法', { type: 'warning' }); await disableAlgorithm(item.algorithmId); await loadAlgorithms(); ElMessage.success('算法已停用') } catch (error) { if (error !== 'cancel' && error !== 'close') ElMessage.error(error.response?.data?.message || '停用失败') } }
-onMounted(loadAlgorithms)
+onMounted(() => {
+  loadAlgorithms()
+  getUserInfo().then(({ data }) => { isAdmin.value = (data?.data ?? data)?.admin === true })
+    .catch(() => { isAdmin.value = false })
+})
 </script>

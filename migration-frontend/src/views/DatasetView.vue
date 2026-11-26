@@ -8,35 +8,55 @@
       </div>
       <div class="heading-actions">
         <el-button :icon="Refresh" :loading="loading" @click="loadDatasets">刷新</el-button>
-        <el-button type="primary" :icon="Plus" @click="openCreate">登记数据集</el-button>
+        <el-button v-if="isAdmin" type="primary" :icon="Plus" @click="openCreate">登记数据集</el-button>
       </div>
     </div>
     <el-alert v-if="message" :title="message" type="info" :closable="false" show-icon class="page-alert" />
     <div class="resource-summary">
-      <div><span class="muted">可用数据集</span><strong>{{ datasets.length }}</strong></div>
-      <div><span class="muted">待验证资源</span><strong>{{ datasets.filter(item => item.parseStatus !== 'success').length }}</strong></div>
-      <div><span class="muted">导出方式</span><strong>索引重建</strong></div>
+      <div><span class="muted">已核验</span><strong>{{ datasets.filter(hasVerifiedStats).length }}</strong></div>
+      <div><span class="muted">待验证</span><strong>{{ datasets.filter(item => !hasVerifiedStats(item)).length }}</strong></div>
+      <div><span class="muted">已启用</span><strong>{{ datasets.filter(item => item.enabled).length }}</strong></div>
     </div>
     <el-card shadow="never" class="resource-table-card">
       <template #header><div class="card-heading"><strong>已登记数据集</strong><el-tag type="success">资源可追溯</el-tag></div></template>
       <el-table v-loading="loading" :data="datasets" row-key="datasetId" empty-text="暂无已登记数据集">
-        <el-table-column label="名称" min-width="190" show-overflow-tooltip><template #default="{ row }">{{ row.name || row.datasetName || `数据集 #${row.id}` }}</template></el-table-column>
-        <el-table-column label="类型" width="140"><template #default="{ row }"><el-tag effect="plain">{{ row.datasetType || 'image_classification' }}</el-tag></template></el-table-column>
-        <el-table-column label="样本量" width="120"><template #default="{ row }">{{ row.sampleCount || row.dataCount || '-' }}</template></el-table-column>
-        <el-table-column label="状态" width="130"><template #default="{ row }"><el-tag :type="!row.enabled ? 'info' : row.parseStatus === 'success' ? 'success' : 'warning'">{{ !row.enabled ? '已停用' : row.parseStatus === 'success' ? '可用' : '待验证' }}</el-tag></template></el-table-column>
-        <el-table-column label="说明" min-width="240" show-overflow-tooltip><template #default="{ row }">{{ row.description || '可用于 LDD 训练前数据清洗实验' }}</template></el-table-column>
-        <el-table-column label="操作" width="150" fixed="right"><template #default="{ row }"><el-button link type="primary" @click="openEdit(row)">编辑</el-button><el-button v-if="row.enabled" link type="danger" @click="removeDataset(row)">停用</el-button></template></el-table-column>
+        <el-table-column label="名称" min-width="200" show-overflow-tooltip>
+          <template #default="{ row }">
+            <span class="dataset-name-cell">
+              <span>{{ row.name || row.datasetName || `数据集 #${row.id}` }}</span>
+              <el-tag v-if="!row.enabled" size="small" type="info" effect="plain">已停用</el-tag>
+            </span>
+          </template>
+        </el-table-column>
+        <el-table-column label="类型" width="90"><template #default="{ row }"><el-tag effect="plain">{{ displayDatasetType(row.datasetType) }}</el-tag></template></el-table-column>
+        <el-table-column label="训练样本" width="115"><template #default="{ row }">{{ hasVerifiedStats(row) ? row.sampleCount.toLocaleString('zh-CN') : '—' }}</template></el-table-column>
+        <el-table-column label="类别数" width="90"><template #default="{ row }">{{ hasVerifiedStats(row) ? row.classCount : '—' }}</template></el-table-column>
+        <el-table-column label="状态" width="105">
+          <template #default="{ row }">
+            <el-tooltip :content="row.parseMessage || '尚未完成文件内容核验'" placement="top">
+              <el-tag :type="hasVerifiedStats(row) ? 'success' : 'warning'">
+                {{ hasVerifiedStats(row) ? '已核验' : '待验证' }}
+              </el-tag>
+            </el-tooltip>
+          </template>
+        </el-table-column>
+        <el-table-column label="说明" min-width="240" show-overflow-tooltip><template #default="{ row }">{{ row.description || '-' }}</template></el-table-column>
+        <el-table-column v-if="isAdmin" label="操作" width="195" fixed="right">
+          <template #default="{ row }">
+            <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
+            <el-button v-if="row.enabled" link type="primary" :loading="validatingId === row.datasetId" :disabled="validatingId !== null" @click="verify(row)">验证数据</el-button>
+            <el-button v-if="row.enabled" link type="danger" @click="removeDataset(row)">停用</el-button>
+          </template>
+        </el-table-column>
       </el-table>
     </el-card>
-    <el-dialog v-model="dialogVisible" :title="editing ? '编辑数据集' : '登记数据集'" width="620px" destroy-on-close>
+    <el-dialog v-model="dialogVisible" :title="editing ? '编辑数据集' : '登记数据集'" width="min(620px, 94vw)" destroy-on-close>
       <el-form ref="formRef" :model="form" :rules="rules" label-position="top">
         <div class="form-grid">
           <el-form-item label="数据集名称" prop="datasetName"><el-input v-model="form.datasetName" placeholder="例如：CIFAR-10 训练集" /></el-form-item>
-          <el-form-item label="数据类型" prop="datasetType"><el-select v-model="form.datasetType" class="full-width"><el-option label="图像分类" value="image_classification" /><el-option label="文本分类" value="text_classification" /><el-option label="表格数据" value="tabular" /></el-select></el-form-item>
-          <el-form-item label="样本数量" prop="sampleCount"><el-input-number v-model="form.sampleCount" :min="1" class="full-width" /></el-form-item>
-          <el-form-item label="类别数量"><el-input-number v-model="form.classCount" :min="1" class="full-width" /></el-form-item>
+          <el-form-item label="数据类型" prop="datasetType"><el-select v-model="form.datasetType" class="full-width"><el-option label="图像 image" value="image_classification" /><el-option label="文本 text" value="text_classification" /><el-option label="表格 table" value="tabular" /></el-select></el-form-item>
         </div>
-        <el-form-item label="数据集路径" prop="filePath"><el-input v-model="form.filePath" placeholder="例如：D:/datasets/cifar10/train" /></el-form-item>
+        <el-form-item label="数据集路径" prop="filePath"><el-input v-model="form.filePath" placeholder="例如：D:/datasets/cifar-10-batches-py" /></el-form-item>
         <el-form-item label="数据集说明"><el-input v-model="form.description" type="textarea" :rows="3" placeholder="说明数据来源、用途和版本信息" /></el-form-item>
         <el-form-item label="资源状态"><el-switch v-model="form.enabled" active-text="启用" inactive-text="停用" /></el-form-item>
       </el-form>
@@ -49,7 +69,8 @@
 import { onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Refresh } from '@element-plus/icons-vue'
-import { getDatasets, createDataset, updateDataset, disableDataset } from '../api/dataset'
+import { getDatasets, createDataset, updateDataset, disableDataset, validateDataset } from '../api/dataset'
+import { getUserInfo } from '../api/auth'
 
 const loading = ref(false)
 const saving = ref(false)
@@ -57,10 +78,21 @@ const message = ref('')
 const datasets = ref([])
 const dialogVisible = ref(false)
 const editing = ref(false)
+const isAdmin = ref(false)
+const validatingId = ref(null)
 const formRef = ref()
-const form = ref({ datasetId: null, datasetName: '', datasetType: 'image', sampleCount: 50000, classCount: 10, filePath: '', description: '', enabled: true })
-const rules = { datasetName: [{ required: true, message: '请输入数据集名称', trigger: 'blur' }], datasetType: [{ required: true, message: '请选择数据类型', trigger: 'change' }], sampleCount: [{ required: true, message: '请输入样本数量', trigger: 'change' }], filePath: [{ required: true, message: '请输入数据集路径', trigger: 'blur' }] }
+function emptyForm() {
+  return { datasetId: null, datasetName: '', datasetType: 'image_classification', filePath: '', description: '', enabled: true }
+}
+const form = ref(emptyForm())
+const rules = { datasetName: [{ required: true, message: '请输入数据集名称', trigger: 'blur' }], datasetType: [{ required: true, message: '请选择数据类型', trigger: 'change' }], filePath: [{ required: true, message: '请输入数据集路径', trigger: 'blur' }] }
 function unwrap(data) { return data?.data ?? data ?? {} }
+function hasVerifiedStats(row) {
+  return row.parseStatus === 'success' && Number.isInteger(row.sampleCount) && Number.isInteger(row.classCount)
+}
+function displayDatasetType(type) {
+  return { image_classification: 'image', text_classification: 'text', tabular: 'table' }[type] || type || 'image'
+}
 async function loadDatasets() {
   loading.value = true
   message.value = ''
@@ -70,13 +102,17 @@ async function loadDatasets() {
     datasets.value = records
   } catch (error) {
     datasets.value = []
-    message.value = error.response?.data?.message || '数据集读取失败，请检查服务连接后重试。'
+    const status = error.response?.status
+    message.value = error.response?.data?.message
+      || (status === 401 ? '登录会话已失效，请重新登录后查看数据集。'
+        : status === 502 || status === 503 ? '后端服务暂不可用，请确认服务已启动。'
+          : '数据集读取失败，请检查服务连接后重试。')
   } finally {
     loading.value = false
   }
 }
-function openCreate() { editing.value = false; form.value = { datasetId: null, datasetName: '', datasetType: 'image', sampleCount: 50000, classCount: 10, filePath: '', description: '', enabled: true }; dialogVisible.value = true }
-function openEdit(row) { editing.value = true; form.value = { datasetId: row.datasetId, datasetName: row.datasetName, datasetType: row.datasetType, sampleCount: row.sampleCount, classCount: row.classCount, filePath: row.filePath, description: row.description, enabled: row.enabled }; dialogVisible.value = true }
+function openCreate() { editing.value = false; form.value = emptyForm(); dialogVisible.value = true }
+function openEdit(row) { editing.value = true; form.value = { datasetId: row.datasetId, datasetName: row.datasetName, datasetType: row.datasetType, filePath: row.filePath, description: row.description, enabled: row.enabled }; dialogVisible.value = true }
 async function submitForm() {
   const valid = await formRef.value?.validate().catch(() => false)
   if (!valid) return
@@ -99,5 +135,38 @@ async function removeDataset(row) {
     ElMessage.success('数据集已停用')
   } catch (error) { if (error !== 'cancel' && error !== 'close') ElMessage.error(error.response?.data?.message || '停用失败') }
 }
-onMounted(loadDatasets)
+async function verify(row) {
+  if (validatingId.value !== null) return
+  validatingId.value = row.datasetId
+  try {
+    const result = unwrap(await validateDataset(row.datasetId))
+    if (result.parseStatus === 'success') ElMessage.success(result.parseMessage || '路径验证通过')
+    else ElMessage.warning(result.parseMessage || '路径验证失败')
+    await loadDatasets()
+  } catch (error) {
+    ElMessage.error(error.response?.data?.message || '数据集验证请求失败')
+  } finally {
+    validatingId.value = null
+  }
+}
+onMounted(() => {
+  loadDatasets()
+  getUserInfo().then(response => { isAdmin.value = unwrap(response).admin === true })
+    .catch(() => { isAdmin.value = false })
+})
 </script>
+
+<style scoped>
+.dataset-name-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.dataset-name-cell > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+</style>

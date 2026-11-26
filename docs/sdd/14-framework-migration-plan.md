@@ -1,6 +1,13 @@
 # 框架迁移实施计划与验收结果
 
-更新时间：2026-10-26
+当前 API 与页面分别在 `migration-backend` 和 `migration-frontend`。旧 ELADMIN 源码已归档，SQL 基础 schema 仍由初始化流程使用。迁移过程的验收测试与当前代码的交付证据按各自提交查阅。[运行说明](../../README.md) · [交付事实](26-current-delivery-facts.md)
+
+## 历史记录
+
+<!-- knowledge:historical -->
+更新时间：2026-11-17
+
+> 本文是迁移计划与历史基线。RabbitMQ/Outbox/独立 Worker、GPU 租约、导出恢复、知识库与受控助手均已在新后端落地；当前测试计数、R4/单机部署状态和正式 5 epochs 边界以 [`26-current-delivery-facts.md`](26-current-delivery-facts.md) 为准。本文只保留迁移阶段结论，不再把已实现能力写成“未接入/未实现”；文中 `287/106` 等数字是当时快照。
 
 ## 1. 迁移目标
 
@@ -19,12 +26,14 @@ migration-backend/
 migration-frontend/
 ```
 
-新后端已建立 Java 17、Spring Boot 3.5、Spring Security 6、JWT、MySQL、Redis 和
-MyBatis-Plus 运行基线；Redis 仅用于可重建资源目录缓存，Redisson 和消息队列未接入。前端已建立 Vue 3、Vite、
+新后端已建立 Java 17、Spring Boot 3.5、Spring Security 6、JWT、MySQL、Redis、
+MyBatis-Plus 运行基线；Redis 仅用于可重建资源目录缓存，Redisson 未接入。前端已建立 Vue 3、Vite、
 Element Plus、Pinia、Vue Router 4、登录页、工作台、数据集资源、算法资源、
-LDD 任务中心和训练中防御演示页面。
+LDD 任务中心和训练中防御演示页面。R4 的 RabbitMQ、Transactional Outbox、独立 Worker、
+消费账本与死信重放已实现，默认仍为 `dispatch.mode=db`；实现验收在隔离真实 Broker 环境通过，
+单机 db/rabbit 启停演练通过，生产多机部署未验收（见 `21` §16、`26` §5）。
 
-旧 `eladmin` 和 `eladmin-web` 不删除，继续作为业务回归和回滚基线。新后端默认使用
+旧 `eladmin` 和 `eladmin-web` 已归档到 Tag `migration-r4-verified` 与 `legacy` 分支；归档提交 `7e31b3f` 已在当前开发分支删除，本地 `main` 尚未合入，需要回退或对照时从该 Tag/分支检出。新后端默认使用
 `8100` 端口，新前端默认使用 `8014` 端口。
 
 ## 3. 迁移阶段与当前结果
@@ -57,8 +66,17 @@ LDD 任务创建、启动、取消、重试、报告、日志、PNG 预览和按
 
 ### R3：旧模块隔离
 
-旧 `eladmin` 和 `eladmin-web` 暂不物理删除，作为回退和对照工程保留。迁移版主流程
-不依赖旧业务控制器；后续是否裁剪无关模块取决于论文答辩和部署需求。
+旧 `eladmin` 和 `eladmin-web` 已归档到 Tag `migration-r4-verified` 与 `legacy` 分支；迁移版主流程
+不依赖旧业务控制器，当前开发分支也不再保留旧目录（`main` 待合入归档提交）。归档只保存源码，不是功能删除；`sql/eladmin.sql` 仍保留供初始化和 MySQL IT 使用。
+
+### R4：可靠性调度迁移
+
+RabbitMQ、Transactional Outbox、独立 Worker、消费账本、死信重放、Worker 自动恢复与
+`RecoveryResult` 消费门均已实现；默认 `dispatch.mode=db`。2026-11-16 在真实 RabbitMQ 4.1.8 +
+隔离 MySQL + 双 JVM + 短 Python 桩下完成 R4-01..08 实现验收，包括 7s 延迟 confirm、
+db→rabbit→db 双向停机切换、旧 dead 与新 attempt 竞争。当时全量 287 单测 + 106 IT 通过（历史快照）；
+R4-04 长期 DB 故障/多任务退避仍是压力边界，生产库未迁移；正式 5 epochs 已于 2026-11-18 完成工程验收，
+论文效果未评估。因此当前表述为“实现验收通过（隔离）+ 单机启停演练通过，生产多机未验收”。
 
 ## 4. 兼容策略
 
@@ -84,8 +102,9 @@ LDD 任务创建、启动、取消、重试、报告、日志、PNG 预览和按
 
 ## 6. 迁移后质量门禁
 
-- 后端：`mvn -B -f migration-backend/pom.xml verify`，运行迁移版测试。
+- 后端：`mvn -B -f migration-backend/pom.xml verify`，运行迁移版测试；当前本轮已验证的后端单测为 **351 项**（2026-11-19，`tmp/clean-backend-test.log`），历史 `287 单测 + 106 IT` 是 2026-11-16 快照（`tmp/stage2-full-verify-new.log`）；126 IT 本轮未复跑，不能写成“本轮通过”。提交 `ee10704`/`cd5a6ae` 的 run `43846823071` 是历史 CI，不冒充本轮。
 - 前端：在 `migration-frontend/` 执行 `npm ci` 和 `npm run build`。
 - CI 检查迁移版后端和前端；普通构建不依赖本机数据库、Redis 或 GPU，MySQL 集成测试在 CI MySQL 8.4 service 中运行。
 - CI 中的后端验证包含应用 YAML 解析测试；它只校验配置语法，不代表运行环境、凭据或数据库连通性已经验证。
 - 新增领域功能时同步更新对应 SDD 的实现状态、验收标准和测试说明；旧版 ELADMIN 测试不计入迁移版覆盖。
+<!-- /knowledge:historical -->

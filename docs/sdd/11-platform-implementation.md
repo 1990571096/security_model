@@ -1,10 +1,17 @@
 # 当前平台实现说明
 
+当前登录为用户名、密码加 JWT。创建请求返回 `taskId` 并保留 `pending`，用户确认后再发独立启动请求。以 `runId` 和 `attempt` 连起派发意图、执行快照与结果，以 `exportId` 追踪独立 ZIP 导出。[实现指南](../project-implementation-guide.md) · [贯穿案例](../learning/00-one-experiment.md)
+
+## 历史记录
+
+<!-- knowledge:historical -->
 更新时间：2026-10-26
 
 ## 1. 文档目的
 
 本文档记录“面向数据清洗的安全模型训练系统”当前已落地的平台实现，用于指导后续功能迭代、论文系统说明和答辩演示准备。
+
+> 事实基线：本文正文形成于 2026-10-26，描述 R1/R2 及更早的平台实现。R3 调度意图与启动恢复、R4 Outbox/RabbitMQ/独立 Worker、R6 知识检索、R7 受控助手之后的当前事实，唯一以 `26-current-delivery-facts.md` 为准；`01-system-scope.md`、`17-agent-development-guide.md`、`20-stage-execution-and-acceptance.md` §6.8、`21-r4-outbox-rabbitmq-design.md` §16 提供设计/历史细节。本文未同步的旧句不得当作当前能力。
 
 本文档描述的是当前工程版本的实际能力，不将规划中的功能、后续拟接入算法或工程验证结果表述为已完成的论文实验结论。
 
@@ -14,7 +21,7 @@
 
 当前平台负责：
 
-- 管理数据集、模型、算法和超参数模板等实验资源。
+- 管理数据集、算法和超参数模板等实验资源（模型资源当前无接口）。
 - 创建、校验、启动和查询训练前防御任务。
 - 通过统一执行器调用外部 Python 算法。
 - 将算法过程和结构化结果保存至任务记录，并在前端展示。
@@ -35,7 +42,7 @@
 | --- | --- |
 | 前端 | Vue 3、Vite、Element Plus、Pinia、Vue Router 4 |
 | 后端 | Java 17、Spring Boot 3.5、Spring Security 6、JWT、MyBatis-Plus |
-| 数据与状态 | MySQL 作为事实源；Redis 缓存资源目录；消息队列尚未接入 |
+| 数据与状态 | MySQL 作为事实源；Redis 缓存资源目录；R4 RabbitMQ/Outbox 代码已接入但默认关闭，2026-11-16 真实 Broker 完成 R4-01..08 实现验收（隔离），2026-11-18 完成单机 db/rabbit 启停演练；生产多机未验收（详见 `26-current-delivery-facts.md` §5、`21` §16、`20` §6.8） |
 | 算法运行时 | Python、PyTorch、外部 VaB 算法工程 |
 | 构建工具 | Maven、npm |
 
@@ -48,16 +55,20 @@ security_model
 ├── migration-backend/               Spring Boot 3 / Java 17 后端
 ├── migration-frontend/              Vue 3 / Vite 前端
 ├── algorithm-runtime/vab/           VaB 外部算法适配器
-├── eladmin/                         旧后端回退基线
-├── eladmin-web/                     旧前端回退基线
 ├── docs/sdd/                        SDD 设计与运行文档
-└── sql/                             数据库初始化和演示数据脚本
+└── sql/                             数据库初始化和演示数据脚本（含保留的 eladmin.sql）
 ```
+
+旧 `eladmin/`、`eladmin-web/` 已归档到 Tag `migration-r4-verified` 与 `legacy` 分支；归档提交 `7e31b3f` 已在当前开发分支删除，本地 `main` 尚未合入。
 
 ### 3.3 演示页面结构
 
 登录页使用后端验证码和 JWT 认证，不提供绕过后端认证的演示登录入口。资源目录、任务、报告、
-日志和审计页面以接口返回为准，接口失败时展示明确错误状态。
+日志、审计和导出页面以接口返回为准，接口失败时展示明确错误状态。
+
+**例外（2026-11-13 校正）**：工作台 `/dashboard`、案例库 `/cases`、运行监控 `/runtime-monitor`
+三页的内容是前端硬编码演示数据（包括累计任务数、攻击成功率、RTX 3090 节点利用率），不对应
+任何后端接口，也不代表真实实验指标或真实硬件状态。详见 `09-project-status.md` 第 5 节。
 
 | 页面 | 路径 | 说明 |
 | --- | --- | --- |
@@ -80,7 +91,7 @@ security_model
 | 对象 | 业务含义 | 当前用途 |
 | --- | --- | --- |
 | 数据集 | 训练或清洗任务所使用的数据目录及说明 | 为算法提供本地数据集根目录 |
-| 模型 | 任务关联的模型资源 | 训练前任务可登记模型信息；LDD 当前主要使用 VaB 内部模型流程 |
+| 模型 | 任务关联的模型资源 | **当前无对应接口**：迁移版没有模型管理 API，训练前任务不使用模型资源；原 ELADMIN 模型表仅作历史数据保留 |
 | 算法 | 可调用的防御算法及其实现路径、默认配置和参数 schema | 当前真实路径为 `vab://pre-defense/ldd` |
 | 超参数模板 | 可复用的算法配置 JSON | 覆盖算法默认配置，形成单次任务有效配置 |
 | 训练前防御任务 | 一次数据风险检测和干净子集选择任务 | 记录状态、进度、输入快照和清洗结果 |
@@ -92,7 +103,7 @@ security_model
 
 ```text
 管理员登录平台
-  -> 登记数据集、算法、超参数模板和模型资源
+  -> 登记数据集、算法和超参数模板（模型资源当前未接入）
   -> 创建训练前防御任务
   -> 关联数据集、LDD 算法和超参数模板
   -> 保存为 pending 状态
@@ -120,7 +131,7 @@ security_model
   -> POST /api/pre-defense/start/{taskId}
   -> PreDefenseService
   -> DefenseTaskExecutor
-  -> PythonDefenseTaskExecutor
+  -> PythonLddTaskExecutor
   -> algorithm-runtime/vab/algorithm_entry.py
   -> 外部 VaB LDD 运行环境
   -> 任务专属结果目录
@@ -138,6 +149,13 @@ security_model
 只有一个请求可以把同一任务从 `pending` 原子领取为 `running`。每次启动生成新的 UUID
 `run_id` 和递增 `attempt`，进度、结果和结束回调必须匹配当前运行标识，旧运行或超时
 运行的迟到回调会被数据库条件更新自动忽略。
+
+请求可能被客户端重试。`POST /api/pre-defense`、`POST /api/pre-defense/start/{taskId}`、
+`POST /api/pre-defense/retry/{taskId}` 接受可选 `Idempotency-Key`（1–128 字符，按 owner
+账号隔离）：同键同请求返回首次响应，同键不同请求返回 409 `IDEMPOTENCY_KEY_REUSED`，
+并发处理中返回 409 `REQUEST_IN_PROGRESS`。不传该头时保持旧行为。领取事务同时写
+`sys_task_dispatch_intent`，事务提交后只有条件抢占 `pending -> submitting` 成功的调用者
+才会提交执行器；派发状态不确定时任务以 `DISPATCH_UNCERTAIN` 失败，不承诺恰好执行一次。
 
 执行失败时，执行器将错误码、失败原因、任务专属产物目录以及 stdout/stderr 日志路径写入
 结果 JSON，供前端在任务详情中定位执行现场。失败任务可以重试：平台只允许 `failed ->
@@ -174,8 +192,8 @@ GET  /api/pre-defense/cleaned-dataset/exports/{exportId}/download
 后端使用 `(task_id, isolation_ratio)` 唯一约束避免重复提交同一导出任务。导出任务自身使用
 `pending -> running -> success/failed` 状态，记录进度、产物、元数据和失败原因。当前迁移版
 没有导出任务启动恢复扫描：应用重启后遗留的导出 `running` 或 `pending` 记录不会由启动逻辑自动
-收敛或重新派发。旧的
-`GET /api/pre-defense/download-cleaned-dataset/{taskId}` 同步接口保留用于兼容。
+收敛或重新派发。迁移版**没有**保留旧的同步下载接口
+（`GET /api/pre-defense/download-cleaned-dataset/{taskId}` 不存在）；对外只有上述异步导出接口。
 
 导出过程不会直接下载索引文件：后端根据 LDD 产物中的 `selected_indices_<ratio>.npy`
 重建对应的原始 CIFAR-10 训练样本，并生成包含图片、标签、索引和元数据的 ZIP。
@@ -295,7 +313,7 @@ PyTorch/NumPy 版本、CUDA 版本、CUDA 可用性、设备数量和 GPU 型号
 ### 已完成
 
 - 安全训练工作台及训练前任务管理页面。
-- 数据集、模型、算法、超参数模板等基础资源管理。
+- 数据集、算法、超参数模板等基础资源管理（模型资源未接入）。
 - 训练前任务校验、启动、状态查询和结构化结果保存。
 - Python 本地进程执行器和 LDD VaB 适配器。
 - LDD 配置映射、任务隔离、结果产物收集和一次工程运行验证。
@@ -307,7 +325,7 @@ PyTorch/NumPy 版本、CUDA 版本、CUDA 可用性、设备数量和 GPU 型号
 - 失败或异常执行的任务专属请求文件、结果文件和 stdout/stderr 日志现场保留。
 - 运行中任务取消、事务提交后进程回收和 `canceled` 终态保护。
 - Python 结果协议必填字段、运行标识和失败字段校验。
-- 导出任务唯一性、失败重试和临时文件保护；导出任务启动恢复尚未实现。
+- 导出任务唯一性、失败重试和临时文件保护；导出任务启动恢复已在 R2 落地（`ExportRecoveryRunner`，见 `09-project-status.md` §5.13）。
 - 任务产物真实路径 containment 校验，覆盖 PNG、日志、索引和 ZIP 文件。
 - 三大防御阶段展示页、阶段切换、算法卡片、输入输出说明和接入状态。
 - 数据集与算法资源新增/编辑表单，包含字段分组、校验和页面交互；资源写入能力以迁移版 API 实际支持范围为准。
@@ -346,3 +364,4 @@ PyTorch/NumPy 版本、CUDA 版本、CUDA 可用性、设备数量和 GPU 型号
 - [算法执行器契约](07-executor-contract.md)
 - [项目目标与阶段进度说明](09-project-status.md)
 - [VaB 训练前防御算法集成说明](10-vab-integration.md)
+<!-- /knowledge:historical -->

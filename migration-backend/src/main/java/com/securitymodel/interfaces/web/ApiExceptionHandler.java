@@ -7,9 +7,11 @@ import jakarta.servlet.http.HttpServletRequest;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import com.securitymodel.application.audit.AdminRequiredException;
 import com.securitymodel.application.task.TaskCommandException;
 import com.securitymodel.application.resource.ResourceConflictException;
 import com.securitymodel.application.resource.ResourceNotFoundException;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -21,9 +23,23 @@ public class ApiExceptionHandler {
 
     private static final Logger log = LoggerFactory.getLogger(ApiExceptionHandler.class);
 
+    @ExceptionHandler(com.securitymodel.application.export.CleanSubsetExportService.ExportFileUnavailableException.class)
+    public ResponseEntity<Map<String, Object>> exportFileUnavailable(RuntimeException exception) {
+        return ResponseEntity.status(HttpStatus.GONE).body(Map.of(
+                "code", "EXPORT_FILE_UNAVAILABLE", "message", exception.getMessage()));
+    }
+
     @ExceptionHandler(ResourceNotFoundException.class)
     public ResponseEntity<Map<String, Object>> handleNotFound(ResourceNotFoundException exception) {
         return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of("code", "RESOURCE_NOT_FOUND",
+                "message", exception.getMessage()));
+    }
+
+    @ExceptionHandler(com.securitymodel.application.task.IdempotencyConflictException.class)
+    public ResponseEntity<Map<String, Object>> handleIdempotencyConflict(
+            com.securitymodel.application.task.IdempotencyConflictException exception) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(Map.of(
+                "code", exception.getCode(),
                 "message", exception.getMessage()));
     }
 
@@ -33,6 +49,18 @@ public class ApiExceptionHandler {
                 "message", exception.getMessage()));
     }
 
+    @ExceptionHandler(com.securitymodel.application.assistant.AssistantException.class)
+    public ResponseEntity<Map<String, Object>> handleAssistant(
+            com.securitymodel.application.assistant.AssistantException exception,
+            HttpServletRequest request) {
+        return ResponseEntity.status(exception.getStatus()).body(Map.of(
+                "code", exception.getCode(),
+                "message", exception.getMessage() == null ? "助手请求失败" : exception.getMessage(),
+                "path", request.getRequestURI(),
+                "timestamp", OffsetDateTime.now().toString()
+        ));
+    }
+
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public ResponseEntity<Map<String, Object>> handleValidation(MethodArgumentNotValidException exception) {
         var error = exception.getBindingResult().getFieldError();
@@ -40,12 +68,36 @@ public class ApiExceptionHandler {
                 "message", error == null ? "请求字段无效" : error.getField() + ": " + error.getDefaultMessage()));
     }
 
+    @ExceptionHandler(AdminRequiredException.class)
+    public ResponseEntity<Map<String, Object>> handleAdminRequired(
+            AdminRequiredException exception,
+            HttpServletRequest request) {
+        return ResponseEntity.status(HttpStatus.FORBIDDEN).body(Map.of(
+                "code", "ADMIN_REQUIRED",
+                "message", exception.getMessage(),
+                "path", request.getRequestURI(),
+                "timestamp", OffsetDateTime.now().toString()
+        ));
+    }
+
+    @ExceptionHandler(AccessDeniedException.class)
+    public ResponseEntity<Map<String, Object>> handleAccessDenied(
+            AccessDeniedException exception,
+            HttpServletRequest request) {
+        return ResponseEntity.status(HttpStatus.FORBIDDEN).body(Map.of(
+                "code", "ACCESS_DENIED",
+                "message", exception.getMessage(),
+                "path", request.getRequestURI(),
+                "timestamp", OffsetDateTime.now().toString()
+        ));
+    }
+
     @ExceptionHandler(TaskCommandException.class)
     public ResponseEntity<Map<String, Object>> handleTaskCommand(
             TaskCommandException exception,
             HttpServletRequest request) {
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Map.of(
-                "code", "TASK_COMMAND_INVALID",
+                "code", exception.getCode() == null ? "TASK_COMMAND_INVALID" : exception.getCode(),
                 "message", exception.getMessage(),
                 "path", request.getRequestURI(),
                 "timestamp", OffsetDateTime.now().toString()

@@ -9,13 +9,21 @@ import com.securitymodel.application.audit.OperationAuditService;
 import com.securitymodel.application.resource.ResourceQueryService;
 import com.securitymodel.domain.algorithm.Algorithm;
 import com.securitymodel.domain.dataset.Dataset;
+import com.securitymodel.domain.dataset.VabCifarDataset;
+import com.securitymodel.domain.dataset.VabGtsrbDataset;
+import com.securitymodel.domain.dataset.VabTinyImageNetDataset;
 import com.securitymodel.domain.hyper.Hyper;
+import com.securitymodel.domain.lease.GpuLease;
 import com.securitymodel.domain.task.PreDefenseTask;
+import com.securitymodel.domain.task.TaskDispatchIntent;
 import com.securitymodel.infrastructure.executor.DefenseTaskExecutor;
 import com.securitymodel.infrastructure.persistence.mapper.PreDefenseTaskMapper;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.nio.file.InvalidPathException;
+import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.util.Collection;
 import java.util.LinkedHashMap;
@@ -33,11 +41,19 @@ public class PreDefenseTaskCommandService {
     private final DefenseTaskExecutor defenseTaskExecutor;
     private final LddConfigurationPolicy lddConfigurationPolicy;
     private final TaskExecutionQuotaPolicy taskExecutionQuotaPolicy;
+    private final GpuLeaseService gpuLeaseService;
     private final ExecutionFingerprintService executionFingerprintService;
     private final AfterCommitTaskDispatcher afterCommitTaskDispatcher;
+    private final TaskCancellationDispatcher taskCancellationDispatcher;
     private final ObjectMapper objectMapper;
     private final OperationAuditService operationAuditService;
     private final CurrentUserService currentUserService;
+    private final TaskAccessGuard taskAccessGuard;
+    private final SchedulingReadinessGate readinessGate;
+    private final TaskDispatchIntentService dispatchIntentService;
+    private final TaskDispatchCoordinator dispatchCoordinator;
+    private final DispatchRuntimePolicy dispatchRuntimePolicy;
+    private final TaskOutboxService taskOutboxService;
 
     public PreDefenseTaskCommandService(
             PreDefenseTaskMapper taskMapper,
@@ -45,38 +61,89 @@ public class PreDefenseTaskCommandService {
             DefenseTaskExecutor defenseTaskExecutor,
             LddConfigurationPolicy lddConfigurationPolicy,
             TaskExecutionQuotaPolicy taskExecutionQuotaPolicy,
+            GpuLeaseService gpuLeaseService,
             ExecutionFingerprintService executionFingerprintService,
             AfterCommitTaskDispatcher afterCommitTaskDispatcher,
             ObjectMapper objectMapper,
             OperationAuditService operationAuditService,
-            CurrentUserService currentUserService) {
+            CurrentUserService currentUserService,
+            TaskAccessGuard taskAccessGuard,
+            SchedulingReadinessGate readinessGate,
+            TaskDispatchIntentService dispatchIntentService,
+            TaskDispatchCoordinator dispatchCoordinator) {
+        this(taskMapper, resourceQueryService, defenseTaskExecutor, lddConfigurationPolicy,
+                taskExecutionQuotaPolicy, gpuLeaseService, executionFingerprintService,
+                afterCommitTaskDispatcher, objectMapper, operationAuditService, currentUserService,
+                taskAccessGuard, readinessGate, dispatchIntentService, dispatchCoordinator,
+                new TaskCancellationDispatcher(), new DispatchRuntimePolicy(), null);
+    }
+
+    @Autowired
+    public PreDefenseTaskCommandService(
+            PreDefenseTaskMapper taskMapper,
+            ResourceQueryService resourceQueryService,
+            DefenseTaskExecutor defenseTaskExecutor,
+            LddConfigurationPolicy lddConfigurationPolicy,
+            TaskExecutionQuotaPolicy taskExecutionQuotaPolicy,
+            GpuLeaseService gpuLeaseService,
+            ExecutionFingerprintService executionFingerprintService,
+            AfterCommitTaskDispatcher afterCommitTaskDispatcher,
+            ObjectMapper objectMapper,
+            OperationAuditService operationAuditService,
+            CurrentUserService currentUserService,
+            TaskAccessGuard taskAccessGuard,
+            SchedulingReadinessGate readinessGate,
+            TaskDispatchIntentService dispatchIntentService,
+            TaskDispatchCoordinator dispatchCoordinator,
+            TaskCancellationDispatcher taskCancellationDispatcher,
+            DispatchRuntimePolicy dispatchRuntimePolicy,
+            TaskOutboxService taskOutboxService) {
         this.taskMapper = taskMapper;
         this.resourceQueryService = resourceQueryService;
         this.defenseTaskExecutor = defenseTaskExecutor;
         this.lddConfigurationPolicy = lddConfigurationPolicy;
         this.taskExecutionQuotaPolicy = taskExecutionQuotaPolicy;
+        this.gpuLeaseService = gpuLeaseService;
         this.executionFingerprintService = executionFingerprintService;
         this.afterCommitTaskDispatcher = afterCommitTaskDispatcher;
+        this.taskCancellationDispatcher = taskCancellationDispatcher;
         this.objectMapper = objectMapper;
         this.operationAuditService = operationAuditService;
         this.currentUserService = currentUserService;
+        this.taskAccessGuard = taskAccessGuard;
+        this.readinessGate = readinessGate;
+        this.dispatchIntentService = dispatchIntentService;
+        this.dispatchCoordinator = dispatchCoordinator;
+        this.dispatchRuntimePolicy = dispatchRuntimePolicy;
+        this.taskOutboxService = taskOutboxService;
     }
 
     @Transactional(rollbackFor = Exception.class)
     public PreDefenseTask create(PreDefenseTaskCommand command) {
-        validateCommand(command);
+        return create(command, null);
+    }
+
+    /** Assistant path: reject a confirmation whose resource/parameter contract changed. */
+    @Transactional(rollbackFor = Exception.class)
+    public PreDefenseTask create(PreDefenseTaskCommand command, String expectedFingerprint) {
+        TaskExecutionPlan plan = requireApprovedPlan(command, expectedFingerprint);
         if (taskMapper.selectCount(Wrappers.<PreDefenseTask>lambdaQuery()
                 .eq(PreDefenseTask::getTaskName, command.getTaskName())) > 0) {
             throw new TaskCommandException("任务名称已存在");
         }
 
         PreDefenseTask task = new PreDefenseTask();
+        // Persist the exact approved final config, not the raw override fragment. Later
+        // edits to catalog defaults cannot silently reinterpret this task's parameters.
+        command.setCustomParams(plan.finalParameters().toString());
         applyCommand(task, command);
         task.setStatus("pending");
         task.setProgress(0);
-        String operator = currentUserService.username();
-        task.setCreateBy(operator);
-        task.setUpdateBy(operator);
+        var identity = currentUserService.requireStableIdentity();
+        task.setCreateBy(identity.username());
+        task.setUpdateBy(identity.username());
+        task.setOwnerUserId(identity.userId());
+        task.setDataOrigin("user");
         task.setCreateTime(LocalDateTime.now());
         task.setUpdateTime(task.getCreateTime());
         taskMapper.insert(task);
@@ -87,8 +154,8 @@ public class PreDefenseTaskCommandService {
 
     @Transactional(rollbackFor = Exception.class)
     public PreDefenseTask update(Long taskId, PreDefenseTaskCommand command) {
-        validateCommand(command);
-        PreDefenseTask task = findRequired(taskId);
+        resolveCommand(command);
+        PreDefenseTask task = lockOwned(taskId);
         if (!"pending".equals(task.getStatus())) {
             throw new TaskCommandException("只有等待中的任务才能编辑");
         }
@@ -102,7 +169,11 @@ public class PreDefenseTaskCommandService {
         applyCommand(task, command);
         task.setUpdateBy(currentUserService.username());
         task.setUpdateTime(LocalDateTime.now());
-        taskMapper.updateById(task);
+        // The row lock above serializes this write against start/delete; the status predicate
+        // is a second guard so a stale entity can never write a running task back to pending.
+        if (taskMapper.updatePendingFields(task) != 1) {
+            throw new TaskCommandException("任务状态已变化，请刷新后重试");
+        }
         operationAuditService.recordTask(
                 taskId, "UPDATE", "pending", task.getStatus(), command, "编辑 LDD 清洗任务");
         return findRequired(taskId);
@@ -113,14 +184,19 @@ public class PreDefenseTaskCommandService {
         if (taskIds == null || taskIds.isEmpty()) {
             throw new TaskCommandException("任务ID列表不能为空");
         }
-        List<PreDefenseTask> tasks = taskMapper.selectBatchIds(taskIds);
-        if (tasks.size() != taskIds.size()) {
+        // Deterministic order prevents two concurrent multi-row deletes from deadlocking.
+        List<Long> orderedIds = taskIds.stream().distinct().sorted().toList();
+        List<PreDefenseTask> tasks = taskMapper.selectBatchForUpdate(orderedIds);
+        if (tasks.size() != orderedIds.size()) {
             throw new TaskCommandException("存在不存在的任务");
         }
+        tasks.forEach(taskAccessGuard::requireOwner);
         if (tasks.stream().anyMatch(task -> "running".equals(task.getStatus()))) {
             throw new TaskCommandException("运行中的任务不能删除");
         }
-        taskMapper.deleteBatchIds(taskIds);
+        if (taskMapper.deleteBatchIds(orderedIds) != orderedIds.size()) {
+            throw new TaskCommandException("任务状态已变化，请刷新后重试");
+        }
         tasks.forEach(task -> operationAuditService.recordTask(
                 task.getTaskId(), "DELETE", task.getStatus(), "deleted",
                 Map.of("taskId", task.getTaskId()), "删除 LDD 清洗任务"));
@@ -128,11 +204,18 @@ public class PreDefenseTaskCommandService {
 
     @Transactional(rollbackFor = Exception.class)
     public Map<String, Object> start(Long taskId) {
-        PreDefenseTask task = findRequired(taskId);
+        return start(taskId, null);
+    }
+
+    /** Assistant path: the approved resource/parameter fingerprint must still match. */
+    @Transactional(rollbackFor = Exception.class)
+    public Map<String, Object> start(Long taskId, String expectedFingerprint) {
+        PreDefenseTask task = lockOwned(taskId);
         if (!"pending".equals(task.getStatus())) {
             throw new TaskCommandException("只有等待中的任务才能启动");
         }
-        launchTask(task);
+        TaskExecutionPlan plan = requireApprovedPlan(task, expectedFingerprint);
+        launchTask(task, plan);
         operationAuditService.recordTask(
                 taskId, "START", "pending", "running",
                 Map.of("taskId", taskId), "启动 LDD 清洗任务");
@@ -141,14 +224,21 @@ public class PreDefenseTaskCommandService {
 
     @Transactional(rollbackFor = Exception.class)
     public Map<String, Object> retry(Long taskId) {
-        PreDefenseTask task = findRequired(taskId);
+        return retry(taskId, null);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public Map<String, Object> retry(Long taskId, String expectedFingerprint) {
+        PreDefenseTask task = lockOwned(taskId);
         if (!"failed".equals(task.getStatus())) {
             throw new TaskCommandException("只有失败的任务才能重试");
         }
+        TaskExecutionPlan plan = requireApprovedPlan(task, expectedFingerprint);
+        requireLocalExecutionConfigured();
         if (taskMapper.resetForRetry(taskId) != 1) {
             throw new TaskCommandException("任务状态已变化，请刷新后重试");
         }
-        launchTask(findRequired(taskId));
+        launchTask(task, plan);
         operationAuditService.recordTask(
                 taskId, "RETRY", "failed", "running",
                 Map.of("taskId", taskId), "重试 LDD 清洗任务");
@@ -157,7 +247,7 @@ public class PreDefenseTaskCommandService {
 
     @Transactional(rollbackFor = Exception.class)
     public Map<String, Object> cancel(Long taskId) {
-        PreDefenseTask task = findRequired(taskId);
+        PreDefenseTask task = lockOwned(taskId);
         if (!"running".equals(task.getStatus())) {
             throw new TaskCommandException("只有运行中的任务才能取消");
         }
@@ -169,61 +259,201 @@ public class PreDefenseTaskCommandService {
         if (updated != 1) {
             throw new TaskCommandException("任务状态已变化，请刷新后重试");
         }
-        afterCommitTaskDispatcher.dispatch(
-                () -> defenseTaskExecutor.cancelPreDefense(taskId, task.getCurrentRunId()),
-                null);
+        dispatchIntentService.abandon(taskId, task.getCurrentRunId(), task.getCurrentAttempt(),
+                "TASK_CANCELED", LocalDateTime.now());
+        if (dispatchRuntimePolicy.directDispatchOwnedByApi()) {
+            taskCancellationDispatcher.dispatch(
+                    () -> defenseTaskExecutor.cancelPreDefense(taskId, task.getCurrentRunId()));
+        }
+        // rabbit API has no local execution; the Worker's independent DB cancel monitor
+        // observes the committed canceled status and terminates its process tree.
         operationAuditService.recordTask(
                 taskId, "CANCEL", "running", "canceled",
                 Map.of("taskId", taskId), "取消 LDD 清洗任务");
         return Map.of("message", "LDD 任务已取消", "taskId", taskId);
     }
 
+    /** Read path used by the detail endpoint and the audit listing: owner, or admin cross-user read. */
     public PreDefenseTask findRequired(Long taskId) {
-        PreDefenseTask task = taskMapper.selectById(taskId);
+        return taskAccessGuard.requireReadable(taskId);
+    }
+
+    /**
+     * Validation-only entry for the assistant preview. It normalizes the mutable command
+     * exactly like create/update but never inserts or launches anything.
+     */
+    public PreDefenseTaskCommand validateDraft(PreDefenseTaskCommand command) {
+        resolveCommand(command);
+        return command;
+    }
+
+    /**
+     * Builds the exact, resource-bound contract a user is asked to approve. The same
+     * method is used at confirmation time, so an algorithm/template/dataset catalog
+     * change after preview invalidates the confirmation instead of silently changing
+     * what will actually run.
+     */
+    public TaskExecutionPlan plan(PreDefenseTask task) {
+        return plan(commandOf(task));
+    }
+
+    public TaskExecutionPlan plan(PreDefenseTaskCommand command) {
+        Resolution resolution = resolveCommand(command);
+        ObjectNode canonical = objectMapper.createObjectNode();
+        canonical.put("datasetId", resolution.dataset().getDatasetId());
+        canonical.put("datasetName", nullSafe(resolution.dataset().getDatasetName()));
+        canonical.put("datasetType", nullSafe(resolution.dataset().getDatasetType()));
+        canonical.put("datasetParseStatus", nullSafe(resolution.dataset().getParseStatus()));
+        canonical.put("datasetSampleCount", resolution.dataset().getSampleCount());
+        canonical.put("datasetFileSize", resolution.dataset().getFileSize());
+        canonical.put("datasetFilePath", nullSafe(resolution.dataset().getFilePath()));
+        canonical.put("datasetParseTime", nullSafe(resolution.dataset().getParseTime()));
+        canonical.put("datasetUpdateTime", nullSafe(resolution.dataset().getUpdateTime()));
+        canonical.put("algorithmId", resolution.algorithm().getAlgorithmId());
+        canonical.put("algorithmName", nullSafe(resolution.algorithm().getAlgorithmName()));
+        canonical.put("algorithmImplementationPath", nullSafe(resolution.algorithm().getImplementationPath()));
+        canonical.put("algorithmDefaultConfig", nullSafe(resolution.algorithm().getDefaultConfig()));
+        canonical.put("algorithmUpdateTime", nullSafe(resolution.algorithm().getUpdateTime()));
+        if (resolution.hyper() != null) {
+            canonical.put("hyperId", resolution.hyper().getTemplateId());
+            canonical.put("hyperName", nullSafe(resolution.hyper().getTemplateName()));
+            canonical.put("hyperParameterConfig", nullSafe(resolution.hyper().getParameterConfig()));
+            canonical.put("hyperUpdateTime", nullSafe(resolution.hyper().getUpdateTime()));
+        }
+        canonical.set("finalParameters", resolution.finalConfig());
+        String fingerprint = executionFingerprintService.sha256(canonical.toString());
+
+        ObjectNode preview = objectMapper.createObjectNode();
+        preview.put("configFingerprint", fingerprint);
+        preview.set("finalParameters", resolution.finalConfig().deepCopy());
+        ObjectNode datasetView = preview.putObject("dataset");
+        datasetView.put("datasetId", resolution.dataset().getDatasetId());
+        datasetView.put("name", nullSafe(resolution.dataset().getDatasetName()));
+        datasetView.put("type", nullSafe(resolution.dataset().getDatasetType()));
+        datasetView.put("sampleCount", resolution.dataset().getSampleCount());
+        datasetView.put("classCount", resolution.dataset().getClassCount());
+        ObjectNode algorithmView = preview.putObject("algorithm");
+        algorithmView.put("algorithmId", resolution.algorithm().getAlgorithmId());
+        algorithmView.put("name", nullSafe(resolution.algorithm().getAlgorithmName()));
+        algorithmView.put("type", nullSafe(resolution.algorithm().getAlgorithmType()));
+        algorithmView.put("defenseStage", nullSafe(resolution.algorithm().getDefenseStage()));
+        if (resolution.hyper() != null) {
+            ObjectNode hyperView = preview.putObject("hyper");
+            hyperView.put("hyperId", resolution.hyper().getTemplateId());
+            hyperView.put("name", nullSafe(resolution.hyper().getTemplateName()));
+        }
+        return new TaskExecutionPlan(fingerprint, resolution.finalConfig(), preview,
+                toDatasetRef(resolution.dataset(), resolution.runtimeDatasetPath()), toAlgorithmRef(resolution.algorithm()),
+                toHyperRef(resolution.hyper()));
+    }
+
+    private PreDefenseTask lockOwned(Long taskId) {
+        PreDefenseTask task = taskMapper.selectByIdForUpdate(taskId);
         if (task == null) {
             throw new TaskCommandException("任务不存在");
         }
+        taskAccessGuard.requireOwner(task);
         return task;
     }
 
-    private void validateCommand(PreDefenseTaskCommand command) {
+    private Resolution resolveCommand(PreDefenseTaskCommand command) {
         if (command == null || command.getTaskName() == null
                 || command.getTaskName().isBlank()) {
-            throw new TaskCommandException("任务名称不能为空");
+            throw new TaskCommandException("TASK_NAME_REQUIRED", "任务名称不能为空");
         }
         if (command.getDatasetId() == null) {
-            throw new TaskCommandException("数据集ID不能为空");
+            throw new TaskCommandException("DATASET_REQUIRED", "数据集ID不能为空");
         }
         if (command.getAlgorithmId() == null) {
-            throw new TaskCommandException("算法ID不能为空");
+            throw new TaskCommandException("ALGORITHM_REQUIRED", "算法ID不能为空");
         }
 
-        Dataset dataset = resourceQueryService.findDataset(command.getDatasetId());
+        Dataset dataset = resourceQueryService.findDatasetAuthoritative(command.getDatasetId());
         if (dataset == null || !Boolean.TRUE.equals(dataset.getEnabled())
                 || !"success".equals(dataset.getParseStatus())) {
-            throw new TaskCommandException("指定的数据集不存在或未解析成功");
+            throw new TaskCommandException("DATASET_UNAVAILABLE", "指定的数据集不存在或未解析成功");
         }
 
-        Algorithm algorithm = resourceQueryService.findAlgorithm(command.getAlgorithmId());
+        Algorithm algorithm = resourceQueryService.findAlgorithmAuthoritative(command.getAlgorithmId());
         if (algorithm == null || !Boolean.TRUE.equals(algorithm.getEnabled())
                 || !"pre".equals(algorithm.getDefenseStage())
                 || !LDD_IMPLEMENTATION.equals(algorithm.getImplementationPath())) {
-            throw new TaskCommandException("当前平台仅开放已启用的 LDD 训练前防御算法");
+            throw new TaskCommandException("NOT_LDD_ALGORITHM",
+                    "当前平台仅开放已启用的 LDD 训练前防御算法");
         }
 
+        Hyper hyper = command.getHyperId() == null ? null : resourceQueryService.findHyper(command.getHyperId());
         if (command.getHyperId() != null) {
-            Hyper hyper = resourceQueryService.findHyper(command.getHyperId());
             if (hyper == null || !Boolean.TRUE.equals(hyper.getEnabled())
                     || !command.getAlgorithmId().equals(hyper.getAlgorithmId())) {
-                throw new TaskCommandException("超参数模板不存在、未启用或与 LDD 算法不匹配");
+                throw new TaskCommandException("HYPER_TEMPLATE_UNAVAILABLE",
+                        "超参数模板不存在、未启用或与 LDD 算法不匹配");
             }
         }
         normalizeParams(command);
-        Hyper hyper = command.getHyperId() == null ? null : resourceQueryService.findHyper(command.getHyperId());
-        lddConfigurationPolicy.mergeAndValidate(
+        Path selectedPath = datasetPath(dataset.getFilePath());
+        VabCifarDataset cifar = selectedPath == null ? null : VabCifarDataset.fromDirectory(selectedPath);
+        VabGtsrbDataset gtsrb = cifar == null ? VabGtsrbDataset.fromPath(selectedPath) : null;
+        if (cifar == null && gtsrb == null && selectedPath != null
+                && VabTinyImageNetDataset.fromDirectory(selectedPath) != null) {
+            throw new TaskCommandException("DATASET_RUNTIME_UNSUPPORTED",
+                    "当前 LDD 仅支持 CIFAR-10、CIFAR-100 和 GTSRB；Tiny ImageNet 可登记但暂不能创建 LDD 任务");
+        }
+        String inferredDataset = cifar != null ? cifar.parameterValue()
+                : (gtsrb != null ? VabGtsrbDataset.PARAMETER_VALUE : null);
+        ObjectNode finalConfig = lddConfigurationPolicy.normalizeAndValidate(
                 algorithm.getDefaultConfig(),
                 hyper == null ? null : hyper.getParameterConfig(),
-                command.getCustomParams());
+                command.getCustomParams(), inferredDataset);
+        String runtimePath = dataset.getFilePath();
+        Path runtimeRoot = cifar != null
+                ? selectedPath.getParent()
+                : (gtsrb != null ? gtsrb.runtimeRoot() : null);
+        if (runtimeRoot != null) {
+            if (finalConfig.has("data_path") && !matchesDatasetRoot(finalConfig.path("data_path").asText(), runtimeRoot)) {
+                throw new TaskCommandException("DATASET_PATH_MISMATCH", "LDD 参数 data_path 必须指向所选数据集的运行根目录");
+            }
+            runtimePath = runtimeRoot.toString();
+        }
+        return new Resolution(dataset, algorithm, hyper, finalConfig, runtimePath);
+    }
+
+    private static Path datasetPath(String path) {
+        if (path == null) return null;
+        try {
+            return Path.of(path).toAbsolutePath().normalize();
+        } catch (InvalidPathException exception) {
+            // Older resources may use non-local paths. Keep their existing configuration contract.
+            return null;
+        }
+    }
+
+    private static boolean matchesDatasetRoot(String path, Path root) {
+        try {
+            return Path.of(path).isAbsolute() && Path.of(path).normalize().equals(root);
+        } catch (InvalidPathException exception) {
+            return false;
+        }
+    }
+
+    private PreDefenseTaskCommand commandOf(PreDefenseTask task) {
+        PreDefenseTaskCommand command = new PreDefenseTaskCommand();
+        command.setTaskId(task.getTaskId());
+        command.setTaskName(task.getTaskName());
+        command.setDescription(task.getDescription());
+        command.setDatasetId(task.getDatasetId());
+        command.setAlgorithmId(task.getAlgorithmId());
+        command.setHyperId(task.getHyperId());
+        command.setCustomParams(task.getCustomParams());
+        return command;
+    }
+
+    private static String nullSafe(Object value) {
+        return value == null ? "" : String.valueOf(value);
+    }
+
+    private record Resolution(Dataset dataset, Algorithm algorithm, Hyper hyper,
+                              ObjectNode finalConfig, String runtimeDatasetPath) {
     }
 
     private void applyCommand(PreDefenseTask task, PreDefenseTaskCommand command) {
@@ -242,10 +472,11 @@ public class PreDefenseTaskCommandService {
                     command.getCustomParams() == null || command.getCustomParams().isBlank()
                             ? "{}" : command.getCustomParams());
         } catch (Exception exception) {
-            throw new TaskCommandException("自定义参数格式不正确，必须是 JSON 对象");
+            throw new TaskCommandException("PARAMETERS_MALFORMED",
+                    "自定义参数格式不正确，必须是 JSON 对象");
         }
         if (node == null || !node.isObject()) {
-            throw new TaskCommandException("自定义参数必须是 JSON 对象");
+            throw new TaskCommandException("PARAMETERS_MALFORMED", "自定义参数必须是 JSON 对象");
         }
         ObjectNode object = (ObjectNode) node;
         if (object.has("epochs") && !object.has("num_epochs")) {
@@ -256,49 +487,122 @@ public class PreDefenseTaskCommandService {
     }
 
     private void launchTask(PreDefenseTask task) {
-        validateTaskForLaunch(task);
-        DefenseTaskRequest request = buildExecutionRequest(task);
-        ObjectNode quota = taskExecutionQuotaPolicy.validateAndBuildSnapshot(task);
-        LocalDateTime startTime = LocalDateTime.now();
-        String snapshot = appendExecutionSnapshot(task.getExecutionSnapshot(), request, startTime, quota);
-        int claimed = taskMapper.claimForExecution(
-                task.getTaskId(), request.getRunId(), request.getAttempt(), startTime, snapshot);
-        if (claimed != 1) {
-            throw new TaskCommandException("任务状态已变化，请刷新后重试");
+        launchTask(task, plan(task));
+    }
+
+    /**
+     * Rabbit API never starts Python and therefore must not reject a valid command just
+     * because this JVM has no script configured; the Worker checks its own executor.
+     */
+    private void requireLocalExecutionConfigured() {
+        if (!dispatchRuntimePolicy.directDispatchOwnedByApi()) {
+            return;
         }
+        if (!defenseTaskExecutor.isConfigured()) {
+            throw new TaskCommandException("EXECUTOR_NOT_CONFIGURED",
+                    "EXECUTOR_NOT_CONFIGURED: 请检查 Python 脚本（SECURITY_MODEL_EXECUTOR_PYTHON_SCRIPT）、"
+                            + "解释器及执行工作区，任务状态未改变");
+        }
+    }
+
+    private void launchTask(PreDefenseTask task, TaskExecutionPlan approvedPlan) {
+        if (!readinessGate.isReady()) {
+            throw new TaskCommandException("SCHEDULING_NOT_READY: 启动恢复尚未完成，暂不接受新的执行请求");
+        }
+        if (dispatchRuntimePolicy.rabbitMode() && !dispatchRuntimePolicy.writesOutbox()) {
+            throw new TaskCommandException(
+                    "DISPATCH_ROLE_FORBIDDEN: 当前进程不是 API 角色，不能提交新的派发事务");
+        }
+        boolean rabbitApi = dispatchRuntimePolicy.writesOutbox();
+        if (rabbitApi && taskOutboxService == null) {
+            throw new TaskCommandException("DISPATCH_OUTBOX_UNAVAILABLE: Outbox 持久层未装配");
+        }
+        // db mode owns the local Python attempt. Refuse before nextAttempt/lease/snapshot/
+        // intent writes so a missing script leaves the task exactly as it was.
+        requireLocalExecutionConfigured();
+        int attempt = nextAttempt(task.getExecutionSnapshot());
+        String runId = UUID.randomUUID().toString();
+        // db: lease + task claim + intent share one transaction. rabbit: the API must not
+        // occupy the physical GPU while the message waits; the Worker acquires it later.
+        GpuLease lease = rabbitApi ? null
+                : gpuLeaseService.acquire(task.getTaskId(), runId, attempt);
+        DefenseTaskRequest request;
+        try {
+            request = buildExecutionRequest(task, runId, attempt, lease, approvedPlan);
+            ObjectNode quota = taskExecutionQuotaPolicy.validateAndBuildSnapshot(task);
+            LocalDateTime startTime = LocalDateTime.now();
+            String snapshot = appendExecutionSnapshot(task.getExecutionSnapshot(), request, startTime, quota, lease);
+            int claimed = taskMapper.claimForExecution(
+                    task.getTaskId(), request.getRunId(), request.getAttempt(), startTime, snapshot);
+            if (claimed != 1) {
+                throw new TaskCommandException("任务状态已变化，请刷新后重试");
+            }
+            ObjectNode runtime = executionFingerprintService.buildRuntimeSnapshot(request);
+            TaskDispatchIntent intent = dispatchIntentService.createPending(request,
+                    executionFingerprintService.sha256(runtime.toString()), startTime);
+            if (rabbitApi) {
+                taskOutboxService.createPending(request, intent, startTime, task.getOwnerUserId());
+            }
+        } catch (RuntimeException exception) {
+            // The DB transaction will roll the lease row back, but this JVM's in-memory
+            // heartbeat registry must also forget it or it may try to renew a dead lease.
+            if (lease != null) {
+                gpuLeaseService.forgetLocal(lease.getLeaseToken());
+            }
+            throw exception;
+        }
+        if (rabbitApi) {
+            // Relay publishes only after the command transaction commits. No Python is
+            // started in the API process for rabbit mode.
+            return;
+        }
+        // Dispatch runs only after commit; it is intentionally outside the rollback cleanup.
         afterCommitTaskDispatcher.dispatch(
-                () -> defenseTaskExecutor.runPreDefense(request),
-                error -> markDispatchFailure(request, error));
+                () -> dispatchCoordinator.dispatchAfterCommit(request),
+                null);
+    }
+
+    private TaskExecutionPlan requireApprovedPlan(PreDefenseTaskCommand command, String expectedFingerprint) {
+        TaskExecutionPlan plan = plan(command);
+        if (expectedFingerprint != null && !expectedFingerprint.isBlank()
+                && !expectedFingerprint.equals(plan.fingerprint())) {
+            throw new TaskCommandException("ASSISTANT_CONFIRMATION_STALE: 算法、模板或数据集已变化，请重新预览");
+        }
+        return plan;
+    }
+
+    private TaskExecutionPlan requireApprovedPlan(PreDefenseTask task, String expectedFingerprint) {
+        TaskExecutionPlan plan = plan(task);
+        if (expectedFingerprint != null && !expectedFingerprint.isBlank()
+                && !expectedFingerprint.equals(plan.fingerprint())) {
+            throw new TaskCommandException("ASSISTANT_CONFIRMATION_STALE: 算法、模板或数据集已变化，请重新预览");
+        }
+        return plan;
     }
 
     private void validateTaskForLaunch(PreDefenseTask task) {
-        PreDefenseTaskCommand command = new PreDefenseTaskCommand();
-        command.setTaskId(task.getTaskId());
-        command.setTaskName(task.getTaskName());
-        command.setDescription(task.getDescription());
-        command.setDatasetId(task.getDatasetId());
-        command.setAlgorithmId(task.getAlgorithmId());
-        command.setHyperId(task.getHyperId());
-        command.setCustomParams(task.getCustomParams());
-        validateCommand(command);
+        resolveCommand(commandOf(task));
     }
 
-    private DefenseTaskRequest buildExecutionRequest(PreDefenseTask task) {
-        Dataset dataset = resourceQueryService.findDataset(task.getDatasetId());
-        Algorithm algorithm = resourceQueryService.findAlgorithm(task.getAlgorithmId());
-        Hyper hyper = task.getHyperId() == null ? null : resourceQueryService.findHyper(task.getHyperId());
+    private DefenseTaskRequest buildExecutionRequest(PreDefenseTask task, String runId, int attempt,
+                                                     GpuLease lease, TaskExecutionPlan approvedPlan) {
+        // Build only from the approved plan. Re-querying the catalog here would allow the
+        // fingerprint check and the actual request to observe two different resource versions.
         return DefenseTaskRequest.builder()
                 .taskId(task.getTaskId())
-                .attempt(nextAttempt(task.getExecutionSnapshot()))
-                .runId(UUID.randomUUID().toString())
+                .attempt(attempt)
+                .runId(runId)
                 .taskName(task.getTaskName())
                 .stage("pre_defense")
                 .description(task.getDescription())
                 .createdBy(task.getCreateBy())
-                .customParams(task.getCustomParams())
-                .dataset(toDatasetRef(dataset))
-                .algorithm(toAlgorithmRef(algorithm))
-                .hyperParameter(toHyperRef(hyper))
+                .customParams(approvedPlan.finalParameters().toString())
+                .dataset(approvedPlan.dataset())
+                .algorithm(approvedPlan.algorithm())
+                .hyperParameter(approvedPlan.hyper())
+                .gpuLeaseToken(lease == null ? null : lease.getLeaseToken())
+                .gpuSlotId(lease == null ? null : lease.getSlotId())
+                .gpuFencingToken(lease == null ? null : lease.getFencingToken())
                 .build();
     }
 
@@ -306,7 +610,8 @@ public class PreDefenseTaskCommandService {
             String existingSnapshot,
             DefenseTaskRequest request,
             LocalDateTime startTime,
-            ObjectNode quota) {
+            ObjectNode quota,
+            GpuLease lease) {
         ObjectNode snapshot = objectMapper.createObjectNode();
         ArrayNode attempts = objectMapper.createArrayNode();
         if (existingSnapshot != null && !existingSnapshot.isBlank()) {
@@ -326,6 +631,15 @@ public class PreDefenseTaskCommandService {
         attempt.set("request", objectMapper.valueToTree(request));
         attempt.set("runtime", executionFingerprintService.buildRuntimeSnapshot(request));
         attempt.set("quota", quota);
+        if (lease == null) {
+            attempt.putNull("gpuLease");
+        } else {
+            ObjectNode gpuLease = objectMapper.createObjectNode();
+            gpuLease.put("slotId", lease.getSlotId());
+            gpuLease.put("fencingToken", lease.getFencingToken());
+            gpuLease.put("expiresAt", lease.getExpiresAt() == null ? null : lease.getExpiresAt().toString());
+            attempt.set("gpuLease", gpuLease);
+        }
         attempt.put("snapshotHash", executionFingerprintService.sha256(attempt.toString()));
         attempts.add(attempt);
         snapshot.put("version", 2);
@@ -347,12 +661,12 @@ public class PreDefenseTaskCommandService {
         }
     }
 
-    private DefenseResourceRef toDatasetRef(Dataset dataset) {
+    private DefenseResourceRef toDatasetRef(Dataset dataset, String runtimePath) {
         return DefenseResourceRef.builder()
                 .id(dataset.getDatasetId())
                 .name(dataset.getDatasetName())
                 .type(dataset.getDatasetType())
-                .path(dataset.getFilePath())
+                .path(runtimePath)
                 .build();
     }
 
@@ -379,27 +693,6 @@ public class PreDefenseTaskCommandService {
                 .configJson(hyper.getParameterConfig())
                 .schemaJson(hyper.getParameterSchema())
                 .build();
-    }
-
-    private void markDispatchFailure(DefenseTaskRequest request, RuntimeException error) {
-        LocalDateTime endTime = LocalDateTime.now();
-        Map<String, Object> result = new LinkedHashMap<>();
-        result.put("executor", "spring-taskAsync");
-        result.put("stage", "dispatch");
-        result.put("status", "failed");
-        result.put("message", "任务提交执行池失败");
-        result.put("run_id", request.getRunId());
-        result.put("attempt", request.getAttempt());
-        result.put("error_code", "TASK_QUEUE_FULL");
-        result.put("failure_reason", error.getMessage());
-        result.put("finished_at", endTime.toString());
-        result.put("artifacts", Map.of());
-        try {
-            taskMapper.failBeforeExecution(request.getTaskId(), request.getRunId(), request.getAttempt(),
-                    objectMapper.writeValueAsString(result), endTime);
-        } catch (Exception ignored) {
-            // Nothing more useful can be done from the rejection callback.
-        }
     }
 
     private String buildCanceledResult(PreDefenseTask task, LocalDateTime endTime) {

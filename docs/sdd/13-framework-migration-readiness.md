@@ -1,6 +1,14 @@
 # 框架迁移准备清单
 
+日常开发使用 Java 17 / Spring Boot 3 和 Vue 3 / Vite 工程。从根 README 选用当前构建与初始化步骤，迁移准备记录见下文。[构建与运行](../../README.md)
+
+## 历史记录
+
+<!-- knowledge:historical -->
 更新时间：2026-10-26
+
+> 本文是迁移就绪历史记录；当前测试计数、R4/单机部署状态和正式 5 epochs 边界以
+> [`26-current-delivery-facts.md`](26-current-delivery-facts.md) 为准。
 
 ## 1. 目标
 
@@ -90,7 +98,8 @@ Java 侧负责参数合并、资源校验、配额准入和快照，Python 侧�
 - 不在平台增强阶段同时修改数据库表结构和任务协议。
 - 不在迁移期间接入新的防御算法。
 - 不把本地单机配额描述成分布式 CPU、内存或 GPU 调度。
-- Redis 不作为迁移验收前置依赖，迁移版已将其用于可降级的资源目录缓存；Redisson 和消息队列未接入。
+- Redis 不作为迁移验收前置依赖，迁移版已将其用于可降级的资源目录缓存；Redisson 未接入。
+- 本条是迁移就绪评估时的范围：**RabbitMQ/Outbox/独立 Worker 后续已在 R4 实现**（默认 `dispatch.mode=db`，实现验收通过；单机启停演练通过，生产多机未验收），不再把“消息队列未接入”作为当前事实。见 `21-r4-outbox-rabbitmq-design.md`、`26` §5。
 
 ## 7. 验收标准
 
@@ -100,3 +109,4 @@ Java 侧负责参数合并、资源校验、配额准入和快照，Python 侧�
 - 清洗子集导出仍按索引重建并支持失败重试。
 - 新前端可独立使用新后端完成答辩演示流程；旧工程保留为回退基线。
 - `application.yml` 与 `application-local.yml` 可由 Spring Boot YAML 加载器解析；该检查验证配置语法，不代表已连接数据库或验证外部环境变量。
+<!-- /knowledge:historical -->

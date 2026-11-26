@@ -1,5 +1,6 @@
 package com.securitymodel.application.resource;
 
+import com.securitymodel.application.audit.AdminRequiredException;
 import com.securitymodel.application.audit.CurrentUserService;
 import com.securitymodel.application.audit.OperationAuditService;
 import com.securitymodel.domain.algorithm.Algorithm;
@@ -8,10 +9,15 @@ import com.securitymodel.infrastructure.cache.ResourceCatalogCache;
 import com.securitymodel.infrastructure.persistence.mapper.AlgorithmMapper;
 import com.securitymodel.infrastructure.persistence.mapper.DatasetMapper;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.springframework.dao.DuplicateKeyException;
+
+import java.nio.file.Files;
+import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 class ResourceCommandServiceTest {
@@ -32,6 +38,7 @@ class ResourceCommandServiceTest {
         assertEquals("CIFAR", dataset.getDatasetName());
         assertEquals("pending", dataset.getParseStatus());
         assertNull(dataset.getParseTime());
+        assertNull(dataset.getSampleCount());
         assertEquals("operator", dataset.getCreateBy());
         verify(datasets).insert(dataset);
         verify(audit).recordResource(eq("dataset"), any(), eq("CREATE"), eq("pending"), any());
@@ -43,12 +50,14 @@ class ResourceCommandServiceTest {
         existing.setDatasetId(4L);
         existing.setFilePath("old.zip");
         existing.setParseStatus("success");
-        when(datasets.selectById(4L)).thenReturn(existing);
+        existing.setSampleCount(50_000);
+        when(datasets.lockForUpdate(4L)).thenReturn(existing);
 
         Dataset updated = service.saveDataset(4L,
                 new ResourceCommandService.DatasetInput("CIFAR", "image", "new.zip", 1, 2, null, true));
 
         assertEquals("pending", updated.getParseStatus());
+        assertNull(updated.getSampleCount());
         verify(datasets).updateById(existing);
         verify(cache).evict(ResourceCatalogCache.DATASET_LIST, "security-model:resource:dataset:4");
     }
@@ -72,5 +81,119 @@ class ResourceCommandServiceTest {
         verify(algorithms).updateById(existing);
         verify(algorithms, never()).deleteById(9L);
         verify(cache).evict(ResourceCatalogCache.ALGORITHM_LIST, "security-model:resource:algorithm:9");
+    }
+
+    @Test
+    void nonAdminCannotMaintainSharedResources() {
+        doThrow(new AdminRequiredException("仅管理员可维护共享数据集"))
+                .when(user).requireAdmin();
+
+        assertThrows(AdminRequiredException.class, () -> service.saveDataset(null,
+                new ResourceCommandService.DatasetInput("CIFAR", "image", "test.zip", 1, 2, null, true)));
+        verifyNoInteractions(datasets, audit);
+    }
+
+    @Test
+    void verificationPromotesAReadableDirectory(@TempDir Path directory) throws Exception {
+        java.nio.file.Files.createFile(directory.resolve("cifar10.bin"));
+        Dataset existing = existingDataset(3L, directory.toString());
+        when(datasets.lockForUpdate(3L)).thenReturn(existing);
+        when(user.username()).thenReturn("admin");
+
+        Dataset verified = service.verifyDataset(3L);
+
+        assertEquals("success", verified.getParseStatus());
+        assertNotNull(verified.getParseTime());
+        assertTrue(verified.getParseMessage().contains("验证通过"));
+        verify(datasets).updateById(existing);
+        verify(audit).recordResource(eq("dataset"), eq(3L), eq("VERIFY"), eq("success"), any());
+    }
+
+    @Test
+    void verificationReportsMissingPathWithoutThrowing() {
+        Dataset existing = existingDataset(4L, "F:/security-model/definitely-missing-dataset");
+        when(datasets.lockForUpdate(4L)).thenReturn(existing);
+        when(user.username()).thenReturn("admin");
+
+        Dataset verified = service.verifyDataset(4L);
+
+        assertEquals("failed", verified.getParseStatus());
+        assertTrue(verified.getParseMessage().contains("路径不存在"));
+        assertNotNull(verified.getParseTime());
+        verify(datasets).updateById(existing);
+    }
+
+    @Test
+    void verificationRejectsAnEmptyDirectory(@TempDir Path directory) {
+        Dataset existing = existingDataset(5L, directory.toString());
+        when(datasets.lockForUpdate(5L)).thenReturn(existing);
+        when(user.username()).thenReturn("admin");
+
+        Dataset verified = service.verifyDataset(5L);
+
+        assertEquals("failed", verified.getParseStatus());
+        assertTrue(verified.getParseMessage().contains("目录为空"));
+    }
+
+    @Test
+    void verifiesTheRequiredCifar100FilesBeforeMakingTheDatasetAvailable(@TempDir Path root) throws Exception {
+        Path directory = Files.createDirectory(root.resolve("cifar-100-python"));
+        Files.writeString(directory.resolve("meta"), "metadata");
+        Files.writeString(directory.resolve("train"), "training data");
+        Files.createFile(directory.resolve("test"));
+        Dataset dataset = existingDataset(6L, directory.toString());
+        when(datasets.lockForUpdate(6L)).thenReturn(dataset);
+
+        assertEquals("failed", service.verifyDataset(6L).getParseStatus());
+        assertTrue(dataset.getParseMessage().contains("test"));
+
+        Files.writeString(directory.resolve("test"), "test data");
+        assertEquals("failed", service.verifyDataset(6L).getParseStatus());
+        assertTrue(dataset.getParseMessage().contains("校验和不匹配"));
+        assertNull(dataset.getSampleCount());
+    }
+
+    @Test
+    void verifiesGtsrbHdf5AndRecordsPublishedStatistics(@TempDir Path root) throws Exception {
+        Path datasetDirectory = Files.createDirectory(root.resolve("dataset"));
+        Path h5 = datasetDirectory.resolve("gtsrb_dataset.h5");
+        Files.write(h5, new byte[]{(byte) 0x89, 0x48, 0x44, 0x46, 0x0D, 0x0A, 0x1A, 0x0A, 0, 0});
+        Dataset dataset = existingDataset(7L, h5.toString());
+        when(datasets.lockForUpdate(7L)).thenReturn(dataset);
+        when(user.username()).thenReturn("admin");
+
+        Dataset verified = service.verifyDataset(7L);
+
+        assertEquals("success", verified.getParseStatus());
+        assertEquals(39_209, verified.getSampleCount());
+        assertEquals(43, verified.getClassCount());
+        assertEquals(3_072, verified.getFeatureCount());
+        assertTrue(verified.getParseMessage().contains("GTSRB HDF5 校验通过"));
+    }
+
+    @Test
+    void verifiesTinyImageNetDirectoryButKeepsRuntimeBoundaryExplicit(@TempDir Path root) throws Exception {
+        Path tiny = Files.createDirectory(root.resolve("tiny-imagenet-200"));
+        Files.writeString(tiny.resolve("wnids.txt"), "n01443537\n");
+        Files.createDirectory(tiny.resolve("train"));
+        Files.createDirectory(tiny.resolve("val"));
+        Dataset dataset = existingDataset(8L, tiny.toString());
+        when(datasets.lockForUpdate(8L)).thenReturn(dataset);
+        when(user.username()).thenReturn("admin");
+
+        Dataset verified = service.verifyDataset(8L);
+
+        assertEquals("success", verified.getParseStatus());
+        assertEquals(100_000, verified.getSampleCount());
+        assertEquals(200, verified.getClassCount());
+        assertTrue(verified.getParseMessage().contains("当前 LDD 暂不支持"));
+    }
+
+    private Dataset existingDataset(Long id, String path) {
+        Dataset dataset = new Dataset();
+        dataset.setDatasetId(id);
+        dataset.setFilePath(path);
+        dataset.setParseStatus("pending");
+        return dataset;
     }
 }

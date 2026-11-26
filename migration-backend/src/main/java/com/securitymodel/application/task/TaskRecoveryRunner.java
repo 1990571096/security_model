@@ -1,44 +1,56 @@
 package com.securitymodel.application.task;
 
-import com.securitymodel.infrastructure.persistence.mapper.PreDefenseTaskMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Component;
 
-import java.time.LocalDateTime;
-
 /**
- * Converts interrupted running records into explicit retryable failures after a restart.
+ * Startup entry point. In rabbit Worker mode it must acquire the single-machine ownership
+ * lock before recovery, and the consumer container is started only after recovery returns.
  */
 @Component
 public class TaskRecoveryRunner {
 
     private static final Logger log = LoggerFactory.getLogger(TaskRecoveryRunner.class);
-    private final PreDefenseTaskMapper taskMapper;
 
-    public TaskRecoveryRunner(PreDefenseTaskMapper taskMapper) {
-        this.taskMapper = taskMapper;
+    private final DispatchRecoveryCoordinator coordinator;
+    private final ObjectProvider<WorkerOwnershipLease> ownershipLease;
+    private final ObjectProvider<WorkerConsumerLifecycle> consumerLifecycle;
+
+    public TaskRecoveryRunner(DispatchRecoveryCoordinator coordinator) {
+        this(coordinator, null, null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public TaskRecoveryRunner(
+            DispatchRecoveryCoordinator coordinator,
+            ObjectProvider<WorkerOwnershipLease> ownershipLease,
+            ObjectProvider<WorkerConsumerLifecycle> consumerLifecycle) {
+        this.coordinator = coordinator;
+        this.ownershipLease = ownershipLease;
+        this.consumerLifecycle = consumerLifecycle;
     }
 
     @EventListener(ApplicationReadyEvent.class)
     public void recoverOrphanedTasks() {
-        var running = taskMapper.selectList(
-                com.baomidou.mybatisplus.core.toolkit.Wrappers.<com.securitymodel.domain.task.PreDefenseTask>lambdaQuery()
-                        .eq(com.securitymodel.domain.task.PreDefenseTask::getStatus, "running"));
-        int recovered = 0;
-        for (var task : running) {
-            String reason = "应用重启后未恢复的执行任务，可安全重试";
-            recovered += taskMapper.failOrphanedForRun(
-                    task.getTaskId(), task.getCurrentRunId(),
-                    "{\"executor\":\"security-model-platform\",\"stage\":\"recovery\",\"status\":\"failed\","
-                            + "\"message\":\"应用重启导致任务中断\",\"error_code\":\"EXECUTOR_RESTARTED\","
-                            + "\"failure_reason\":\"" + reason + "\",\"artifacts\":{}}",
-                    LocalDateTime.now());
+        WorkerOwnershipLease lease = ownershipLease == null ? null : ownershipLease.getIfAvailable();
+        if (lease != null && lease.ownershipRequired() && !lease.acquire()) {
+            // Do not run recovery or start the consumer without a stable Worker identity.
+            log.error("Worker 归属租约未取得，恢复与消费均不启动");
+            return;
         }
-        if (!running.isEmpty()) {
-            log.info("任务恢复扫描完成: scanned={}, recovered={}", running.size(), recovered);
+        DispatchRecoveryCoordinator.RecoveryResult result = coordinator.recoverAtStartup();
+        if (!result.safeToConsume()) {
+            log.error("启动恢复未完成安全分类，消费不开放: errors={}, localAccepted={}, quarantined={}",
+                    result.errors(), result.localAccepted(), result.quarantinedSlots());
+        }
+        WorkerConsumerLifecycle lifecycle = consumerLifecycle == null
+                ? null : consumerLifecycle.getIfAvailable();
+        if (lifecycle != null) {
+            lifecycle.startAfterRecovery(result);
         }
     }
 }

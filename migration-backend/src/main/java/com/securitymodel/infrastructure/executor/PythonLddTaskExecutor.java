@@ -17,6 +17,8 @@ import org.springframework.util.StringUtils;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import com.securitymodel.infrastructure.observability.TaskRuntimeMetrics;
+import org.slf4j.MDC;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.OffsetDateTime;
@@ -35,22 +37,63 @@ public class PythonLddTaskExecutor implements DefenseTaskExecutor {
     private final PreDefenseTaskMapper taskMapper;
     private final ObjectMapper objectMapper;
     private final ExecutionFingerprintService fingerprintService;
+    private final com.securitymodel.application.task.GpuLeaseService gpuLeaseService;
+    private final ExecutorArtifactPolicy artifactPolicy;
+    private final AttemptProcessRegistry processRegistry;
+    private final ExecutorProcessGuard processGuard;
+    private final TaskRuntimeMetrics runtimeMetrics;
     private final String pythonExecutable;
     private final String pythonScript;
     private final long timeoutSeconds;
     private final ConcurrentMap<String, Process> activeProcesses = new ConcurrentHashMap<>();
     private final java.util.Set<String> canceledRuns = ConcurrentHashMap.newKeySet();
 
+    @Override
+    public boolean isConfigured() {
+        String workspace = fingerprintService.getWorkspace();
+        if (!StringUtils.hasText(pythonScript) || !StringUtils.hasText(pythonExecutable)
+                || !StringUtils.hasText(workspace)) {
+            return false;
+        }
+        try {
+            Path workingDirectory = Path.of(workspace).toAbsolutePath().normalize();
+            if (!processRegistry.matchesWorkspace(workingDirectory)) {
+                return false;
+            }
+            Path script = workingDirectory.resolve(pythonScript);
+            if (!Files.isRegularFile(script) || !Files.isReadable(script)) {
+                return false;
+            }
+            // A bare interpreter name is resolved by the operating system on launch.
+            Path executable = Path.of(pythonExecutable);
+            return (executable.getParent() == null && !executable.isAbsolute())
+                    || Files.isExecutable(workingDirectory.resolve(executable))
+                    && Files.isRegularFile(workingDirectory.resolve(executable));
+        } catch (java.nio.file.InvalidPathException exception) {
+            return false;
+        }
+    }
+
     public PythonLddTaskExecutor(
             PreDefenseTaskMapper taskMapper,
             ObjectMapper objectMapper,
             ExecutionFingerprintService fingerprintService,
+            com.securitymodel.application.task.GpuLeaseService gpuLeaseService,
+            ExecutorArtifactPolicy artifactPolicy,
+            AttemptProcessRegistry processRegistry,
+            ExecutorProcessGuard processGuard,
+            TaskRuntimeMetrics runtimeMetrics,
             @Value("${security-model.executor.python.executable:python}") String pythonExecutable,
             @Value("${security-model.executor.python.script:}") String pythonScript,
             @Value("${security-model.executor.python.timeout-seconds:3600}") long timeoutSeconds) {
         this.taskMapper = taskMapper;
         this.objectMapper = objectMapper;
         this.fingerprintService = fingerprintService;
+        this.gpuLeaseService = gpuLeaseService;
+        this.artifactPolicy = artifactPolicy;
+        this.processRegistry = processRegistry;
+        this.processGuard = processGuard;
+        this.runtimeMetrics = runtimeMetrics;
         this.pythonExecutable = pythonExecutable;
         this.pythonScript = pythonScript;
         this.timeoutSeconds = timeoutSeconds;
@@ -59,11 +102,30 @@ public class PythonLddTaskExecutor implements DefenseTaskExecutor {
     @Override
     @Async("taskAsync")
     public void runPreDefense(DefenseTaskRequest request) {
+        executeAndWait(request);
+    }
+
+    /**
+     * Worker path: the caller blocks until this returns. The returned value is an audit
+     * outcome, not a command to ACK by itself; the consumer re-reads the MySQL terminal
+     * state before ACK.
+     */
+    @Override
+    public String executeAndWait(DefenseTaskRequest request) {
         String startedAt = OffsetDateTime.now().toString();
+        long metricsStarted = System.nanoTime();
+        String metricOutcome = "failed";
+        MDC.put("taskId", String.valueOf(request.getTaskId()));
+        MDC.put("runId", request.getRunId() == null ? "" : request.getRunId());
+        MDC.put("attempt", String.valueOf(request.getAttempt()));
         ExecutionContext context = null;
+        // invoke() rejects a blank script before writing request.json, before the pre-start
+        // process marker and before ProcessBuilder.start(), so no child can exist in that case.
+        boolean executorConfigured = StringUtils.hasText(pythonScript);
         try {
             if (isCanceled(request)) {
-                return;
+                metricOutcome = "canceled";
+                return metricOutcome;
             }
             context = createContext(request);
             updateProgress(request, 10);
@@ -71,21 +133,69 @@ public class PythonLddTaskExecutor implements DefenseTaskExecutor {
             String status = validateResult(result, request);
             persistResult(request, result);
             finish(request, status, "success".equals(status) ? 100 : 0);
+            metricOutcome = "success".equals(status) ? "success" : "failed";
         } catch (CanceledException exception) {
+            metricOutcome = "canceled";
             log.info("LDD task canceled: taskId={}, runId={}", request.getTaskId(), request.getRunId());
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
+            metricOutcome = "interrupted";
             if (!isCanceled(request)) {
                 fail(request, context, startedAt, "TASK_INTERRUPTED", "LDD 执行线程被中断");
             }
         } catch (Exception exception) {
+            metricOutcome = "failed";
             if (!isCanceled(request)) {
                 fail(request, context, startedAt, classify(exception), stripCode(exception.getMessage()));
                 log.error("LDD task failed: taskId={}, runId={}", request.getTaskId(), request.getRunId(), exception);
+            } else {
+                metricOutcome = "canceled";
             }
         } finally {
+            MDC.remove("taskId");
+            MDC.remove("runId");
+            MDC.remove("attempt");
+            runtimeMetrics.recordExecution(metricOutcome, System.nanoTime() - metricsStarted);
             canceledRuns.remove(request.getRunId());
+            Process process = activeProcesses.remove(request.getRunId());
+            Path taskDir = context == null ? null : context.taskDir;
+            boolean cleanupDecisionComplete = false;
+            try {
+                // Never release the slot while any known executor process may still be alive.
+                // When the executor was never configured nothing was started, so probing the
+                // tree would only produce a missing-record UNKNOWN and quarantine the slot
+                // forever; release the lease directly instead. The same rule applies when
+                // the pre-start record fails: no child was started, so there is no tree to
+                // probe.
+                boolean processStarted = context != null && context.processStarted;
+                boolean treeGone = !executorConfigured || !processStarted
+                        || processGuard.ensureGone(process, taskDir, 3000, true);
+                if (context != null) {
+                    artifactPolicy.finalizeAttempt(context.taskDir);
+                }
+                if (treeGone) {
+                    gpuLeaseService.releaseQuietly(request.getGpuLeaseToken());
+                } else {
+                    gpuLeaseService.markBlocked(request.getTaskId(), request.getRunId(),
+                            "EXECUTOR_TREE_ALIVE");
+                    log.error("执行进程树未确认退出，GPU 槽位已隔离: taskId={}, runId={}",
+                            request.getTaskId(), request.getRunId());
+                }
+                cleanupDecisionComplete = true;
+            } finally {
+                // The accepted marker is the consumer's barrier: it may be cleared only after
+                // process-tree, artifact and GPU-slot decisions have completed. If any of them
+                // throws, keep the marker so intake cannot reopen and a later recovery retries.
+                if (cleanupDecisionComplete) {
+                    processRegistry.clearAccepted(request.getTaskId(), request.getRunId(),
+                            request.getAttempt());
+                } else {
+                    log.error("执行清理未完成，保留 accepted 标记阻止消费重开: taskId={}, runId={}",
+                            request.getTaskId(), request.getRunId());
+                }
+            }
         }
+        return metricOutcome;
     }
 
     @Override
@@ -115,7 +225,7 @@ public class PythonLddTaskExecutor implements DefenseTaskExecutor {
     private String invoke(DefenseTaskRequest request, ExecutionContext context)
             throws IOException, InterruptedException, CanceledException {
         if (!StringUtils.hasText(pythonScript)) {
-            throw new IllegalStateException("EXECUTOR_NOT_CONFIGURED: 未配置 SECURITY_MODEL_PYTHON_SCRIPT");
+            throw new IllegalStateException("EXECUTOR_NOT_CONFIGURED: 未配置 security-model.executor.python.script（环境变量 SECURITY_MODEL_EXECUTOR_PYTHON_SCRIPT）");
         }
         Files.writeString(context.requestFile, objectMapper.writeValueAsString(request), StandardCharsets.UTF_8);
         List<String> command = List.of(pythonExecutable, pythonScript,
@@ -127,8 +237,26 @@ public class PythonLddTaskExecutor implements DefenseTaskExecutor {
                 .redirectOutput(context.stdoutFile.toFile())
                 .redirectError(context.stderrFile.toFile());
         builder.directory(Paths.get(fingerprintService.getWorkspace()).toFile());
+        try {
+            // Pre-start marker: if this cannot be written we must not start an untraceable child.
+            processRegistry.prepare(context.taskDir);
+        } catch (IOException exception) {
+            throw new IllegalStateException("PROCESS_RECORD_FAILED: 无法记录执行进程，已拒绝启动", exception);
+        }
         Process process = builder.start();
+        context.processStarted = true;
         activeProcesses.put(request.getRunId(), process);
+        try {
+            processRegistry.record(context.taskDir, process);
+        } catch (IOException | RuntimeException exception) {
+            // The child is already running but untraceable. Kill it before reporting failure.
+            boolean gone = processGuard.ensureGone(process, context.taskDir, 3000, true);
+            if (!gone) {
+                gpuLeaseService.markBlocked(request.getTaskId(), request.getRunId(),
+                        "EXECUTOR_TREE_ALIVE");
+            }
+            throw new IllegalStateException("PROCESS_RECORD_FAILED: 无法记录执行进程，已终止本次执行", exception);
+        }
         try {
             PythonProcessWaiter.Outcome outcome = new PythonProcessWaiter()
                     .waitFor(process, timeoutSeconds, () -> isCanceled(request),
@@ -141,16 +269,18 @@ public class PythonLddTaskExecutor implements DefenseTaskExecutor {
             }
             String result = readIfExists(context.resultFile);
             if (process.exitValue() != 0 && !isFailedResult(result)) {
-                throw new IllegalStateException("PYTHON_PROCESS_EXITED: Python 进程退出码 "
-                        + process.exitValue() + "，stderr: " + readIfExists(context.stderrFile));
+                String stderr = readIfExists(context.stderrFile);
+                throw new IllegalStateException(classifyProcessFailure(stderr)
+                        + ": Python 进程退出码 " + process.exitValue() + "，stderr: " + stderr);
             }
             updateProgress(request, 90);
             if (!StringUtils.hasText(result)) {
                 throw new IllegalStateException("RESULT_MISSING: 未生成 result.json");
             }
             return result;
-        } finally {
-            activeProcesses.remove(request.getRunId(), process);
+        } catch (InterruptedException exception) {
+            processGuard.ensureGone(process, context.taskDir, 3000, true);
+            throw exception;
         }
     }
 
@@ -235,7 +365,11 @@ public class PythonLddTaskExecutor implements DefenseTaskExecutor {
         result.put("run_id", request.getRunId());
         result.put("attempt", request.getAttempt());
         result.put("error_code", errorCode);
-        result.put("failure_reason", StringUtils.hasText(reason) ? reason : "未知执行错误");
+        // Never persist the raw exception/stderr: it can contain paths, commands and
+        // sample markers. The exact detail stays in the server log.
+        result.put("failure_reason", com.securitymodel.application.task.TaskFailureMessages.forCode(errorCode));
+        log.warn("LDD execution failed: taskId={}, runId={}, errorCode={}",
+                request.getTaskId(), request.getRunId(), errorCode);
         result.put("started_at", startedAt);
         result.put("finished_at", OffsetDateTime.now().toString());
         result.set("artifacts", artifacts(context));
@@ -290,11 +424,38 @@ public class PythonLddTaskExecutor implements DefenseTaskExecutor {
         if (StringUtils.hasText(message) && message.contains(":")) {
             String code = message.substring(0, message.indexOf(':'));
             if (List.of("EXECUTOR_NOT_CONFIGURED", "TASK_TIMEOUT", "PYTHON_PROCESS_EXITED",
-                    "RESULT_MISSING", "RESULT_INVALID_JSON", "RESULT_PROTOCOL_ERROR").contains(code)) {
+                    "RESULT_MISSING", "RESULT_INVALID_JSON", "RESULT_PROTOCOL_ERROR",
+                    "GPU_OOM", "CUDA_UNAVAILABLE", "GPU_LOCK_BUSY",
+                    "GPU_LEASE_LOST", "GPU_BUSY", "PROCESS_RECORD_FAILED").contains(code)) {
                 return code;
             }
         }
         return "PYTHON_EXECUTION_ERROR";
+    }
+
+    /**
+     * Stable failure code for a child process that died without writing result.json.
+     * Text matching only; never used to infer success.
+     */
+    static String classifyProcessFailure(String output) {
+        String lowered = output == null ? "" : output.toLowerCase(java.util.Locale.ROOT);
+        if (lowered.contains("cuda out of memory")
+                || lowered.contains("outofmemoryerror")
+                || lowered.contains("cublas_status_alloc_failed")
+                || lowered.contains("cudnn_status_alloc_failed")) {
+            return "GPU_OOM";
+        }
+        if (lowered.contains("no cuda-capable device")
+                || lowered.contains("cuda driver version")
+                || lowered.contains("torch not compiled with cuda")
+                || lowered.contains("cuda_error_no_device")
+                || lowered.contains("no device of requested type")) {
+            return "CUDA_UNAVAILABLE";
+        }
+        if (lowered.contains("gpu_lock_busy") || lowered.contains(".security-model-vab.lock")) {
+            return "GPU_LOCK_BUSY";
+        }
+        return "PYTHON_PROCESS_EXITED";
     }
 
     private String stripCode(String message) {
@@ -305,8 +466,24 @@ public class PythonLddTaskExecutor implements DefenseTaskExecutor {
         return index > 0 ? message.substring(index + 1).trim() : message;
     }
 
-    private record ExecutionContext(Path taskDir, Path requestFile, Path resultFile,
-                                    Path stdoutFile, Path stderrFile, Path progressFile) {
+    private static final class ExecutionContext {
+        private final Path taskDir;
+        private final Path requestFile;
+        private final Path resultFile;
+        private final Path stdoutFile;
+        private final Path stderrFile;
+        private final Path progressFile;
+        private boolean processStarted;
+
+        private ExecutionContext(Path taskDir, Path requestFile, Path resultFile,
+                                 Path stdoutFile, Path stderrFile, Path progressFile) {
+            this.taskDir = taskDir;
+            this.requestFile = requestFile;
+            this.resultFile = resultFile;
+            this.stdoutFile = stdoutFile;
+            this.stderrFile = stderrFile;
+            this.progressFile = progressFile;
+        }
     }
 
     private static class CanceledException extends Exception {

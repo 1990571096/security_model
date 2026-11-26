@@ -1,5 +1,10 @@
 # 简历项目与面试讲解提纲
 
+当前面试材料按实验者需求、LDD 执行、异步可靠性与证据组织。准备一个亲自实现且可以定位到方法和测试的例子。[简历参考](../resume-project-entry.md) · [口述练习](../learning/06-tell-the-story.md)
+
+## 历史记录
+
+<!-- knowledge:historical -->
 更新时间：2026-10-26
 
 ## 1. 项目一句话介绍
@@ -124,11 +129,10 @@ LDD 参数在进入异步执行器前执行 JSON 对象、白名单、必填项�
 ## 7. 面试时需要诚实说明的边界
 
 - 当前真实演示只开放 LDD，VS、训练中防御和训练后防御没有放入主流程。
-- 当前执行模型是单机本地 Python 进程和 Spring 异步线程，尚未引入消息队列、分布式 worker
-  和 GPU 资源调度。
-- 当前工程验证使用小批次和小轮次配置，不能直接替代论文正式实验结论。
-- 当前主运行版本已迁移至 Spring Boot 3、Java 17、Vue 3 和 Vite；旧 ELADMIN 工程仅作为回归与回滚基线保留。
-- RabbitMQ/Kafka 尚未接入迁移版运行链路；Redis 当前仅用于资源目录缓存，不能表述为任务状态存储或消息队列替代品。
+- 当前默认执行模型是单机本地 Python 进程和 Spring 异步线程；R4 已实现可选的 RabbitMQ/独立 Worker、消费账本与 GPU 单槽租约，默认仍 `dispatch.mode=db`，尚未启用分布式多机调度。实现验收通过（隔离），2026-11-18 单机 db/rabbit 启停演练通过；生产级多机部署未验收。
+- 当前已完成 1 epoch 与正式 5 epochs 工程验收；正式 5 epochs 只证明工程链路、配置、产物和收尾，不能直接替代论文效果结论。
+- 当前主运行版本已迁移至 Spring Boot 3、Java 17、Vue 3 和 Vite；旧 ELADMIN 工程已归档到 Tag `migration-r4-verified` 与 `legacy` 分支，当前分支已删除源码，不再是回归/回滚运行基线。
+- RabbitMQ/Kafka 的 R4 代码已接入但默认 `dispatch.mode=db`；2026-11-16 本机真实 RabbitMQ + 双 JVM 已完成 R4-01..08 实现验收，2026-11-18 完成单机 db/rabbit 启停与端口释放演练。**生产级多机部署未验收**，长期 DB 故障/多任务退避与跨主机仍是压力边界，不能写成已部署或已整体验收。当前测试数字和边界见 `26-current-delivery-facts.md`。
 
 ## 8. 下一阶段优先级
 
@@ -137,3 +141,4 @@ LDD 参数在进入异步执行器前执行 JSON 对象、白名单、必填项�
 3. 补充 Redis 缓存命中率、失效次数和降级次数的运行指标。
 4. 只有需要跨进程或多实例调度时，才继续实现 Transactional Outbox + RabbitMQ。
 5. 将清洗后数据集衔接到后续模型训练任务，作为算法扩展阶段的业务闭环。
+<!-- /knowledge:historical -->

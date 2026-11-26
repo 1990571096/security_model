@@ -1,16 +1,21 @@
 package com.securitymodel.application.task;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.securitymodel.application.audit.CurrentUserService;
 import com.securitymodel.application.resource.ResourceQueryService;
 import com.securitymodel.domain.algorithm.Algorithm;
 import com.securitymodel.domain.dataset.Dataset;
 import com.securitymodel.domain.task.PreDefenseTask;
 import com.securitymodel.infrastructure.persistence.mapper.PreDefenseTaskMapper;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -18,17 +23,31 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+/**
+ * Task observability queries. Every list, page and statistic is scoped to the current owner;
+ * only an admin with cross-user read enabled sees the whole database (see ADR-013).
+ */
 @Service
 public class TaskProgressQueryService {
 
+    private static final long NO_OWNER_SENTINEL = -1L;
+    private static final String DEMO_ORIGIN = "demo";
+    private static final List<String> STATUSES = List.of("pending", "running", "success", "failed", "canceled");
+
     private final PreDefenseTaskMapper taskMapper;
     private final ResourceQueryService resourceQueryService;
+    private final CurrentUserService currentUserService;
+    private final TaskAccessGuard taskAccessGuard;
 
     public TaskProgressQueryService(
             PreDefenseTaskMapper taskMapper,
-            ResourceQueryService resourceQueryService) {
+            ResourceQueryService resourceQueryService,
+            CurrentUserService currentUserService,
+            TaskAccessGuard taskAccessGuard) {
         this.taskMapper = taskMapper;
         this.resourceQueryService = resourceQueryService;
+        this.currentUserService = currentUserService;
+        this.taskAccessGuard = taskAccessGuard;
     }
 
     public List<TaskProgressView> findTasks(String status, String blurry) {
@@ -46,8 +65,38 @@ public class TaskProgressQueryService {
 
     public record TaskPage(List<TaskProgressView> records, long total, int page, int size) {}
 
-    private com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<PreDefenseTask> query(
-            String status, String blurry) {
+    public OwnTaskPage findMinePage(String status, int size) {
+        return findMinePage(status, null, size);
+    }
+
+    public OwnTaskPage findMinePage(String status, String excludeStatus, int size) {
+        if (size < 1 || size > 100) {
+            throw new IllegalArgumentException("页大小须为 1 到 100");
+        }
+        var query = ownTasks(taskQuery(status, null));
+        if (excludeStatus != null) {
+            query.ne(PreDefenseTask::getStatus, excludeStatus);
+        }
+        Page<PreDefenseTask> result = taskMapper.selectPage(new Page<>(1, size),
+                query.select(PreDefenseTask::getTaskId, PreDefenseTask::getTaskName,
+                        PreDefenseTask::getStatus, PreDefenseTask::getProgress,
+                        PreDefenseTask::getCurrentRunId, PreDefenseTask::getCurrentAttempt));
+        return new OwnTaskPage(result.getRecords().stream()
+                .map(task -> new OwnTask(task.getTaskId(), task.getTaskName(), task.getStatus(),
+                        task.getProgress(), task.getCurrentRunId(), task.getCurrentAttempt()))
+                .toList(), result.getTotal());
+    }
+
+    public record OwnTaskPage(List<OwnTask> records, long total) {}
+
+    public record OwnTask(Long taskId, String name, String status, Integer progress,
+                          String currentRunId, Integer currentAttempt) {}
+
+    private LambdaQueryWrapper<PreDefenseTask> query(String status, String blurry) {
+        return applyScope(taskQuery(status, blurry));
+    }
+
+    private LambdaQueryWrapper<PreDefenseTask> taskQuery(String status, String blurry) {
         var query = Wrappers.<PreDefenseTask>lambdaQuery().orderByDesc(PreDefenseTask::getTaskId);
         if (status != null && !status.isBlank()) {
             query.eq(PreDefenseTask::getStatus, status);
@@ -61,19 +110,40 @@ public class TaskProgressQueryService {
         return query;
     }
 
+    /**
+     * Restricts the query to rows the caller may see. A caller without a stable user id
+     * (legacy token, or an unattributed session) gets an owner sentinel that matches nothing.
+     */
+    private LambdaQueryWrapper<PreDefenseTask> applyScope(LambdaQueryWrapper<PreDefenseTask> query) {
+        if (taskAccessGuard.canReadAcrossUsers()) {
+            return query;
+        }
+        return ownTasks(query);
+    }
+
+    private LambdaQueryWrapper<PreDefenseTask> ownTasks(LambdaQueryWrapper<PreDefenseTask> query) {
+        query.ne(PreDefenseTask::getDataOrigin, DEMO_ORIGIN);
+        Long userId = currentUserService.userId();
+        return query.eq(PreDefenseTask::getOwnerUserId, userId == null ? NO_OWNER_SENTINEL : userId);
+    }
+
     public TaskProgressView findTask(Long taskId) {
         PreDefenseTask task = taskMapper.selectById(taskId);
-        return task == null ? null : toViews(List.of(task)).get(0);
+        if (task == null) {
+            return null;
+        }
+        if (!taskAccessGuard.canRead(task)) {
+            throw new AccessDeniedException("无权访问该任务");
+        }
+        return toViews(List.of(task)).get(0);
     }
 
     public Map<String, Object> statistics() {
         Map<String, Object> statusStats = new LinkedHashMap<>();
         for (String status : List.of("pending", "running", "success", "failed", "canceled")) {
-            statusStats.put(status, taskMapper.selectCount(
-                    Wrappers.<PreDefenseTask>lambdaQuery()
-                            .eq(PreDefenseTask::getStatus, status)));
+            statusStats.put(status, taskMapper.selectCount(scopedCount(status)));
         }
-        long total = taskMapper.selectCount(null);
+        long total = taskMapper.selectCount(applyScope(Wrappers.<PreDefenseTask>lambdaQuery()));
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("typeStats", Map.of("pre_defense", total));
         result.put("statusStats", statusStats);
@@ -83,7 +153,72 @@ public class TaskProgressQueryService {
         result.put("successCount", statusStats.get("success"));
         result.put("failedCount", statusStats.get("failed"));
         result.put("canceledCount", statusStats.get("canceled"));
+        result.put("scope", taskAccessGuard.canReadAcrossUsers() ? "all-users" : "current-user");
         return result;
+    }
+
+    private LambdaQueryWrapper<PreDefenseTask> scopedCount(String status) {
+        return applyScope(Wrappers.<PreDefenseTask>lambdaQuery().eq(PreDefenseTask::getStatus, status));
+    }
+
+    /**
+     * Real per-day task counts for the workspace trend. Only rows the caller may read are
+     * counted, and the window is bounded so a stale or unknown client cannot request an
+     * unbounded scan.
+     */
+    public List<Map<String, Object>> trend(int days) {
+        if (days < 1 || days > 30) {
+            throw new IllegalArgumentException("趋势天数须为 1 到 30");
+        }
+        LocalDate today = LocalDate.now();
+        LocalDate firstDay = today.minusDays(days - 1L);
+        LocalDateTime from = firstDay.atStartOfDay();
+        LocalDateTime until = today.plusDays(1).atStartOfDay();
+        List<PreDefenseTask> tasks = taskMapper.selectList(
+                applyScope(Wrappers.<PreDefenseTask>lambdaQuery()
+                        .ge(PreDefenseTask::getCreateTime, from)
+                        .lt(PreDefenseTask::getCreateTime, until)));
+
+        Map<LocalDate, Map<String, Long>> grouped = new LinkedHashMap<>();
+        for (int offset = 0; offset < days; offset++) {
+            Map<String, Long> counts = new LinkedHashMap<>();
+            counts.put("total", 0L);
+            for (String status : STATUSES) {
+                counts.put(status, 0L);
+            }
+            grouped.put(firstDay.plusDays(offset), counts);
+        }
+        for (PreDefenseTask task : tasks) {
+            if (task.getCreateTime() == null) {
+                continue;
+            }
+            Map<String, Long> counts = grouped.get(task.getCreateTime().toLocalDate());
+            if (counts == null) {
+                continue;
+            }
+            counts.merge("total", 1L, Long::sum);
+            String status = task.getStatus();
+            if (status != null && counts.containsKey(status)) {
+                counts.merge(status, 1L, Long::sum);
+            }
+        }
+
+        List<Map<String, Object>> result = new ArrayList<>(days);
+        grouped.forEach((date, counts) -> {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("date", date.toString());
+            row.putAll(counts);
+            result.add(row);
+        });
+        return result;
+    }
+
+    /** Successful tasks with a stored cleaning result: the only report artifact this table can prove. */
+    public long successWithResultCount() {
+        return taskMapper.selectCount(applyScope(Wrappers.<PreDefenseTask>lambdaQuery()
+                .eq(PreDefenseTask::getStatus, "success")
+                .isNotNull(PreDefenseTask::getCleaningResult)
+                .ne(PreDefenseTask::getCleaningResult, "")));
     }
 
     private List<TaskProgressView> toViews(List<PreDefenseTask> tasks) {
@@ -104,6 +239,8 @@ public class TaskProgressQueryService {
         view.setTaskName(task.getTaskName());
         view.setDescription(task.getDescription());
         view.setStatus(task.getStatus());
+        view.setCurrentRunId(task.getCurrentRunId());
+        view.setCurrentAttempt(task.getCurrentAttempt());
         view.setProgress(task.getProgress());
         view.setStartTime(task.getStartTime());
         view.setEndTime(task.getEndTime());

@@ -1,6 +1,24 @@
 # 安全模型训练平台后续迭代开发指导书
 
-版本：2026-11-13；状态：规划中。本文是交给开发 Agent 的工作协议，不代表下述能力已实现。
+## 当前知识与助手
+
+`KnowledgeIndexService` 过滤历史正文与敏感文本，保留片段的源文件和行号。检索由 SQL 按可见性和用户筛候选，再进行词法匹配，Redis 向量可辅助重排。助手工具先校验参数和任务归属，只有确认服务才能提交预览过的写命令。[索引与助手实操](../agent-rag-demo.md)
+
+## LDD 故障诊断
+
+LDD 任务超时时，Java 等待器进入执行器清理分支，清理适配器及已知后代。确认进程树退出后释放当前 GPU 租约。失去确认依据时保留隔离状态，等待后续恢复核对。[任务恢复与进程](05-decisions.md)
+
+## 历史记录
+
+<!-- knowledge:historical -->
+版本：2026-11-16 v4；状态：开发指导，非功能交付记录。本文是交给开发 Agent 的总协议；逐阶段实施步骤、默认决策和验收矩阵见 [20-stage-execution-and-acceptance.md](20-stage-execution-and-acceptance.md)。两份文档必须一并阅读；历史数字和“已实现”判断均以对应提交与日期为准，不代表本轮新增能力已验收。
+
+> 当前事实入口为 [`26-current-delivery-facts.md`](26-current-delivery-facts.md)：
+> 2026-11-19 后端 351 单测、Python 11 项、前端构建通过；126 IT 未复跑；
+> R4 实现验收 + 单机启停演练通过，生产多机未验收；正式 5 epochs 仅完成工程验收。
+> 本文中 `287/106` 等数字是 2026-11-16 历史快照。
+
+**本版使用规则**：用户指定一个阶段后，开发 Agent 应完成该阶段全部必选项、测试、文档和证据再统一送审；可以分多次提交，但不能自行把内部切片当作整个阶段交付。常规技术选择按 20 号文档默认值执行，不逐项要求用户确认。业务数据库迁移、历史数据归属、真实长训练、外部付费服务及可选阶段的启用仍受既有授权边界约束。一次送审是交付目标，不保证免除审查发现后的修正。
 
 ## 1. 目标与硬边界
 
@@ -11,8 +29,8 @@
 - 保留 Java 17 / Spring Boot 3.5 / MySQL / Vue 3 / Vite / Redis；不为技术栈数量重写现有业务。
 - 交付目标是单机多用户真实运行，开发设备为 RTX 2060 6GB 显存、16GB 内存；分布式仅作可选设计与学习扩展，不是交付门槛。
 - 真实算法仅 LDD；其他训练前、训练中、训练后算法页面是展示资料，不得创建真实运行结果。正式论文实验配置与既有 128 batch / 5 epochs 工程验证配置均不得擅自修改或重跑。
-- MySQL 是任务、审计、报告事实源。Redis 当前只缓存资源目录；RabbitMQ、独立 Worker、Agent、RAG 均未实现。
-- Agent 通过外部大模型 API 实现，本机不部署大模型。外发仅限按当前用户权限过滤、经服务端脱敏的 SDD 文档片段、算法参数说明和实验报告摘要；原始样本、完整日志、本机绝对路径、凭据和用户个人信息不得发送给模型或 embedding 服务。密钥只通过本机安全配置注入。
+- MySQL 是任务、审计、报告事实源。Redis 当前缓存资源目录，并用于 Redis 8 `vectorset` 知识向量；R4 的 RabbitMQ 发布、消费账本、独立 Worker、确认/重试/DLQ 与人工重放**实现验收已在隔离真实 Broker 环境通过，单机 db/rabbit 启停演练通过，生产多机部署未验收，默认 `dispatch.mode=db`**。知识检索（R6）与受控助手（R7）已有代码落点并在隔离环境通过测试，DeepSeek 适配器只在本机 `deepseek` profile 下启用，不能表述为“Agent/RAG 已生产上线”。
+- Agent 通过外部大模型 API 实现，本机不部署大模型。外发边界（目标约束）：仅限按当前用户权限过滤、经服务端白名单和脱敏的 SDD 文档片段、算法参数说明和实验报告摘要；原始样本、完整日志、本机绝对路径、凭据和用户个人信息不得发送给模型或 embedding 服务。当前实现已把任务失败原因改为错误码映射，对模型证据做字段白名单，并新增通用 Unix/中文绝对路径脱敏；真实 `AssistantChatService → DeepSeekAssistantModel → 本地假 HTTP` 测试已捕获最终请求体，确认禁发路径不在请求体中，但这仍是本机测试证据，不等于生产外发验收。
 - 数据集和产物保持在受控本地目录；多用户隔离必须覆盖实验任务、报告、日志、导出及下载，不得仅靠前端过滤。
 - 现有 `run_id` / `attempt`、原子领取、事务提交后派发、进度文件、前端轮询、失败重试和训练任务启动恢复应复用，不得重新造一套并存状态机。
 - 旧 `eladmin` 仅是历史基线，主要开发在 `migration-backend`、`migration-frontend`、`algorithm-runtime/vab`。外部 VaB 源码、数据集和已有产物不属于自动清理范围。
@@ -22,24 +40,33 @@
 
 | 事实 | 代码或文档入口 | 尚缺的边界 |
 | --- | --- | --- |
-| LDD 任务与执行 | `PreDefenseTaskCommandService`、`PythonLddTaskExecutor`、`algorithm-runtime/vab/algorithm_entry.py` | 本地进程/磁盘，非独立 Worker |
+| LDD 任务与执行 | `PreDefenseTaskCommandService`、`PythonLddTaskExecutor`、`algorithm-runtime/vab/algorithm_entry.py` | 本地进程/磁盘；R4 已实现独立 Worker 消费模式，默认仍为 API 内调度 `dispatch.mode=db`，R4 实现验收通过（隔离）+ 单机启停演练通过，生产多机未验收 |
 | 进度 | `PythonProcessWaiter`、`TaskCenterView.vue`、`07-executor-contract.md` | 已有阶段、epoch、心跳；需验证陈旧判定、过程可观测性，不能写成从零开发 |
-| 任务竞争 | `PreDefenseTaskMapper`、`MySqlTaskPersistenceIT` | 同一任务原子领取已测；配额读计数与领取不是跨请求原子操作 |
-| 启动恢复 | `TaskRecoveryRunner` | 扫描所有 running 并置失败，隐含单实例；导出任务无启动恢复 |
-| 导出 | `CleanSubsetExportService`、`CleanSubsetExportExecutor` | `(task_id, isolation_ratio)` 去重已存在；pending/running 恢复及进程超时待加强 |
-| 安全 | `SecurityConfig`、`JwtAuthenticationFilter` | 当前主要是认证；归属授权、生产密钥与文件下载权限须专项验证 |
+| 任务竞争 | `PreDefenseTaskMapper`、`MySqlTaskPersistenceIT`、`GpuLeaseService` | 原子领取与 GPU 单槽租约已有实现；设备独占和故障恢复须按 R2 矩阵验证，不能仅凭租约推断 |
+| 启动恢复 | `TaskRecoveryRunner`、`DispatchRecoveryCoordinator`、`WorkerConsumerLifecycle`、`AttemptProcessRegistry`、`GpuLeaseBlockedProbe` | R3 统一恢复协调器已实现；R4 Worker 在归属连接丢失后停止消费并关闭调度门，数据库恢复后自动重取归属、重跑恢复。`recoverAtStartup()` 返回 `RecoveryResult`：单任务/扫描异常、本地 accepted>0、GPU 隔离槽位非空任一命中即 unsafe，`WorkerConsumerLifecycle.startAfterRecovery` 拒绝开消费；只有安全分类且 accepted 清零后才重跑恢复并启动容器。2026-11-16 已用 Worker 经 13306 TCP 代理连 MySQL、断链后恢复且不重启 Worker 实测任务 `2122257618284634114`；生产迁移未执行 |
+| 导出 | `CleanSubsetExportService`、`CleanSubsetExportExecutor`、`ExportRecoveryRunner` | 已有去重、重启失败收敛与超时逻辑；进程树和文件边界继续回归 |
+| 安全 | `TaskAccessGuard`、`JwtAuthenticationFilter`、`OwnershipEndToEndIT` | 已有 owner 授权、账号状态回查和隔离库 HTTP 测试；业务库迁移与测试证据独立记录 |
 | Redis | `ResourceCatalogCache`、ADR-010 | 资源目录缓存已落地，不是分布式锁或任务状态存储 |
-| 质量门禁 | `.github/workflows/migration-quality.yml` | 配置有 Maven/MySQL/Vite；远端运行状态和新增功能覆盖需实际验收 |
+| 知识检索 R6 | `KnowledgeIndexService`、`KnowledgeRetrievalMySqlIT`、`KnowledgeVectorStoreRedisIT`、`KnowledgeController` | 离线检索、ACL、引用、DeepSeek 回答适配器与 Redis 8 向量 ACL 混合检索已落地；本地 256 维哈希 embedding 只做词法候选重排，不是神经语义召回；向量只合并进词法候选池，业务 `retire()` 成功后清理向量，失败由 `KnowledgeVectorReconcileJob` 有界对账；SDD 索引只收录当前事实，按 §1 历史标记包住的段落不进入索引；生产库未建表 |
+| 受控助手 R7 | `AssistantChatService`、`AssistantConfirmationService`、`AssistantSessionService`、`AssistantModelEvidence` | 工具白名单、预览确认、配额、审计、有界并发、单用户并发槽、结构化参数证据与资源指纹确认已落地；DeepSeek 适配器本机可启用，`toolExecutor` 用 `DelegatingSecurityContextExecutorService` 传播登录身份，工具剩余预算传 `execute(arguments, timeoutMillis)`；最终外发体由真实 ChatService + 适配器 + 假 HTTP 验证；R3-02/03/04 已用独立 JVM + 真实 MySQL 租约 + 短 Python 桩验证恢复/竞争/隔离；R3ProductionExecutorChainIT 已用完整 Spring `@Async` 代理 + 真实 `PythonLddTaskExecutor` 覆盖正常/取消/超时/非法结果，并补真实派发崩溃窗口；仍不运行 LDD/GPU，生产建表未执行 |
+| 质量门禁 | `.github/workflows/migration-quality.yml` | 配置有 Maven/MySQL/Redis/Vite；进程守卫测试已改为 Windows/Linux 双实现。2026-11-16 起 `push`/`pull_request` 路径均包含 `docs/sdd/**`，因为 `KnowledgeEvaluationTest`/`KnowledgeHybridEvaluationTest` 直接读取该目录；本次文档改动后这两个评估测试重跑 7/7（`tmp/stage2-doc-eval.log`）。2026-11-16 四项阻断修复后本机 `verify -Pmysql-it` 为 **287 单测 + 106 IT** 全绿（`tmp/stage2-full-verify-new.log`，历史快照）；本轮 2026-11-19 为 351 单测通过，126 IT 未复跑。提交 `ee10704`/`cd5a6ae` 的远端 run `43846823071` 是历史 CI；green CI 不等于 R4 全部故障场景或生产部署通过 |
 
 所有文件名相对于仓库根 `F:\Study\postgraduate\毕业论文\security_model`。开始每轮前执行 `git status --short`，阅读相关 SDD 与源码，保留其他人已有修改；与表格事实不一致时，先提交事实差异供复核，不得沿用过期结论。
+
+### 知识索引口径：当前事实 vs 历史记录
+
+- **当前事实**：与当前代码、SQL、已执行测试和已提交证据一致的能力/状态。`01`、`09` §5.17、`17` 本表、`20` §6.8、`21` §16 是当前事实入口；未标记的历史叙述不得写成“已实现/未实现”的当前结论。
+- **历史记录**：旧轮次状态、旧数字、已撤销结论或仅用于追溯的验收过程。SDD 供开发与学习查阅。共享知识维护在独立的 `knowledge-base/`，索引时会跳过其中标记为 `<!-- knowledge:historical -->` 的历史块。
+- 只有历史标记、删除后无正文的文件不进入索引；普通正文一律按当前事实处理，因此修正文档时不能把过时能力描述留在标记外。
+- 历史提交、旧 CI run、旧故障证据可以保留在历史块中，但回答“当前是否具备某能力”时必须回到当前事实入口，不能引用历史块作结论。
 
 ## 2. 开发 Agent 的固定工作协议
 
 每次只领取下表一个迭代，不跨阶段提前加依赖。每轮按以下顺序：
 
-1. 核查目标入口、数据库 schema、测试、配置和现有变更；列出实际状态及不确定项。
+1. 核查目标入口、数据库 schema、测试、配置和现有变更；按 20 号文档建立本阶段需求 ID 到代码、测试、证据的映射。已实现项做差异核查与回归，不重写。
 2. 先在 SDD 写需求、非目标、状态转换、API/事件/文件契约、故障策略、验收用例；影响架构时追加 ADR 到 `05-decisions.md`。必要的重大选型先给用户确认，不在实现中暗改。
-3. 写或调整失败/并发测试，再实施最小垂直切片；保留既有 API 行为，破坏性变更需迁移方案。
+3. 写或调整失败/并发测试，按依赖顺序完成阶段内全部垂直切片；保留既有 API 行为，破坏性变更需迁移方案。中间进度更新不等于等待批准。
 4. 验证成功路径、重复请求、并发竞争、进程/依赖故障、权限拒绝和重启恢复。不能运行环境依赖测试时明确写出未验证项，不用 mock 代替真实集成证据。
 5. 同步 `09-project-status.md`、相关设计/契约、`README.md`、部署手册、必要时面试材料；记录命令、日期、实际结果。仅在证据齐全时标“已实现”。
 6. 提交供我复核的交接清单；未经用户明确授权，不推送远端、不改正式实验参数、不运行耗时的 LDD 真实训练。
@@ -52,8 +79,8 @@
 | --- | --- | --- | --- |
 | R0 | P0，无 | 当前事实审计、单机多用户边界、任务/数据归属模型、状态图、ADR 草案 | 与代码核对；记录共享资源与历史无 owner 数据的迁移决策 |
 | R1 | P0，R0 | JWT 配置、多用户实验归属授权、资源归属与下载路径保护、HTTP 集成测试 | 两个真实用户各自管理/查看实验；跨用户访问被拒；本用户链路不退化 |
-| R2 | P0，R1 | 导出恢复、配额原子化、LDD 进度与产物治理 | 并发、崩溃、超时、取消与重启测试通过 |
-| R3 | P1，R2 | 数据库待调度记录/租约与调度恢复、业务幂等 | 提交后崩溃不永久丢任务；重复调度仅一次有效执行 |
+| R2 | P0，R1 | GPU 故障隔离、进程树回收、导出恢复、进度与产物治理 | 20 号 R2 全部必选故障用例通过；未确认设备空闲时不得放行 |
+| R3 | P1，R2 | R3-A 启动调度恢复 + R3-B 命令幂等与有限扫描；均为阶段必选 | 两批交付全部通过才称 R3 完成；不承诺 exactly-once |
 | R4 | 可选，R3；确需跨进程 | Outbox + RabbitMQ + 独立 Worker 最小闭环 | 断链、重复消息、死信、Worker 崩溃可恢复；共享产物可访问 |
 | R5 | P1，R2；可与 R4 分开 | 真实监控指标、日志追踪、Redis 缓存观测、部署复现 | 指标源可追溯，Redis 故障可降级 |
 | R6 | P2，R1/R5；不依赖 R4 | 有引用的文档检索 RAG 与外部模型 API | 无依据不作答，权限隔离、外发脱敏和版本更新验收 |
@@ -62,16 +89,37 @@
 
 R6/R7 不能因简历需要跳过安全依赖，但不以 R4 消息队列为前提。R4/R8 是可选扩展；若时间有限，完成 R0-R3 + R5 比做不可靠的“全栈展示”更有价值。R8 仅当有两实例或独立 GPU Worker 测试条件时实施。
 
-## 3. R0：事实冻结与设计契约
+## 3. R0：事实冻结与设计契约（2026-11-13 已完成）
+
+> 完成记录见 `09-project-status.md` 第 5.1 节与 `16-engineering-improvement-roadmap.md` 的 R0 实施记录；
+> 修正清单见 `05-decisions.md` ADR-012；归属契约与待决事项见 `18-multiuser-ownership-and-resources.md`、
+> 目录与保留策略见 `19-local-data-layout-and-retention.md`。R1 开始前须先确认 18 号文档 §6 的 D1–D7。
 
 **先核查**：`01-system-scope.md` 将“上传/解析”写作核心流程，但现行资源主要是本地路径元数据登记；`03-target-architecture.md` 仍有旧包迁移措辞和未实现的目标接口；`07-executor-contract.md` 中“result.json 缺失可补最小成功结果”与 `PythonLddTaskExecutor` 当前 `RESULT_MISSING` 失败行为冲突。核查后以运行代码为事实修正文档，不能悄悄改执行语义。
 
 **已确认**：单机真实运行、多个用户分别管理和查看自己的实验；数据集及产物保存在受控本地目录；分布式只作可选扩展；Agent 使用外部大模型 API，不在本机部署模型。按 RTX 2060 6GB / 内存 16GB 制定资源预算，不擅自改变既有实验配置。
-**迭代期仍需决定**：共享算法/数据集目录的读写权限与 owner 模型；历史无 owner 任务的迁移映射和隔离；同一 GPU 的并发上限；人工/有限自动重试策略；路径登记是否继续作为唯一输入。Agent 提供建议和迁移/回滚方案，未确认前不赋予历史数据任意用户访问权。
+**R0 当时的待决记录**：共享资源、owner、GPU 上限、重试和输入方式在制定 R0 时尚待决定。当前已形成的默认决策见 §13 和 20 号文档，不得再以本段历史记录要求用户逐项确认。业务库历史行最终归属与执行授权仍单独留档。
 
 **交付**：状态图、数据归属矩阵、组件图、进度/结果 JSON v1、错误码清单、文件保留策略草案和兼容性约束。更新 `01`、`03`、`05`、`07`、`09`、`16`；新增需要的专题文档按实际决策建立。验收为文档和真实实现无矛盾，规划与当前状态明确分栏。
 
-## 4. R1：认证、授权和数据边界
+## 4. R1：认证、授权和数据边界（2026-11-13 已实施，评审“有条件通过”）
+
+> 实施记录见 `09-project-status.md` §5.2、`16-engineering-improvement-roadmap.md` 的 R1 实施记录、`05-decisions.md` ADR-013。
+> 已落地：稳定 `owner_user_id` 归属、`TaskAccessGuard` 服务端校验、共享资源写操作仅管理员、历史数据迁移脚本、
+> 数据集验证入口、按 owner 的配额计数、令牌每请求回查账号状态。
+> **验收证据（2026-11-13 本机实跑，R1 阶段数量）**：57 项单元测试 + 24 项 MySQL 集成测试全部通过，含真实 Security 链 +
+> 真实隔离库的双账号端到端（`OwnershipEndToEndIT` 9 项、`OwnershipEndToEndCrossReadIT` 4 项，含导出/下载/PNG 预览/审计）与
+> 迁移脚本决策表实跑（`OwnershipMigrationScriptIT` 6 项）。**仍未完成**：业务库迁移执行与留档。GPU 租约、锁接管和失败码已有 R2 实现，但 R2 整体须通过 §5 及 20 号任务书的最终验收。
+
+**R1 收尾命令（本机执行，密码只走环境变量，不写入仓库/命令历史/文档）**：
+
+```powershell
+$env:MYSQL_IT_PASSWORD = '<本机 MySQL 密码>'
+mvn -B -f migration-backend/pom.xml verify -Pmysql-it
+```
+
+迁移脚本先在隔离库跑只读段，按 `18` §4.1 的裁定把 1–4 号与 12 号写成 `demo` / `assign` 决策行（8–11 号确认后再补 `assign`），再跑回填段，并保存决策表快照与逐行核对结果；
+记录字段与模板见 `18` §10，证据分级见 `18` §9。
 
 **设计**：支持多个真实登录用户分别创建、管理、查看自己的实验；确定最小角色（管理员、实验用户、只读观察者）及任务归属（建议稳定 user ID 而不是仅用户名）；按数据集、任务、报告、日志、导出、审计动作列权限矩阵。列表查询、ID 直取、重试/取消、报告、进度、日志、图片及 ZIP 下载均在服务端校验归属，不要只依赖前端隐藏按钮。管理员跨用户查看须明确授权和审计；共享目录资源与私有实验分离。生产 profile 无 JWT 密钥则拒绝启动，开发 profile 可有显式本地设置；日志不打印密钥/令牌。若历史任务没有 owner ID，设计迁移映射与不可识别记录的隔离策略。
 
@@ -79,11 +127,19 @@ R6/R7 不能因简历需要跳过安全依赖，但不以 R4 消息队列为前�
 
 **验收**：双用户 MySQL + HTTP 集成测试覆盖各自创建/查询/重试/取消实验，跨用户列表不出现对方任务，按 ID 访问任务、进度、报告、日志、导出、图片及 ZIP 均被拒绝；覆盖管理员授权、失效 token、未配置密钥及共享资源规则；授权拒绝返回稳定 403，不泄露文件路径。保留旧任务数据迁移脚本和回滚说明。
 
-## 5. R2：LDD 与导出任务可靠性
+## 5. R2：LDD 与导出任务可靠性（2026-11-14 修复完成，待复审）
+
+> 第一切片：MySQL 单槽 GPU 租约（条件更新 + 续租 + fencing + 过期接管）、租约与任务领取同事务、启动恢复释放租约、导出台账重启收敛、导出超时进程树回收。
+> 第二切片：适配器陈旧锁接管（pid 存活判定 + token 校验接管/释放）、失败码 `GPU_LOCK_BUSY`/`GPU_OOM`/`CUDA_UNAVAILABLE` 细分、Java 无结果时 stderr 兜底归类。
+> 第三切片：attempt 级日志截断（保留尾部 + 截断标记）、SHA-256 清单、保留期清理（默认关闭，仅删终态任务的非当前 attempt）。
+> 第四切片（收口）：进程记录 `schema_version=2` + 原子写；无记录/旧协议/损坏/启动时间缺失一律 `UNKNOWN`；`ExecutorProcessGuard` 整树回收；执行器/导出超时/取消/中断只有确认整树退出才释放；启动就绪门 `SCHEDULING_NOT_READY`；隔离槽位对管理员可见；保留期 real-path 边界。
+> 证据（R2 收口时）：Java **104 项单元测试（0 失败、0 跳过）+ 33 项 MySQL IT**（`GpuLeaseMySqlIT` 8/8）；`OrphanProcessCrashDrillTest` 独立 JVM 崩溃演练通过；前端 `npm run build` 通过；适配器 Python 单测 11/11 为上一轮记录，本轮未重跑；**未跑真实 LDD，生产库未建表**。R3 后计数为 120 + 40，见 `09` §5.7。
+> 2026-11-14 复核修复：租约 TTL 过期不再直接接管（先持久隔离）、心跳数据库失败仍先取消进程、子进程记录缺失/损坏返回 UNKNOWN、恢复扫描核对意图身份并跳过本地已接受任务、重放记账失败不释放租约、重放校验 schema/hash/owner/demo/资源/路径、幂等回滚清理与超时转人工核对；实跑 137 单测 + 41 MySQL IT（1 Redis IT 跳过）+ Python 11 项，详见 `09` §5.6.1。R2 仍待外部复审，不等于验收通过。
+> 验收待完成：真实 6GB 显存实测未做且不作为无授权阶段门槛；日志截断只约束归档大小，不是运行期磁盘硬上限。自动算法重试队列不在当前范围。R3-A/R3-B 契约与实施记录见 ADR-018；代码和自动化测试已完成，但外部评审、生产库建表与真实故障演练仍是未完成项。
 
 **配额**：`TaskExecutionQuotaPolicy.validateAndBuildSnapshot()` 的 JVM `synchronized` 只保护该方法内部、只在单实例生效，锁结束后才 `claimForExecution()`；设计 MySQL 资源槽位/计数行加锁，令配额检查与任务领取处于同一事务，或先明确单机单任务 GPU 并以数据库唯一活动租约实现。基于 RTX 2060 6GB / 内存 16GB 设保守默认并发，不以多用户数量作为 GPU 并发数；多实例不能依赖进程内锁。
 
-**恢复**：训练启动恢复当前直接失败所有 running；在单实例阶段可保留但写明前提。导出 pending/running 增加启动扫描与明确的重新派发/失败收敛，不能将可能写到一半的 ZIP 标记 success。导出 Python 进程增加超时和进程树回收，路径和产物校验沿用已有 real-path containment。
+**恢复**：单实例启动恢复须先确认执行进程及其后代退出，不能用任务终态或租约过期代替设备空闲证据。记录缺失、旧协议、损坏、身份未知、子进程未能确认退出时持久隔离槽位；隔离不随 TTL 自动解除。恢复循环完成前 `SchedulingReadinessGate` 拒绝新启动。导出 pending/running 重启后明确失败收敛，不能将写到一半的 ZIP 标记 success。训练和导出的超时、取消、异常、恢复均执行进程树回收，文件校验沿用 real-path containment。详细故障用例见 20 号 R2。
 
 **进度**：保留当前 `progress.json -> Java 轮询 -> MySQL 百分比 + 日志接口快照 -> Vue 轮询`。补阶段耗时、最近心跳、陈旧阈值和错误显示；不能把“超过阈值”直接判定任务失败。检查 Python AST 生成的 LDD 进度点是否覆盖数据加载、epoch、评分和导出，必要时小范围加阶段事件，不改算法数学逻辑和原配置。
 
@@ -93,9 +149,13 @@ R6/R7 不能因简历需要跳过安全依赖，但不以 R4 消息队列为前�
 
 ## 6. R3：持久调度与幂等
 
-**目标**：先关闭“事务提交成功、JVM 派发前退出”的窗口，然后再决定 MQ。定义 `pending/queued/claimed/running/success/failed/canceled` 各状态及允许边；兼容现有 `pending -> running` 数据和 API，必要时先加可迁移状态列。
+> 契约见 `05` ADR-018（调度意图表 + 条件抢占 `pending→submitting` + 单一恢复协调器 + 派发不确定即失败 + 有界扫描 + 请求幂等），状态为**R3-A/R3-B 代码已实施并通过自动化测试，等待外部评审；生产库迁移未执行**。
 
-**优先实现**：数据库调度意图/待派发表 + 定时扫描，领取用条件更新；执行由 `taskId + runId + attempt` 标识，扫描只能重派仍符合状态/租约的任务。跨进程前不要仅凭启动时扫描把所有 running 判失败。定义 lease owner、expiry、续期、fencing token；完成/取消/进度更新都校验当前 token，租约过期后旧 Worker 回调只能更新 0 行。
+**目标**：对提交后未派发的任务提供有条件恢复，对派发不确定的任务明确失败；不承诺每个任务必然执行。对外保留 `pending/running/success/failed/canceled`，调度内部状态独立存储，不新增 queued/claimed 等 API 状态。
+
+**实施顺序**：R3-A 已交付调度意图、条件抢占和单一启动恢复协调器；R3-B 已交付有界周期扫描与创建/启动/重试的请求幂等。执行由 `taskId + runId + attempt` 标识，所有进度和终态写入校验当前身份；单 GPU 的物理独占仍由 R2 进程证据与隔离策略保证，不能用防旧回调替代。
+
+> 2026-11-15 `930c934` 后补：R3-01 服务层事务回滚、R3-02 新 JVM 真实租约+短 Python 桩恢复、R3-03 双 JVM 竞争、R3-04 接受后记账前崩溃隔离均已落盘；子 JVM 使用真实 MyBatis/租约/协调器，但仍是测试最小上下文，runtime/资源 Mapper 为代理，不启动 LDD/GPU。详见 `09` §5.14 与 `20` §6.7。
 
 **幂等**：现有领取、导出唯一键和 run ID 防旧回调要保留；需要新增的操作优先是创建任务、启动请求和调度事件。`Idempotency-Key + operator + operation` 唯一，同 key 不同请求哈希返回冲突，同 key 同请求返回稳定结果；不要盲目对所有查询建幂等表。GPU 互斥需用数据库租约或有 fencing 的资源槽；Redis 锁只能辅助限流，不能独自保证恰好一次 GPU 执行。
 
@@ -104,6 +164,8 @@ R6/R7 不能因简历需要跳过安全依赖，但不以 R4 消息队列为前�
 ## 7. R4：有业务理由时迁移 RabbitMQ
 
 **触发条件**：明确要把 Python/GPU Worker 从 API 进程独立出来，并有两进程以上的实际运行/故障测试条件。否则 R3 的数据库调度已足够，不为了技术名词强加 MQ。
+
+**当前状态（2026-11-16，历史快照）**：R4 实现验收已在真实 RabbitMQ 4.1.8 + 隔离 MySQL + 双 JVM + 短 Python 桩下通过 R4-01..08，包括 7s 延迟 confirm、db→rabbit→db 完整停机切换、旧 dead 与新 attempt 竞争；本机 287 单测 + 106 IT 全绿（`tmp/stage2-full-verify-new.log`）。默认仍 `dispatch.mode=db`；生产库迁移与长期 DB 故障压测未执行；正式 5 epochs 已于 2026-11-18 完成工程验收，论文效果未评估。当前只能写“实现验收通过（隔离）+ 单机启停演练通过，生产多机未验收”，不能写生产部署通过。提交 `ee10704`/`cd5a6ae`，run `43846823071` 全绿。
 
 **事务**：业务状态和 Outbox 事件同一个 MySQL 事务；发布器轮询未发布事件，RabbitMQ publisher confirm 后标记已发布；超时/崩溃可重复发布。Consumer 以 `messageId` 和 `taskId/runId/attempt` 去重，数据库条件领取是执行门槛。不要承诺 exactly-once；语义是至少一次投递 + 业务幂等。
 
@@ -119,6 +181,8 @@ R6/R7 不能因简历需要跳过安全依赖，但不以 R4 消息队列为前�
 
 Redis 保持 MySQL 回源；新增缓存必须提供 key/TTL/失效/穿透/击穿/故障降级及测试。先量化热点和查询开销，优先统计/配置目录，不能把任务状态放在 Redis 当唯一真相。提供本地 Compose 或等价启动手册（MySQL、Redis，R4 后才加 RabbitMQ），配置通过环境变量传入，绝不提交真实密码。CI 增加相应集成测试并记录远端结果。
 
+> R5 状态（2026-11-13）：**代码已实施，自动化与本机验证部分完成，待外审**。已落地 `TaskRuntimeMetrics`（任务/槽位/执行池/恢复/耗时）、请求与任务日志 MDC、Redis 代际防旧值回填与 hit/miss/degraded 计数、管理员 `/api/observability/summary`、Actuator 最小暴露（health 匿名，metrics/info 仅管理员），统计页和运行监控页改为真实数据，不再展示硬编码 ASR/CPU/节点数字。真实 Redis 并发回填测试已通过，真实 Security 链 IT 覆盖 health 匿名 200、metrics 匿名 401、普通用户 summary 403、管理员 summary 200；边界：生产库未建表；Redis 宕机与长时 MySQL 观测仍未执行。CI 结果以远端 Actions 为准：`106e4d3` 的 run `43707281672` 与收口提交 `bb4a79f` 的 run `43726078023` 均已全部 success；`5e4efd4` 的 run `43712479071` 曾因 R6 未知题误命中失败，修复见 `09` §5.15.1。
+
 ## 9. R6：RAG 知识检索
 
 **价值和范围**：服务于 LDD 参数释义、错误码、实验规范和 SDD 问答，不查询任务实时状态。先选少量有版本的 Markdown/算法说明/经允许的报告摘要，不默认摄入个人简历、论文草稿、原始数据集和用户隐私文件。文档解析、chunk、元数据、ACL、版本、引用和删除更新都需定义。
@@ -127,6 +191,8 @@ Redis 保持 MySQL 回源；新增缓存必须提供 key/TTL/失效/穿透/击�
 
 **验收**：问题回答附文档名、版本、章节和可定位引用；无命中文档时明确未知；更新/删除文档后旧片段不再召回；用户只能检索有权文档。用固定问答集评估召回和引用正确性，提示注入文本只能作为资料，不能改变系统命令。
 
+**当前实现落点（2026-11-15，本机验证；生产验收未完成）**：MySQL 文档/版本/chunk 表 + ACL SQL 前置过滤；Markdown 保章节与行号分块；确定性中文单字/二元组、IDF 加权与覆盖率/最低分拒答；`/api/knowledge/query` 返回引用；通用 OpenAI-compatible 适配器默认关闭，本机 `deepseek` profile 可启用；知识页展示回答/检索/未知与引用卡片。混合检索先形成词法候选池，向量只合并进词法池，词法为空直接拒答；业务 `retire()` 成功后清理向量，失败由 `KnowledgeVectorReconcileJob` 有界对账。固定评估为可答 10 + 未知 5 + 越权/注入 5 共 20 题。生产库未建表，不写 R6 验收通过。ADR 见 `05` ADR-020/ADR-022/ADR-023/ADR-024。
+
 ## 10. R7：受控实验 Agent
 
 **第一切片只读**：在服务端按用户归属读取算法 schema、允许的数据集元数据、任务状态、报告和 RAG 引用；只将白名单内的脱敏参数说明、报告摘要、SDD 片段发送外部模型，任务状态的敏感字段、原始样本、完整日志和本机路径仅留本地。生成可校验的 LDD 参数草稿、失败原因解释和实验总结。工具调用必须经 Java 服务层授权，输入按类型和白名单验证；同一问题尽量返回来源与不确定性，不编造 purity、攻击成功率或真实训练结果。模型超时/不可用不影响核心任务 API。
@@ -134,6 +200,15 @@ Redis 保持 MySQL 回源；新增缓存必须提供 key/TTL/失效/穿透/击�
 **第二切片有确认的写操作**：创建/启动/取消/重试/导出先生成预览、风险说明与一次性确认凭据；确认后业务层再次校验权限、任务状态和幂等键，并写审计。LLM 生成的文本不能直接成为路径、shell 参数或 SQL。设调用次数、token/费用、超时、最大工具链深度和敏感信息脱敏。会话数据存储和 TTL 先定 ADR。
 
 **验收**：配置草稿合法但不会自行启动任务；无权限的任务详情/报告无法通过 Agent 获取；恶意文档指令不能触发写操作；重复确认只执行一次；所有工具调用可按用户和 run ID 审计；模型不可用时明确失败并保持已有业务可用。
+
+**当前实现落点（2026-11-14，外部模型待接入）**：
+- 入口：`AssistantController`（chat/confirm/tools/preview/sessions/audits/status），页面 `/assistant`。
+- 端口：`AssistantModel` 默认 `provider=disabled`；新增供应商适配器只改 provider，不改 `AssistantChatService`。
+- allow-list：`AssistantToolRegistry` + `ParameterGuideTool`、`TaskSummaryTool`、`ReportSummaryTool`、`KnowledgeSearchTool`、`CreateTaskPreviewTool`、`StartTaskPreviewTool`、`CancelTaskPreviewTool`、`RetryTaskPreviewTool`、`ExportTaskPreviewTool`。
+- 写安全：`AssistantPreviewService` 只生成 token 哈希；`AssistantConfirmationService` 重校验 + 原子消费；create 比对 `expectedConfigFingerprint`，start/retry 比对当前 `plan(task).fingerprint()`；`AssistantWriteExecutor` 才调用原命令服务与 R3 幂等。
+- 外发边界：`KnowledgeSanitizer` 对自由文本中的所有绝对多段路径（含 `/api/private`、含空格路径）统一替换为 `[已过滤路径]`，不按 `/api` 前缀豁免；最终 body 由真实 ChatService + 适配器 + 假 HTTP 两次请求验证。`AssistantModelEvidence` 按参数名投影 `type/default/min/max/options`，真实 LDD schema 不被 400 字截断。
+- 并发边界：模型线程池 4/16、全局请求槽 4、单用户并发槽默认 1（`max-concurrent-per-user`）；工具线程池用 `DelegatingSecurityContextExecutorService` 传播登录身份，剩余预算已传入 `execute(arguments, timeoutMillis)`，但同步工具仍不可保证底层 JDBC/Redis 物理中断。
+- 证据：`AssistantChatServiceTest`（12 项）、`AssistantPreviewServiceTest`、`AssistantConfirmationServiceTest`、`AssistantConfirmationEndToEndIT`（22 项）、`TaskCommandServicePipelineIT`（7 项）、`MySqlTaskPersistenceIT`（22 项，含 R3-02/03/04）、`TaskCancellationDispatcherTest`（2 项）、`KnowledgeSanitizerTest`、`AssistantOutboundPrivacyTest`、`AssistantModelEvidenceTest`；细节见 `09` §5.13/§5.14、`20` §10 与 §6.6/§6.7。
 
 ## 11. R8：可选分布式验收
 
@@ -145,8 +220,12 @@ Redis 保持 MySQL 回源；新增缓存必须提供 key/TTL/失效/穿透/击�
 你在 F:\Study\postgraduate\毕业论文\security_model 开发。请先阅读
 docs/sdd/17-agent-development-guide.md、09-project-status.md、05-decisions.md
 以及本轮相关契约和源码。只实施迭代 <R编号>，不得越级加技术依赖。
-先报告现状、受影响文件、数据库/API兼容性、未确认决策和验收用例；
-随后先更新 SDD，再编写测试、实现最小垂直切片。保留其他人未提交修改。
+同时阅读 docs/sdd/20-stage-execution-and-acceptance.md，
+根据对应阶段全部需求 ID 建立实现/验收映射，核查已有实现，不重复重写。
+先更新 SDD，再按步骤完成整个阶段、故障测试、回归和文档同步。
+已冻结或有默认值的常规技术问题自行决定并记录，不因内部切片完成就停下。
+保留其他人未提交修改；只有触及授权边界或不可替代外部条件时才汇总提问，
+并继续不依赖该条件的工作；不得将未执行测试标成通过。
 不得运行真实 LDD 长训练、改变 128/5 工程配置、修改外部 VaB 或伪造实验结果。
 完成后给出：目标与实际差异、设计决策、修改文件、数据库迁移与回退、
 测试命令及真实输出摘要、手工验证、剩余风险、下一轮依赖。
@@ -163,4 +242,7 @@ docs/sdd/17-agent-development-guide.md、09-project-status.md、05-decisions.md
 2. 开发机 RTX 2060 6GB、内存 16GB；数据集和产物保持受控本地目录；真实 LDD 配置不擅改或重跑。
 3. Agent 使用外部大模型 API，本机不部署大模型。外发仅限按权限过滤且服务端脱敏的 SDD 片段、算法参数说明、实验报告摘要；禁止原始样本、完整日志、本机绝对路径、凭据和个人信息，embedding 同样受约束。
 
-迭代期需给出推荐方案后再定：共享资源权限、旧实验 owner 回填与无法归属数据隔离、GPU 并发/失败重试、外部模型供应商/预算/数据留存、轻量检索实现。R4 RabbitMQ/独立 Worker 与 R8 多实例可选，不作为 R6/R7 的依赖；启用这些可选项前单独评估部署和存储契约。
+无需重复询问的实现默认值：共享目录由管理员写、用户读；管理员跨用户读默认 false；GPU 单槽；未知进程持久隔离；算法失败仅人工重试；R3 自动恢复仅限已确认从未提交的意图；RAG 先用本地检索，不新增向量数据库。详细边界见 20 号文档。
+
+仍需要人类决定：业务库迁移窗口与历史行最终归属、真实长训练窗口、外部模型供应商/预算/数据留存、R4/R8 可选阶段是否启用。不得把本指导书当作这些操作的授权。缺少模型接入条件时可完成契约、假服务测试和离线检索，但不能宣称外部模型联调完成。
+<!-- /knowledge:historical -->
